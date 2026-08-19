@@ -12,6 +12,26 @@ _Avoid_: Pi plugin, importer, converter
 The runtime portion of the Bridge Package that presents marketplace and plugin capabilities inside Pi.
 _Avoid_: Bridge Package, Codex plugin
 
+**Bridge State**:
+The Bridge-owned durable desired state stored independently for global and project scopes. Each state document contains a schema version, scope-local Registration and Installation records, and any project-only Scope Overrides; source-derived catalogs, compatibility results, effective precedence, and diagnostics are recomputed.
+_Avoid_: Pi settings, runtime snapshot, cache
+
+**Global Scope**:
+The Bridge scope whose registrations and installations form the baseline across Pi projects. Project-specific changes affect their effective use without mutating the global records.
+_Avoid_: Project Scope, machine-wide effective state
+
+**Project Scope**:
+The Bridge scope associated with the current trusted Pi working directory and identified by the location of its Bridge State rather than a stored path or Git identity. It adds project registrations and installations plus sparse overrides to inherited Global Scope state.
+_Avoid_: Isolated scope, complete replacement state
+
+**Scope Override**:
+A Project Scope record keyed by canonical Registration ID or Installation ID that explicitly suppresses an inherited global record without modifying it. A Registration override suppresses its marketplace subtree, an Installation override suppresses only that Plugin, and removing either reveals the inherited record again.
+_Avoid_: Copy of global state, global mutation
+
+**Effective State**:
+The computed project view of inherited Global Scope records, Project Scope additions, and Scope Overrides. It selects effective records without merging or mutating their independently persisted provenance.
+_Avoid_: Bridge State, persisted merged state
+
 **Marketplace**:
 A Codex-format catalog that identifies plugins available from a source.
 _Avoid_: Package registry, plugin directory
@@ -33,11 +53,11 @@ The user-approved association of a Marketplace Source with either a global or pr
 _Avoid_: Subscription, automatic discovery
 
 **Registration ID**:
-An opaque, immutable lowercase UUIDv4 generated locally by the Bridge Package for a Marketplace Registration. It is the persistence anchor that survives changes to registration attributes.
+An opaque, immutable lowercase UUIDv4 generated locally by the Bridge Package for a Marketplace Registration and associated with exactly one scope. It survives changes to registration attributes; a project record that duplicates a global Registration ID is invalid rather than an override.
 _Avoid_: Marketplace name, alias, source path, Git URL
 
 **Source Key**:
-A deterministic, typed value used to compare Marketplace Sources for duplicate detection and repeated registration; it is not the identity of a Marketplace Registration. A local Source Key uses the Marketplace Root's canonical real path, while a Git Source Key combines a canonical remote URL with its exact selector; local and Git keys remain distinct.
+A deterministic, typed value used to compare Marketplace Sources for duplicate detection and repeated registration; it is not the identity of a Marketplace Registration. A local Source Key uses the Marketplace Root's canonical real path, while a Git Source Key combines a canonical remote URL with its exact selector; local and Git keys remain distinct, and equal keys across scopes do not merge registrations.
 _Avoid_: Registration ID, user-facing alias
 
 **Registration Alias**:
@@ -63,6 +83,10 @@ _Avoid_: Executable template, dynamic command
 **Skill ID**:
 The canonical identity of a Plugin skill, composed of its Plugin ID and Skill Descriptor name. Version, directory path, and Skill Agent Profile are attributes rather than identity.
 _Avoid_: Globally unique skill name, SKILL.md path
+
+**Runtime Skill Collision**:
+A conflict in Pi's flat skill namespace when different Skill IDs, or a Plugin skill and a pre-existing Pi skill, claim the same exact Skill Descriptor name. Candidates are resolved in `Pi → Project Scope → Global Scope` layers: same-scope Bridge colliders have no winner, and only surviving higher-layer Plugins reserve names against lower layers.
+_Avoid_: Skill ID collision, canonical-path duplicate
 
 **Skill Agent Profile**:
 The optional `agents/openai.yaml` companion to a Plugin skill, containing presentation metadata and declarations about invocation or external dependencies.
@@ -101,8 +125,12 @@ A Plugin whose required identity or component structure cannot be safely parsed 
 _Avoid_: Incompatible Plugin, Plugin with warnings
 
 **Installed Plugin**:
-A Compatible Plugin selected from a Marketplace and made available within either a global or project scope in Pi.
+A Compatible Plugin selected from a Marketplace and made available within either a global or project scope in Pi. A project Installation of an inherited global Plugin ID takes effective precedence over its retained global Installation.
 _Avoid_: Marketplace entry, bundled plugin
+
+**Projected Plugin**:
+An Installed Plugin admitted by Effective State and presented to Pi as one complete unit. Any losing or unresolved Runtime Skill Collision prevents the entire Plugin from being projected.
+_Avoid_: Partially loaded Plugin, individual projected skill
 
 **Installation ID**:
 The canonical identity of an Installed Plugin, composed of its scope and Plugin ID. Plugin version and Marketplace source revision are attributes rather than identity.
