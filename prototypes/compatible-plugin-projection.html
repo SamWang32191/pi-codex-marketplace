@@ -1,0 +1,950 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>Compatible Plugin projection into Pi — Logic Prototype</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #18201d;
+      --muted: #617069;
+      --line: #d9e1dd;
+      --paper: #ffffff;
+      --wash: #f4f7f5;
+      --accent: #176b52;
+      --accent-soft: #e6f3ed;
+      --warn: #8a5b0b;
+      --warn-soft: #fff4d9;
+      --bad: #a53c33;
+      --bad-soft: #fcecea;
+      --good: #176b52;
+      --shadow: 0 10px 30px rgba(31, 54, 44, .07);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--wash);
+      color: var(--ink);
+      font: 15px/1.55 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    button { font: inherit; }
+    code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    code { font-size: .9em; }
+    .wrap { width: min(1440px, calc(100% - 32px)); margin: 0 auto; }
+    header { padding: 44px 0 22px; }
+    .eyebrow { color: var(--accent); font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    h1 { max-width: 920px; margin: 8px 0 10px; font-size: clamp(30px, 5vw, 54px); line-height: 1.08; letter-spacing: -.035em; }
+    h2 { margin: 0 0 12px; font-size: 20px; }
+    h3 { margin: 0 0 8px; font-size: 16px; }
+    p { margin: 0 0 10px; }
+    .lead { max-width: 980px; color: #3f4d47; font-size: 17px; }
+    .question {
+      margin-top: 22px;
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--accent);
+      border-radius: 12px;
+      background: var(--paper);
+      box-shadow: var(--shadow);
+    }
+    .question ul { margin: 10px 0 0; padding-left: 20px; color: var(--muted); }
+    .question li + li { margin-top: 5px; }
+    .banner { margin: 0 0 20px; padding: 18px 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
+    .banner.good { border-color: #a7d4c3; background: var(--accent-soft); }
+    .banner.warn { border-color: #e7c779; background: var(--warn-soft); }
+    .banner.bad { border-color: #e2aaa4; background: var(--bad-soft); }
+    .banner > strong { display: block; margin-bottom: 4px; font-size: 17px; }
+    section { margin: 0 0 20px; }
+    .surface { padding: 20px; border: 1px solid var(--line); border-radius: 14px; background: var(--paper); box-shadow: var(--shadow); }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 8px; }
+    .btn {
+      min-height: 40px;
+      padding: 8px 13px;
+      border: 1px solid #becbc5;
+      border-radius: 9px;
+      background: var(--paper);
+      color: var(--ink);
+      cursor: pointer;
+      text-align: left;
+    }
+    .btn:hover { border-color: var(--accent); }
+    .btn.primary { border-color: var(--accent); background: var(--accent); color: white; }
+    .btn:disabled { cursor: default; opacity: .48; }
+    .tabs { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
+    .tab { white-space: nowrap; border: 0; border-bottom: 2px solid transparent; background: transparent; padding: 9px 10px; color: var(--muted); cursor: pointer; }
+    .tab.active { border-color: var(--accent); color: var(--accent); font-weight: 800; }
+    .walkthrough { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+    .steps { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .step { display: flex; align-items: center; gap: 7px; }
+    .step-number { display: inline-grid; width: 22px; height: 22px; place-items: center; border-radius: 999px; background: #edf1ef; color: var(--muted); font-size: 12px; }
+    .step.done .step-number { background: var(--accent); color: white; }
+    .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .card { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 11px; background: #fbfcfb; }
+    .metric { margin: 2px 0 8px; font-size: 23px; font-weight: 800; }
+    .muted { color: var(--muted); }
+    .small { font-size: 13px; }
+    .pill { display: inline-block; margin: 2px 4px 2px 0; padding: 3px 8px; border-radius: 999px; background: #edf1ef; font-size: 12px; }
+    .pill.good { background: var(--accent-soft); color: var(--good); }
+    .pill.warn { background: var(--warn-soft); color: var(--warn); }
+    .pill.bad { background: var(--bad-soft); color: var(--bad); }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+    table { width: 100%; border-collapse: collapse; background: var(--paper); font-size: 13px; }
+    th, td { padding: 10px 11px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { background: #f3f6f4; color: #435149; font-weight: 800; white-space: nowrap; }
+    tbody tr:last-child td { border-bottom: 0; }
+    td.path, td.identity { min-width: 250px; overflow-wrap: anywhere; }
+    td.status { min-width: 180px; }
+    .stack { display: grid; gap: 8px; }
+    .finding { padding: 11px 12px; border: 1px solid var(--line); border-radius: 9px; background: #fbfcfb; }
+    .finding.blocking { border-left: 4px solid var(--bad); }
+    .finding.diagnostic { border-left: 4px solid var(--warn); }
+    .finding.info { border-left: 4px solid var(--accent); }
+    .finding-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+    .timeline { list-style: none; margin: 0; padding: 0; }
+    .timeline li { display: grid; grid-template-columns: 58px 150px 1fr; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line); }
+    .timeline li:last-child { border-bottom: 0; }
+    .empty { padding: 20px; border: 1px dashed #c9d2ce; border-radius: 9px; color: var(--muted); text-align: center; }
+    footer { padding: 10px 0 42px; color: var(--muted); }
+    @media (max-width: 1050px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 660px) {
+      .wrap { width: min(100% - 20px, 1440px); }
+      header { padding-top: 28px; }
+      .surface, .question { padding: 15px; }
+      .grid { grid-template-columns: 1fr; }
+      .toolbar .btn { flex: 1 1 100%; }
+      .timeline li { grid-template-columns: 44px 1fr; }
+      .timeline li span:last-child { grid-column: 2; }
+    }
+  </style>
+</head>
+<body>
+  <header class="wrap">
+    <div class="eyebrow">Throwaway logic prototype · Pi 0.84.2</div>
+    <h1>Compatible Plugin projection：Decision B</h1>
+    <p class="lead"><strong>已選 B：</strong><code>release-helper</code> 有 <code>release-notes</code> 與 <code>supply-chain-check</code>。若只有 <code>release-notes</code> 撞名，就只讓它 unavailable；<code>supply-chain-check</code> 仍照常載入。</p>
+    <div class="question">
+      <h2>已選決策與技術邊界</h2>
+      <p>先做 <strong>Plugin gate</strong>：Invalid／Incompatible、Project Trust off、Stale Snapshot、validation 或 unsafe path 失敗，整個 targeted Plugin fail closed。</p>
+      <ul>
+        <li>通過 gate 後才逐一判定 <strong>Runtime skill availability</strong>：exact name precedence 固定為 <strong>Pi → Project Scope → Global Scope</strong>；碰撞只影響該 name，lower-layer fallback 也逐 name 發生。</li>
+        <li>同一 Bridge scope 的同名 skills 全部 no winner；較高層只保留自己的同名 skill。相關 Plugins 的其他 skills 不受牽連。</li>
+        <li><code>resources_discover</code> 只回 direct <code>skillPaths</code>；此頁明示模擬 Bridge-known Pi inventory。Plugin／Skill／Validation Snapshot identity 另由 provenance index 保留，輸出採 stable sort。</li>
+      </ul>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div id="outcome"></div>
+
+    <section class="surface">
+      <h2>Guided walkthroughs</h2>
+      <div id="scenario-tabs" class="tabs" role="tablist"></div>
+      <div id="scenario-body" class="walkthrough"></div>
+    </section>
+
+    <section class="surface">
+      <h2>Free play</h2>
+      <p class="muted small">任意順序操作；每次 action 都由同一 reducer 處理並完整重繪。</p>
+      <div id="actions" class="toolbar"></div>
+    </section>
+
+    <section>
+      <div id="state-cards" class="grid"></div>
+    </section>
+
+    <section class="surface">
+      <h2>Bridge Plan：Plugin gate → Runtime skill availability</h2>
+      <p class="muted small">每列保留 unmodified source skill path；Plugin gate passed 且 skill available 的列才成為 <code>skillPaths</code>。</p>
+      <div id="plan-table"></div>
+    </section>
+
+    <section class="surface">
+      <h2>Pi Runtime after reload：逐 skill 結果</h2>
+      <p class="muted small">模擬 ResourceLoader 逐 path first-winner loading；Plugin gate 與 skill availability 分欄顯示，Bridge identity 請查 provenance index。</p>
+      <div id="runtime-table"></div>
+    </section>
+
+    <section class="surface">
+      <h2>Findings</h2>
+      <div id="findings" class="stack"></div>
+    </section>
+
+    <section class="surface">
+      <h2>Reload event timeline</h2>
+      <div id="events"></div>
+    </section>
+
+    <section class="surface">
+      <h2>Bridge provenance index</h2>
+      <div id="provenance"></div>
+    </section>
+  </main>
+
+  <footer class="wrap">Prototype only：重播已選 Decision B 的邏輯，不是 production implementation。</footer>
+
+  <script>
+    /* Portable, DOM-independent logic module. The UI shell begins after this IIFE. */
+    const ProjectionModel = (() => {
+      const PROJECT = "Project Scope";
+      const GLOBAL = "Global Scope";
+      const scopeRank = { [PROJECT]: 0, [GLOBAL]: 1 };
+      const copy = value => JSON.parse(JSON.stringify(value));
+      const cmp = (a, b) => String(a) < String(b) ? -1 : String(a) > String(b) ? 1 : 0;
+      const uniq = values => [...new Set(values)];
+      const sorted = (values, key = value => value) => [...values].sort((a, b) => cmp(key(a), key(b)));
+      const fingerprint = value => {
+        let hash = 2166136261;
+        for (const char of String(value)) {
+          hash ^= char.charCodeAt(0);
+          hash = Math.imul(hash, 16777619);
+        }
+        return `fnv1a:${(hash >>> 0).toString(16).padStart(8, "0")}`;
+      };
+
+      const snapshot = (id, value, treeRoot) => ({
+        id,
+        fingerprint: value,
+        currentSourceFingerprint: value,
+        treeRoot
+      });
+
+      const skill = (pluginId, name, path) => ({
+        name,
+        skillId: `${pluginId}::${name}`,
+        sourceSkillPath: path
+      });
+
+      const plugin = (scope, pluginId, manifestName, snapshotId, skills, compatibility = "Compatible", validationStatus = "Valid") => ({
+        scope,
+        pluginId,
+        manifestName,
+        installationId: `${scope}::${pluginId}`,
+        snapshotId,
+        compatibility,
+        validationStatus,
+        skills
+      });
+
+      const ids = {
+        projectRelease: "11111111-1111-4111-8111-111111111111/team-ops/release-helper",
+        projectCollider: "22222222-2222-4222-8222-222222222222/project-extras/release-shadow",
+        globalFallback: "33333333-3333-4333-8333-333333333333/global-baseline/release-baseline",
+        globalIncident: "44444444-4444-4444-8444-444444444444/global-baseline/incident-reader"
+      };
+
+      const roots = {
+        projectRelease: "/bridge/validation-snapshots/project-release-helper/tree",
+        projectCollider: "/bridge/validation-snapshots/project-release-shadow/tree",
+        globalFallback: "/bridge/validation-snapshots/global-release-baseline/tree",
+        globalIncident: "/bridge/validation-snapshots/global-incident-reader/tree"
+      };
+
+      const makePlugins = () => ({
+        projectRelease: plugin(PROJECT, ids.projectRelease, "release-helper", "snap-project-release", [
+          skill(ids.projectRelease, "release-notes", `${roots.projectRelease}/plugins/release-helper/skills/release-notes`),
+          skill(ids.projectRelease, "supply-chain-check", `${roots.projectRelease}/plugins/release-helper/skills/supply-chain-check`)
+        ]),
+        projectCollider: plugin(PROJECT, ids.projectCollider, "release-shadow", "snap-project-collider", [
+          skill(ids.projectCollider, "policy-audit", `${roots.projectCollider}/plugins/release-shadow/skills/policy-audit`),
+          skill(ids.projectCollider, "release-notes", `${roots.projectCollider}/plugins/release-shadow/skills/release-notes`)
+        ]),
+        globalFallback: plugin(GLOBAL, ids.globalFallback, "release-baseline", "snap-global-fallback", [
+          skill(ids.globalFallback, "global-index", `${roots.globalFallback}/plugins/release-baseline/skills/global-index`),
+          skill(ids.globalFallback, "release-notes", `${roots.globalFallback}/plugins/release-baseline/skills/release-notes`)
+        ]),
+        globalIncident: plugin(GLOBAL, ids.globalIncident, "incident-reader", "snap-global-incident", [
+          skill(ids.globalIncident, "incident-brief", `${roots.globalIncident}/plugins/incident-reader/skills/incident-brief`)
+        ])
+      });
+
+      const makeInitialState = () => {
+        const plugins = makePlugins();
+        return {
+          modelVersion: "prototype-2-decision-b",
+          sequence: 0,
+          bridgeInputRevision: 1,
+          projectTrust: true,
+          projectInstalledPlugins: [plugins.projectRelease],
+          globalInstalledPlugins: [plugins.globalFallback, plugins.globalIncident],
+          validationSnapshots: {
+            "snap-project-release": snapshot("snap-project-release", "sha256:8f61556d19eac431", roots.projectRelease),
+            "snap-project-collider": snapshot("snap-project-collider", "sha256:c45f12d030b9a7e2", roots.projectCollider),
+            "snap-global-fallback": snapshot("snap-global-fallback", "sha256:671ba2d91e3c52ff", roots.globalFallback),
+            "snap-global-incident": snapshot("snap-global-incident", "sha256:2d89b0ae18c7f130", roots.globalIncident)
+          },
+          currentPiInventory: [
+            { skillId: "pi:user/help", name: "help", path: "/Users/demo/.pi/skills/help" },
+            { skillId: "pi:project/workspace-map", name: "workspace-map", path: "/work/demo/.pi/skills/workspace-map" }
+          ],
+          bridgeKnownPiInventorySnapshot: null,
+          bridgeProjectionPlan: null,
+          provenanceIndex: [],
+          runtimeAfterReload: null,
+          findings: [],
+          eventLog: [{ sequence: 0, phase: "state", type: "INITIAL_STATE", message: "已建立 prototype 初始狀態。" }],
+          preflightCount: 0,
+          reloadCount: 0
+        };
+      };
+
+      const pushEvent = (state, phase, type, message) => {
+        state.sequence += 1;
+        state.eventLog.push({ sequence: state.sequence, phase, type, message });
+      };
+
+      const inventorySnapshot = (skills, sequence) => {
+        const items = sorted(skills, item => `${item.name}\u0000${item.path}\u0000${item.skillId}`);
+        return {
+          capturedAtSequence: sequence,
+          fingerprint: fingerprint(items.map(item => `${item.name}\u0000${item.path}`).join("\n")),
+          items: copy(items),
+          assumption: "Bridge-known snapshot; not supplied by resources_discover event"
+        };
+      };
+
+      const pluginSortKey = item => `${String(scopeRank[item.scope]).padStart(2, "0")}\u0000${item.pluginId}`;
+      const allPlugins = state => sorted([
+        ...state.projectInstalledPlugins,
+        ...state.globalInstalledPlugins
+      ], pluginSortKey);
+
+      const isSafeDirectPath = (path, treeRoot) => {
+        if (typeof path !== "string" || typeof treeRoot !== "string" || !path.startsWith(`${treeRoot}/`)) return false;
+        const relative = path.slice(treeRoot.length + 1);
+        return relative.length > 0 && relative.split("/").every(part => part && part !== "." && part !== ".." && !part.includes("\0"));
+      };
+
+      const pluginGateReasons = (state, candidate) => {
+        const snap = state.validationSnapshots[candidate.snapshotId];
+        const reasons = [];
+        if (candidate.compatibility !== "Compatible") reasons.push({ kind: "incompatible", classification: candidate.compatibility });
+        if (candidate.validationStatus !== "Valid") reasons.push({ kind: "invalid", validationStatus: candidate.validationStatus });
+        if (candidate.scope === PROJECT && !state.projectTrust) reasons.push({ kind: "project-trust" });
+        if (!snap || snap.fingerprint !== snap.currentSourceFingerprint) reasons.push({
+          kind: "stale-snapshot",
+          expected: snap ? snap.fingerprint : "missing",
+          actual: snap ? snap.currentSourceFingerprint : "missing"
+        });
+        candidate.skills.forEach(item => {
+          if (!snap || !isSafeDirectPath(item.sourceSkillPath, snap.treeRoot)) reasons.push({ kind: "unsafe-direct-path", path: item.sourceSkillPath });
+        });
+        return reasons;
+      };
+
+      const pluginGateFinding = (reason, candidate) => {
+        const base = { severity: "Plugin gate · fail closed", pluginId: candidate.pluginId, scope: candidate.scope };
+        if (reason.kind === "incompatible") return {
+          ...base, code: "BRIDGE_INCOMPATIBLE_PLUGIN",
+          message: `Compatibility classification 是 ${reason.classification}；整個 targeted Plugin fail closed。`
+        };
+        if (reason.kind === "invalid") return {
+          ...base, code: "BRIDGE_INVALID_PLUGIN",
+          message: `Validation status 是 ${reason.validationStatus}；整個 targeted Plugin fail closed。`
+        };
+        if (reason.kind === "project-trust") return {
+          ...base, code: "BRIDGE_PROJECT_TRUST_REQUIRED",
+          message: "Project Trust 未啟用；Project state retained，但整個 targeted Plugin 排除於 Effective State。"
+        };
+        if (reason.kind === "stale-snapshot") return {
+          ...base, code: "BRIDGE_STALE_VALIDATION_SNAPSHOT",
+          message: `Validation Snapshot ${reason.expected} 與 current source ${reason.actual} 不一致；整個 targeted Plugin fail closed。`
+        };
+        return {
+          ...base, code: "BRIDGE_UNSAFE_DIRECT_PATH",
+          message: `unsafe path 不在乾淨的原始 Validation Snapshot tree 內；整個 targeted Plugin fail closed：${reason.path}`
+        };
+      };
+
+      const skillAvailabilityFinding = row => {
+        const base = { severity: "Runtime skill unavailable", pluginId: row.pluginId, scope: row.scope };
+        const reason = row.availabilityReason;
+        if (reason.kind === "same-scope-collision") return {
+          ...base, code: "BRIDGE_SAME_SCOPE_RUNTIME_SKILL_COLLISION",
+          message: `${row.scope} 的「${row.skillName}」同名 skills 全部 no winner；只有這些 skills unavailable，相關 Plugins 的其他 skills 繼續投影。Peers：${reason.peerSkillIds.join(", ")}。`
+        };
+        return {
+          ...base, code: "BRIDGE_HIGHER_LAYER_RUNTIME_SKILL_COLLISION",
+          message: `「${row.skillName}」已由較高層 ${reason.winnerLayer} 保留；只有這個 lower-layer skill unavailable，Plugin 的其他 skills 繼續投影。`
+        };
+      };
+
+      const resolveProjection = (state, piInventory) => {
+        const candidates = allPlugins(state);
+        const decisions = new Map();
+        const findings = [];
+        const reserved = new Map();
+        sorted(piInventory, item => `${item.name}\u0000${item.path}\u0000${item.skillId}`).forEach(item => {
+          if (!reserved.has(item.name)) reserved.set(item.name, { layer: "Pi", id: item.skillId, path: item.path });
+        });
+
+        candidates.forEach(candidate => {
+          const gateReasons = pluginGateReasons(state, candidate);
+          decisions.set(candidate.pluginId, {
+            plugin: candidate,
+            gateStatus: gateReasons.length ? "failed" : "passed",
+            gateReasons
+          });
+          gateReasons.forEach(reason => findings.push(pluginGateFinding(reason, candidate)));
+        });
+
+        const rows = [];
+        candidates.forEach(candidate => {
+          const decision = decisions.get(candidate.pluginId);
+          const snap = state.validationSnapshots[candidate.snapshotId];
+          sorted(candidate.skills, item => `${item.name}\u0000${item.sourceSkillPath}`).forEach(item => rows.push({
+            scope: candidate.scope,
+            pluginId: candidate.pluginId,
+            skillId: item.skillId,
+            skillName: item.name,
+            path: item.sourceSkillPath,
+            snapshotId: candidate.snapshotId,
+            snapshotFingerprint: snap ? snap.fingerprint : "missing",
+            compatibility: candidate.compatibility,
+            pluginGateStatus: decision.gateStatus,
+            pluginGateReasons: copy(decision.gateReasons),
+            availability: decision.gateStatus === "passed" ? "pending" : "not-evaluated",
+            availabilityReason: null,
+            status: decision.gateStatus === "passed" ? "pending" : "plugin-gate-failed"
+          }));
+        });
+        rows.sort((a, b) => cmp(`${scopeRank[a.scope]}\u0000${a.pluginId}\u0000${a.skillName}\u0000${a.path}`, `${scopeRank[b.scope]}\u0000${b.pluginId}\u0000${b.skillName}\u0000${b.path}`));
+
+        [PROJECT, GLOBAL].forEach(scope => {
+          const claims = new Map();
+          rows.filter(row => row.scope === scope && row.pluginGateStatus === "passed").forEach(row => {
+            const matching = claims.get(row.skillName) || [];
+            matching.push(row);
+            claims.set(row.skillName, matching);
+          });
+
+          sorted([...claims.keys()]).forEach(skillName => {
+            const matching = claims.get(skillName);
+            const higherWinner = reserved.get(skillName);
+            if (matching.length > 1) {
+              const peerSkillIds = sorted(matching.map(row => row.skillId));
+              matching.forEach(row => {
+                row.availability = "unavailable";
+                row.status = "runtime-collision";
+                row.availabilityReason = { kind: "same-scope-collision", peerSkillIds };
+              });
+              return;
+            }
+            const row = matching[0];
+            if (higherWinner) {
+              row.availability = "unavailable";
+              row.status = "runtime-collision";
+              row.availabilityReason = {
+                kind: "higher-layer-collision",
+                winnerLayer: higherWinner.layer,
+                winnerId: higherWinner.id,
+                winnerPath: higherWinner.path
+              };
+              return;
+            }
+            row.availability = "available";
+            row.status = "projected";
+            reserved.set(skillName, { layer: scope, id: row.skillId, path: row.path });
+          });
+        });
+
+        rows.filter(row => row.status === "runtime-collision").forEach(row => findings.push(skillAvailabilityFinding(row)));
+        const projectedRows = rows.filter(row => row.status === "projected");
+        const provenanceIndex = rows.map(row => ({
+          path: row.path,
+          scope: row.scope,
+          pluginId: row.pluginId,
+          skillId: row.skillId,
+          snapshotId: row.snapshotId,
+          snapshotFingerprint: row.snapshotFingerprint,
+          pluginGateStatus: row.pluginGateStatus,
+          skillAvailability: row.availability
+        }));
+        return { decisions: [...decisions.values()].map(copy), rows, projectedRows, findings, provenanceIndex };
+      };
+
+      const makePlan = state => {
+        const known = inventorySnapshot(state.currentPiInventory, state.sequence + 1);
+        const resolved = resolveProjection(state, known.items);
+        return {
+          known,
+          plan: {
+            id: `bridge-plan-${state.preflightCount}`,
+            bridgeInputRevision: state.bridgeInputRevision,
+            piInventoryFingerprint: known.fingerprint,
+            rows: resolved.rows,
+            projectedRows: resolved.projectedRows,
+            pluginDecisions: resolved.decisions,
+            skillPaths: resolved.projectedRows.map(row => row.path),
+            findings: resolved.findings
+          },
+          provenanceIndex: resolved.provenanceIndex
+        };
+      };
+
+      const sameRow = (a, b) => a.pluginId === b.pluginId && a.skillId === b.skillId && a.path === b.path && a.snapshotFingerprint === b.snapshotFingerprint;
+      const setKey = row => `${row.pluginId}\u0000${row.skillId}\u0000${row.path}`;
+
+      const simulateReload = state => {
+        const plan = state.bridgeProjectionPlan;
+        if (!plan || !state.bridgeKnownPiInventorySnapshot) return {
+          runtime: null,
+          findings: [{ severity: "Blocking Finding", code: "BRIDGE_PREFLIGHT_REQUIRED", scope: "Bridge Extension", pluginId: null, message: "尚無 Bridge preflight；reload 不回傳任何 skillPaths。" }],
+          events: [{ phase: "reload", type: "PREFLIGHT_REQUIRED", message: "resources_discover 無可用 plan。" }]
+        };
+
+        const currentAgainstCapturedPi = resolveProjection(state, state.bridgeKnownPiInventorySnapshot.items);
+        const currentRows = new Map(currentAgainstCapturedPi.rows.map(row => [setKey(row), row]));
+        const admittedRows = plan.projectedRows.filter(row => {
+          const current = currentRows.get(setKey(row));
+          return current && current.status === "projected" && sameRow(current, row);
+        });
+        const admissionBlockedRows = plan.projectedRows.filter(row => !admittedRows.some(admitted => sameRow(admitted, row)));
+        const events = [{
+          phase: "reload", type: "RESOURCES_DISCOVER",
+          message: `Bridge Extension 回傳 ${admittedRows.length} 個通過 Plugin gate 且 runtime-available 的 direct skillPaths。`
+        }];
+        const runtimeRows = [];
+        const winners = new Map();
+        sorted(state.currentPiInventory, item => `${item.name}\u0000${item.path}`).forEach(item => {
+          if (!winners.has(item.name)) {
+            winners.set(item.name, { layer: "Pi", id: item.skillId, path: item.path });
+            runtimeRows.push({
+              origin: "Pi", pluginId: null, skillId: item.skillId, skillName: item.name, path: item.path,
+              pluginGateStatus: "host-owned", status: "first winner（pre-existing）", tone: "good", sourceInfo: `Pi inventory · ${item.path}`
+            });
+          }
+        });
+        plan.rows.filter(row => row.status === "plugin-gate-failed").forEach(row => runtimeRows.push({
+          origin: row.scope, pluginId: row.pluginId, skillId: row.skillId, skillName: row.skillName, path: row.path,
+          pluginGateStatus: "failed", status: "Plugin gate fail closed：path 未回傳", tone: "bad",
+          sourceInfo: `Bridge Plugin gate · ${row.path}`
+        }));
+        plan.rows.filter(row => row.status === "runtime-collision").forEach(row => runtimeRows.push({
+          origin: row.scope, pluginId: row.pluginId, skillId: row.skillId, skillName: row.skillName, path: row.path,
+          pluginGateStatus: "passed", status: "Runtime skill unavailable：path 未回傳", tone: "warn",
+          sourceInfo: `Bridge per-name decision · ${row.path}`
+        }));
+        admissionBlockedRows.forEach(row => {
+          const current = currentRows.get(setKey(row));
+          const gateFailed = current && current.pluginGateStatus === "failed";
+          const skillUnavailable = current && current.status === "runtime-collision";
+          runtimeRows.push({
+            origin: row.scope, pluginId: row.pluginId, skillId: row.skillId, skillName: row.skillName, path: row.path,
+            pluginGateStatus: gateFailed ? "failed" : current ? "passed" : "missing",
+            status: gateFailed
+              ? "Plugin gate 在 reload fail closed：path 未回傳"
+              : skillUnavailable
+                ? "Runtime skill 在 reload unavailable：path 未回傳"
+                : "Plan row 已失效：path 未回傳",
+            tone: gateFailed || !current ? "bad" : "warn",
+            sourceInfo: `${gateFailed ? "Bridge Plugin gate" : "Bridge reload admission"} · ${row.path}`
+          });
+          events.push({
+            phase: "reload",
+            type: gateFailed ? "PLUGIN_GATE_FAIL_CLOSED" : skillUnavailable ? "RUNTIME_SKILL_UNAVAILABLE" : "PLAN_ROW_REJECTED",
+            message: gateFailed
+              ? `${row.pluginId} 的 Plugin gate 失敗；整個 targeted Plugin 不回傳 paths。`
+              : `「${row.skillName}」在目前逐-name precedence 下 unavailable；只阻止這個 path。`
+          });
+        });
+
+        const loadedBridgeRows = [];
+        const loserDiagnostics = [];
+        admittedRows.forEach(row => {
+          const winner = winners.get(row.skillName);
+          if (winner) {
+            const diagnostic = {
+              skillName: row.skillName, loserPath: row.path, winnerPath: winner.path,
+              pluginId: row.pluginId, skillId: row.skillId
+            };
+            loserDiagnostics.push(diagnostic);
+            runtimeRows.push({
+              origin: row.scope, pluginId: row.pluginId, skillId: row.skillId, skillName: row.skillName, path: row.path,
+              pluginGateStatus: "passed", status: "Runtime collision loser（skill unavailable）", tone: "warn",
+              sourceInfo: `extension:bridge.ts · ${row.path}`
+            });
+            events.push({
+              phase: "reload", type: "SKILL_COLLISION_DIAGNOSTIC",
+              message: `loser「${row.skillName}」：${row.path}；first winner 保持 ${winner.path}。`
+            });
+          } else {
+            winners.set(row.skillName, { layer: row.scope, id: row.skillId, path: row.path });
+            loadedBridgeRows.push(row);
+            runtimeRows.push({
+              origin: row.scope, pluginId: row.pluginId, skillId: row.skillId, skillName: row.skillName, path: row.path,
+              pluginGateStatus: "passed", status: "loaded（skill available）", tone: "good", sourceInfo: `extension:bridge.ts · ${row.path}`
+            });
+            events.push({ phase: "reload", type: "SKILL_LOADED", message: `載入「${row.skillName}」：${row.path}。` });
+          }
+        });
+
+        const currentContract = resolveProjection(state, state.currentPiInventory);
+        const expected = sorted(currentContract.projectedRows.map(setKey));
+        const actual = sorted(loadedBridgeRows.map(setKey));
+        const expectedKey = expected.join("\n");
+        const actualKey = actual.join("\n");
+        const currentInventory = inventorySnapshot(state.currentPiInventory, state.sequence + 1);
+        const inventoryDrift = currentInventory.fingerprint !== plan.piInventoryFingerprint;
+        const identityComplete = loadedBridgeRows.every(row => state.provenanceIndex.some(entry => entry.path === row.path && entry.pluginId === row.pluginId && entry.skillId === row.skillId));
+        const planRefreshRequired = expectedKey !== actualKey;
+        const conformsDecisionB = !planRefreshRequired && identityComplete;
+
+        const findings = [...currentContract.findings];
+        admissionBlockedRows.filter(row => !currentRows.has(setKey(row))).forEach(row => findings.push({
+          severity: "Plugin gate · fail closed", code: "BRIDGE_RELOAD_PLAN_ROW_MISSING", scope: row.scope, pluginId: row.pluginId,
+          message: `preflight 後 targeted Plugin／Skill identity 改變；舊 path fail closed：${row.skillId}。`
+        }));
+        if (inventoryDrift) findings.push({
+          severity: "Observed runtime drift", code: "BRIDGE_PI_INVENTORY_DRIFT", scope: "Pi", pluginId: null,
+          message: `Bridge-known inventory ${plan.piInventoryFingerprint} 與 reload 時 current inventory ${currentInventory.fingerprint} 不同；依 actual first-winner 結果再次核對 Decision B。`
+        });
+        loserDiagnostics.forEach(item => findings.push({
+          severity: "Pi diagnostic", code: "PI_SKILL_NAME_FIRST_WINNER", scope: "Pi ResourceLoader", pluginId: item.pluginId,
+          message: `「${item.skillName}」只對 loser path 產生 diagnostic；Pi 不知道其 Plugin grouping。`
+        }));
+        uniq(loserDiagnostics.map(item => item.pluginId)).forEach(pluginId => {
+          const unavailableNames = uniq(loserDiagnostics.filter(item => item.pluginId === pluginId).map(item => item.skillName));
+          const loadedNames = uniq(loadedBridgeRows.filter(row => row.pluginId === pluginId).map(row => row.skillName));
+          findings.push({
+            severity: "Decision B · conforms", code: "BRIDGE_DECISION_B_SKILL_LEVEL_AVAILABILITY", scope: "Pi runtime", pluginId,
+            message: `${unavailableNames.join(", ")} 因 exact-name collision unavailable；${loadedNames.length ? `${loadedNames.join(", ")} 仍照常載入` : "同 Plugin 沒有其他可載入 skill"}。這是已選 B 的 per-skill outcome。`
+          });
+        });
+        if (planRefreshRequired) findings.push({
+          severity: "Plan refresh required", code: "BRIDGE_EFFECTIVE_PLAN_STALE", scope: "Bridge Extension", pluginId: null,
+          message: "目前 Plugin gates／逐-name availability 已安全套用於舊 paths，但舊 plan 不會自動加入現在可用的 lower-layer fallback；需重新 preflight。"
+        });
+        if (!identityComplete) findings.push({
+          severity: "Plugin gate · fail closed", code: "BRIDGE_PROVENANCE_INCOMPLETE", scope: "Bridge provenance", pluginId: null,
+          message: "至少一個 loaded path 缺少 Plugin／Skill／Validation Snapshot provenance；Decision B 不得視為符合。"
+        });
+        if (inventoryDrift) events.push({
+          phase: "reload", type: "PI_INVENTORY_DRIFT_OBSERVED",
+          message: "Pi inventory 與 preflight snapshot 不同；保留 drift diagnostic，再按 actual per-skill winners 判定。"
+        });
+        events.push({
+          phase: "reload", type: conformsDecisionB ? "DECISION_B_MATCH" : "PLAN_REFRESH_REQUIRED",
+          message: conformsDecisionB
+            ? "actual runtime 與目前 Plugin gates、逐-name precedence、fallback 與 provenance 一致：符合 B。"
+            : "actual runtime 尚未等於 current per-skill plan；保持 fail closed 並重新 preflight。"
+        });
+
+        const runtimeRank = { Pi: 0, [PROJECT]: 1, [GLOBAL]: 2 };
+        runtimeRows.sort((a, b) => cmp(
+          `${runtimeRank[a.origin] ?? 9}\u0000${a.pluginId || ""}\u0000${a.skillName}\u0000${a.path}\u0000${a.status}`,
+          `${runtimeRank[b.origin] ?? 9}\u0000${b.pluginId || ""}\u0000${b.skillName}\u0000${b.path}\u0000${b.status}`
+        ));
+
+        return {
+          runtime: {
+            rows: runtimeRows,
+            admittedSkillPaths: admittedRows.map(row => row.path),
+            loadedBridgeRows,
+            loserDiagnostics,
+            admissionBlockedRows,
+            preflightUnavailableRows: plan.rows.filter(row => row.status === "runtime-collision"),
+            pluginGateClosedRows: plan.rows.filter(row => row.status === "plugin-gate-failed"),
+            inventoryDrift,
+            currentInventoryFingerprint: currentInventory.fingerprint,
+            expectedContractRows: currentContract.projectedRows,
+            conformsDecisionB,
+            planRefreshRequired,
+            identityComplete
+          }, findings, events
+        };
+      };
+
+      const reduce = (state, action) => {
+        if (action.type === "RESET") {
+          const reset = makeInitialState();
+          reset.eventLog = [];
+          pushEvent(reset, "state", "RESET", "已重設 Project Trust、Installed Plugins、snapshots、Pi inventory 與 runtime。 ");
+          return reset;
+        }
+        const next = copy(state);
+        if (action.type === "SET_PROJECT_TRUST") {
+          if (next.projectTrust !== action.value) next.bridgeInputRevision += 1;
+          next.projectTrust = action.value;
+          pushEvent(next, "state", "PROJECT_TRUST_CHANGED", `Project Trust ${action.value ? "active" : "off"}；Project state retained。`);
+        } else if (action.type === "SET_COLLIDER") {
+          const has = next.projectInstalledPlugins.some(item => item.pluginId === ids.projectCollider);
+          if (action.value && !has) next.projectInstalledPlugins.push(makePlugins().projectCollider);
+          if (!action.value && has) next.projectInstalledPlugins = next.projectInstalledPlugins.filter(item => item.pluginId !== ids.projectCollider);
+          if (has !== action.value) next.bridgeInputRevision += 1;
+          pushEvent(next, "state", "PROJECT_COLLIDER_CHANGED", `Project Scope collider ${action.value ? "已加入" : "已移除"}。`);
+        } else if (action.type === "SET_PI_DRIFT") {
+          const driftId = "pi:project/release-notes-drift";
+          const has = next.currentPiInventory.some(item => item.skillId === driftId);
+          if (action.value && !has) next.currentPiInventory.push({ skillId: driftId, name: "release-notes", path: "/work/demo/.pi/skills/release-notes" });
+          if (!action.value && has) next.currentPiInventory = next.currentPiInventory.filter(item => item.skillId !== driftId);
+          pushEvent(next, "state", "PI_INVENTORY_CHANGED", `未被既有 Bridge inventory snapshot 捕捉的 Pi skill ${action.value ? "已加入" : "已移除"}。`);
+        } else if (action.type === "SET_SNAPSHOT_FRESHNESS") {
+          const snap = next.validationSnapshots["snap-project-release"];
+          snap.currentSourceFingerprint = action.value ? snap.fingerprint : "sha256:drifted-source-77a9";
+          next.bridgeInputRevision += 1;
+          pushEvent(next, "state", "SOURCE_SNAPSHOT_CHANGED", `release-helper source 現在是 ${action.value ? "fresh" : "Stale Snapshot"}；既有 plan 未自動更新。`);
+        } else if (action.type === "PREFLIGHT") {
+          next.preflightCount += 1;
+          const output = makePlan(next);
+          next.bridgeKnownPiInventorySnapshot = output.known;
+          next.bridgeProjectionPlan = output.plan;
+          next.provenanceIndex = output.provenanceIndex;
+          next.runtimeAfterReload = null;
+          next.findings = output.plan.findings;
+          pushEvent(next, "preflight", "BRIDGE_PREFLIGHT", `${output.plan.id} 捕捉 ${output.known.items.length} 個已知 Pi skills，規劃 ${output.plan.skillPaths.length} 個 direct paths。`);
+        } else if (action.type === "RELOAD") {
+          next.reloadCount += 1;
+          const output = simulateReload(next);
+          next.runtimeAfterReload = output.runtime;
+          next.findings = output.findings;
+          output.events.forEach(item => pushEvent(next, item.phase, item.type, item.message));
+        }
+        return next;
+      };
+
+      const selectors = {
+        isColliderInstalled: state => state.projectInstalledPlugins.some(item => item.pluginId === ids.projectCollider),
+        hasPiDrift: state => state.currentPiInventory.some(item => item.skillId === "pi:project/release-notes-drift"),
+        isProjectSnapshotFresh: state => {
+          const snap = state.validationSnapshots["snap-project-release"];
+          return snap.fingerprint === snap.currentSourceFingerprint;
+        },
+        currentPiFingerprint: state => inventorySnapshot(state.currentPiInventory, state.sequence).fingerprint,
+        allPlugins
+      };
+
+      return { makeInitialState, reduce, resolveProjection, simulateReload, selectors, constants: { PROJECT, GLOBAL } };
+    })();
+
+    /* Thin throwaway UI shell. All state transitions and projection/reload logic stay above. */
+    const scenarios = [
+      {
+        id: "happy", title: "1 · Happy path",
+        description: "所有 Plugin gates 通過；觀察 Pi → Project → Global 逐 exact name 決定 availability、direct paths 與 provenance。",
+        steps: [
+          { label: "Bridge preflight", action: { type: "PREFLIGHT" } },
+          { label: "模擬 Pi reload", action: { type: "RELOAD" } }
+        ]
+      },
+      {
+        id: "scope-collision", title: "2 · Same-scope collision",
+        description: "兩個 Project release-notes skills 都 unavailable；兩個 Plugins 的其他 skills 照常載入，Global release-notes 逐-name fallback 載入。",
+        steps: [
+          { label: "加入 Project collider", action: { type: "SET_COLLIDER", value: true } },
+          { label: "Bridge preflight", action: { type: "PREFLIGHT" } },
+          { label: "模擬 Pi reload", action: { type: "RELOAD" } }
+        ]
+      },
+      {
+        id: "pi-drift", title: "3 · Pi drift",
+        description: "preflight 後才加入 Pi release-notes；Bridge release-notes 成為 loser，supply-chain-check 仍 loaded。保留 drift／Pi diagnostic，結果符合 B。",
+        steps: [
+          { label: "Bridge preflight", action: { type: "PREFLIGHT" } },
+          { label: "加入未捕捉的 Pi skill", action: { type: "SET_PI_DRIFT", value: true } },
+          { label: "模擬 Pi reload", action: { type: "RELOAD" } }
+        ]
+      },
+      {
+        id: "trust-off", title: "4 · Project Trust off",
+        description: "Plugin gate：Project state retained 但整個 targeted Plugin fail closed；Global Scope skills 再逐-name projection。",
+        steps: [
+          { label: "關閉 Project Trust", action: { type: "SET_PROJECT_TRUST", value: false } },
+          { label: "Bridge preflight", action: { type: "PREFLIGHT" } },
+          { label: "模擬 Pi reload", action: { type: "RELOAD" } }
+        ]
+      },
+      {
+        id: "stale", title: "5 · Stale Snapshot",
+        description: "preflight 後 source drift；Plugin gate 讓整個 targeted Plugin fail closed，但舊 plan 不自動補入 Global fallback。",
+        steps: [
+          { label: "Bridge preflight", action: { type: "PREFLIGHT" } },
+          { label: "讓 source snapshot stale", action: { type: "SET_SNAPSHOT_FRESHNESS", value: false } },
+          { label: "模擬 Pi reload", action: { type: "RELOAD" } }
+        ]
+      }
+    ];
+
+    let state = ProjectionModel.makeInitialState();
+    let guide = { scenarioId: scenarios[0].id, step: 0 };
+    const $ = id => document.getElementById(id);
+    const esc = value => String(value ?? "—").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
+    const shortId = value => value ? value.replace(/^([0-9a-f-]{36})\//, "…/") : "—";
+    const badge = (label, tone = "") => `<span class="pill ${tone}">${esc(label)}</span>`;
+
+    function dispatch(action, guided = false) {
+      state = ProjectionModel.reduce(state, action);
+      if (guided) guide.step += 1;
+      render();
+    }
+
+    function startScenario(id) {
+      guide = { scenarioId: id, step: 0 };
+      state = ProjectionModel.reduce(state, { type: "RESET" });
+      render();
+    }
+
+    function renderOutcome() {
+      const runtime = state.runtimeAfterReload;
+      let tone = "warn";
+      let current = "Decision B 已選定；先執行 Bridge preflight，再模擬 Pi reload。";
+      let detail = "Plugin gate 對整個 Plugin 生效；通過 gate 後，Runtime Skill Collision 只改變碰撞 skill 的 availability。";
+      if (runtime && runtime.conformsDecisionB) {
+        tone = "good";
+        if (runtime.inventoryDrift && runtime.loserDiagnostics.length) {
+          const unavailable = [...new Set(runtime.loserDiagnostics.map(item => item.skillName))].join(", ");
+          const affectedPlugins = new Set(runtime.loserDiagnostics.map(item => item.pluginId));
+          const siblings = [...new Set(runtime.loadedBridgeRows.filter(row => affectedPlugins.has(row.pluginId)).map(row => row.skillName))].join(", ");
+          current = `符合 B：${unavailable} 是 collision loser；${siblings || "同 Plugin 其餘可用 skills"} 仍 loaded。`;
+          detail = "Pi inventory drift 與 collision diagnostic 仍保留，但 per-skill outcome 不是 Plugin divergence。";
+        } else {
+          current = "符合 B：actual runtime 與 Plugin gates、逐-name precedence、fallback 及 provenance 一致。";
+        }
+      } else if (runtime) {
+        tone = runtime.identityComplete ? "warn" : "bad";
+        current = runtime.planRefreshRequired
+          ? "Plugin gate／skill availability 已安全套用；舊 plan 尚未補入現在可用的 lower-layer fallback，需重新 preflight。"
+          : "provenance 不完整，不能判定為符合 B。";
+        detail = "Invalid／Incompatible、Project Trust off、Stale Snapshot 或 unsafe path 仍讓整個 targeted Plugin fail closed。";
+      }
+      $("outcome").innerHTML = `<div class="banner ${tone}">
+        <strong>${esc(current)}</strong>
+        <p>${esc(detail)}</p>
+        <p class="small"><strong>Runtime rule：</strong>Pi → Project Scope → Global Scope；同 scope 同名全部 unavailable，lower-layer fallback 逐 exact skill name 發生。</p>
+      </div>`;
+    }
+
+    function renderGuide() {
+      const active = scenarios.find(item => item.id === guide.scenarioId);
+      $("scenario-tabs").innerHTML = scenarios.map(item => `<button class="tab ${item.id === active.id ? "active" : ""}" data-scenario="${esc(item.id)}" role="tab">${esc(item.title)}</button>`).join("");
+      $("scenario-body").innerHTML = `
+        <h3>${esc(active.title)}</h3>
+        <p class="muted">${esc(active.description)}</p>
+        <div class="steps">
+          <div class="step done"><span class="step-number">✓</span><span>Reset（切換／重啟時真實 dispatch）</span></div>
+          ${active.steps.map((step, index) => `<div class="step ${index < guide.step ? "done" : ""}">
+            <span class="step-number">${index < guide.step ? "✓" : index + 1}</span>
+            <button class="btn ${index === guide.step ? "primary" : ""}" data-guide-step="${index}" ${index === guide.step ? "" : "disabled"}>${esc(step.label)}</button>
+          </div>`).join("")}
+          <button class="btn" data-restart="${esc(active.id)}">重新開始</button>
+        </div>`;
+      document.querySelectorAll("[data-scenario]").forEach(button => button.addEventListener("click", () => startScenario(button.dataset.scenario)));
+      document.querySelectorAll("[data-guide-step]").forEach(button => button.addEventListener("click", () => {
+        const index = Number(button.dataset.guideStep);
+        if (index === guide.step) dispatch(active.steps[index].action, true);
+      }));
+      document.querySelector("[data-restart]").addEventListener("click", () => startScenario(active.id));
+    }
+
+    function renderActions() {
+      const s = ProjectionModel.selectors;
+      const actions = [
+        ["Reset", { type: "RESET" }],
+        [state.projectTrust ? "Project Trust → off" : "Project Trust → active", { type: "SET_PROJECT_TRUST", value: !state.projectTrust }],
+        [s.isColliderInstalled(state) ? "移除 Project collider" : "加入 Project collider", { type: "SET_COLLIDER", value: !s.isColliderInstalled(state) }],
+        [s.hasPiDrift(state) ? "移除 Pi drift skill" : "加入 Pi drift skill", { type: "SET_PI_DRIFT", value: !s.hasPiDrift(state) }],
+        [s.isProjectSnapshotFresh(state) ? "讓 source snapshot stale" : "讓 source snapshot fresh", { type: "SET_SNAPSHOT_FRESHNESS", value: !s.isProjectSnapshotFresh(state) }],
+        ["重新做 Bridge preflight", { type: "PREFLIGHT" }],
+        ["模擬 Pi reload", { type: "RELOAD" }]
+      ];
+      $("actions").innerHTML = actions.map((item, index) => `<button class="btn ${index === 5 || index === 6 ? "primary" : ""}" data-free="${index}">${esc(item[0])}</button>`).join("");
+      document.querySelectorAll("[data-free]").forEach(button => button.addEventListener("click", () => dispatch(actions[Number(button.dataset.free)][1])));
+    }
+
+    function renderCards() {
+      const s = ProjectionModel.selectors;
+      const known = state.bridgeKnownPiInventorySnapshot;
+      const currentFp = s.currentPiFingerprint(state);
+      const fresh = s.isProjectSnapshotFresh(state);
+      const gatePassed = state.bridgeProjectionPlan ? state.bridgeProjectionPlan.pluginDecisions.filter(item => item.gateStatus === "passed").length : 0;
+      $("state-cards").innerHTML = `
+        <div class="card"><h3>Project Trust</h3><div class="metric">${state.projectTrust ? "Active" : "Off"}</div><p class="muted small">Project Installed Plugins retained：${state.projectInstalledPlugins.length}</p>${state.projectTrust ? badge("participates", "good") : badge("excluded", "bad")}</div>
+        <div class="card"><h3>Validation Snapshot freshness</h3><div class="metric">${fresh ? "Fresh" : "Stale"}</div><p class="mono small">validated ${esc(state.validationSnapshots["snap-project-release"].fingerprint)}<br>source now ${esc(state.validationSnapshots["snap-project-release"].currentSourceFingerprint)}</p></div>
+        <div class="card"><h3>Pi inventory</h3><div class="metric">${state.currentPiInventory.length} skills</div><p class="mono small">current ${esc(currentFp)}<br>Bridge-known ${esc(known ? known.fingerprint : "尚未 preflight")}</p>${known && known.fingerprint !== currentFp ? badge("drift", "bad") : badge(known ? "aligned" : "unknown", known ? "good" : "warn")}</div>
+        <div class="card"><h3>Bridge plan</h3><div class="metric">${state.bridgeProjectionPlan ? `${gatePassed} gate-passed Plugins` : "No plan"}</div><p class="muted small">Project ${state.projectInstalledPlugins.length} · Global ${state.globalInstalledPlugins.length}<br>${state.bridgeProjectionPlan ? `${state.bridgeProjectionPlan.skillPaths.length} projected skills · rev ${state.bridgeProjectionPlan.bridgeInputRevision}/${state.bridgeInputRevision}` : "等待 preflight"}</p></div>`;
+    }
+
+    function table(headers, rows) {
+      if (!rows.length) return `<div class="empty">尚無資料</div>`;
+      return `<div class="table-wrap"><table><thead><tr>${headers.map(header => `<th>${esc(header)}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
+    }
+
+    function renderPlan() {
+      const plan = state.bridgeProjectionPlan;
+      if (!plan) { $("plan-table").innerHTML = `<div class="empty">執行 Bridge preflight 後顯示 deterministic Projection Plan。</div>`; return; }
+      const gatePassed = plan.pluginDecisions.filter(item => item.gateStatus === "passed").length;
+      const pluginSummaries = plan.pluginDecisions.map(item => {
+        const pluginRows = plan.rows.filter(row => row.pluginId === item.plugin.pluginId);
+        const projectedSkills = pluginRows.filter(row => row.status === "projected").length;
+        return badge(
+          item.gateStatus === "passed"
+            ? `${item.plugin.manifestName} · Compatible Projected Plugin · ${projectedSkills}/${pluginRows.length} projected skills`
+            : `${item.plugin.manifestName} · Plugin gate failed · 0/${pluginRows.length} projected skills`,
+          item.gateStatus === "passed" ? (projectedSkills ? "good" : "warn") : "bad"
+        );
+      }).join("");
+      const rows = plan.rows.map(row => `<tr>
+        <td>${esc(row.scope)}</td><td class="identity mono" title="${esc(row.pluginId)}">${esc(shortId(row.pluginId))}</td>
+        <td class="identity"><span class="mono">${esc(shortId(row.skillId))}</span><br>${badge(row.skillName)}</td>
+        <td class="path mono">${esc(row.path)}</td><td class="mono">${esc(row.snapshotFingerprint)}</td>
+        <td class="status">${row.pluginGateStatus === "passed" ? badge(`${row.compatibility} · gate passed`, "good") : badge(`${row.compatibility} · whole Plugin fail closed`, "bad")}</td>
+        <td class="status">${row.status === "projected"
+          ? badge("available → projected", "good")
+          : row.status === "runtime-collision"
+            ? badge("collision → skill unavailable", "warn")
+            : badge("not evaluated after Plugin gate", "bad")}</td>
+      </tr>`);
+      $("plan-table").innerHTML = `<p class="muted small">${gatePassed} Compatible gate-passed Plugins · ${plan.projectedRows.length} projected skills（允許 0）</p><p>${pluginSummaries}</p>${table(["Layer", "Plugin ID", "Skill ID / name", "Original Validation Snapshot path", "Snapshot fingerprint", "Plugin gate", "Runtime skill availability"], rows)}`;
+    }
+
+    function renderRuntime() {
+      const runtime = state.runtimeAfterReload;
+      if (!runtime) { $("runtime-table").innerHTML = `<div class="empty">模擬 Pi reload 後顯示 first-winner runtime。</div>`; return; }
+      const rows = runtime.rows.map(row => `<tr>
+        <td>${esc(row.origin)}</td><td class="identity mono">${esc(shortId(row.pluginId))}</td>
+        <td><span class="mono">${esc(shortId(row.skillId))}</span><br>${badge(row.skillName)}</td>
+        <td class="path mono">${esc(row.sourceInfo)}</td>
+        <td class="status">${badge(row.pluginGateStatus === "host-owned" ? "host-owned" : `Plugin gate ${row.pluginGateStatus}`, row.pluginGateStatus === "failed" || row.pluginGateStatus === "missing" ? "bad" : "good")}</td>
+        <td class="status">${badge(row.status, row.tone)}</td>
+      </tr>`);
+      $("runtime-table").innerHTML = table(["Origin", "Plugin ID", "Skill ID / name", "Pi SourceInfo（simulated）", "Plugin gate", "Skill availability / runtime outcome"], rows);
+    }
+
+    function renderFindings() {
+      if (!state.findings.length) { $("findings").innerHTML = `<div class="empty">目前沒有 findings；執行 preflight 或 reload 觀察結果。</div>`; return; }
+      $("findings").innerHTML = state.findings.map(item => {
+        const tone = item.severity === "Blocking Finding" || item.severity === "Plugin gate · fail closed" ? "blocking" : item.severity === "Decision B · conforms" ? "info" : "diagnostic";
+        const badgeTone = tone === "blocking" ? "bad" : item.severity === "Decision B · conforms" ? "good" : "warn";
+        return `<div class="finding ${tone}"><div class="finding-head"><strong class="mono">${esc(item.code)}</strong>${badge(item.severity, badgeTone)}</div><p>${esc(item.message)}</p><div class="muted small">${esc(item.scope)}${item.pluginId ? ` · ${esc(shortId(item.pluginId))}` : ""}</div></div>`;
+      }).join("");
+    }
+
+    function renderEvents() {
+      const reloadEvents = state.eventLog.filter(item => item.phase === "reload");
+      if (!reloadEvents.length) { $("events").innerHTML = `<div class="empty">尚無 reload event。</div>`; return; }
+      $("events").innerHTML = `<ul class="timeline">${reloadEvents.map(item => `<li><span class="mono muted">T+${item.sequence}</span><strong class="mono">${esc(item.type)}</strong><span>${esc(item.message)}</span></li>`).join("")}</ul>`;
+    }
+
+    function renderProvenance() {
+      const rows = state.provenanceIndex.map(entry => `<tr><td class="path mono">${esc(entry.path)}</td><td class="identity mono">${esc(shortId(entry.pluginId))}</td><td class="identity mono">${esc(shortId(entry.skillId))}</td><td class="mono">${esc(entry.snapshotFingerprint)}</td><td>${badge(`gate ${entry.pluginGateStatus}`, entry.pluginGateStatus === "passed" ? "good" : "bad")} ${badge(entry.skillAvailability, entry.skillAvailability === "available" ? "good" : "warn")}</td></tr>`);
+      $("provenance").innerHTML = table(["Direct path key", "Plugin ID", "Skill ID", "Validation Snapshot fingerprint", "Plan provenance state"], rows);
+    }
+
+    function render() {
+      renderOutcome();
+      renderGuide();
+      renderActions();
+      renderCards();
+      renderPlan();
+      renderRuntime();
+      renderFindings();
+      renderEvents();
+      renderProvenance();
+    }
+
+    startScenario(scenarios[0].id);
+  </script>
+</body>
+</html>
