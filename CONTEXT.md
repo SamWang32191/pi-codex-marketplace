@@ -137,7 +137,7 @@ The canonical identity of a Plugin, composed of its Marketplace ID and authorita
 _Avoid_: Marketplace entry name, Plugin path
 
 **Unavailable Entry**:
-A Marketplace Entry that cannot supply an activatable Plugin because it uses an unsupported source kind or is Invalid, Incompatible, unresolved, or colliding. Unavailable Entries are disclosed independently and do not invalidate an otherwise valid Marketplace Catalog.
+A Marketplace Entry that cannot supply an activatable Plugin because it uses an unsupported source kind, cannot be resolved to a Plugin, yields an Invalid or Incompatible Plugin, or has a Plugin-level identity collision. A Runtime Skill Collision affects skill availability and does not make an otherwise activatable entry unavailable.
 _Avoid_: Silently skipped entry, partially compatible Plugin
 
 **Skill Descriptor**:
@@ -153,7 +153,7 @@ The canonical identity of a Plugin skill, composed of its Plugin ID and Skill De
 _Avoid_: Globally unique skill name, SKILL.md path
 
 **Runtime Skill Collision**:
-A conflict in Pi's flat skill namespace when different Skill IDs, or a Plugin skill and a pre-existing Pi skill, claim the same exact Skill Descriptor name. Candidates are resolved in `Pi → Project Scope → Global Scope` layers: same-scope Bridge colliders have no winner, and only surviving higher-layer Plugins reserve names against lower layers.
+A conflict in Pi's flat skill namespace when different Skill IDs, or a Plugin skill and a pre-existing Pi skill, claim the same exact Skill Descriptor name. It changes only skill availability, never Plugin classification: candidates resolve per name in `Pi → Project Scope → Global Scope` order, all same-scope Bridge colliders are unavailable, and only a surviving higher-layer skill reserves the name, so a lower-layer candidate survives when no higher-layer skill does.
 _Avoid_: Skill ID collision, canonical-path duplicate
 
 **Skill Agent Profile**:
@@ -181,7 +181,7 @@ A versioned, Bridge-owned contract declaring the Codex component types and seman
 _Avoid_: Best-effort compatibility, silent fallback
 
 **Compatible Plugin**:
-A Plugin whose complete set of declared active components and skill behaviours satisfies a Compatibility Profile. It is projected as one complete unit rather than a partial subset.
+A Plugin whose complete set of declared active components and skill behaviours satisfies a Compatibility Profile; Compatible, Incompatible, or Invalid classification is atomic. Runtime Skill Collision is resolved only after classification and may make individual skills unavailable without permitting an Invalid or Incompatible Plugin to be partially projected.
 _Avoid_: Converted plugin, Pi-native plugin
 
 **Incompatible Plugin**:
@@ -209,7 +209,7 @@ A machine-readable validation result identified by a stable rule code and carryi
 _Avoid_: Free-form log line, persisted source truth
 
 **Blocking Finding**:
-A validation result that prevents the targeted Registration or activation rather than requesting consent. Source acquisition or host-authentication failure, missing project trust, any declared path escape or unsafe filesystem object even in optional metadata, exceeded Validation Budget, Invalid or Incompatible classification, and unresolved identity or runtime collisions are Blocking Findings and cannot be waived.
+A validation result that denies its stated target—Registration, whole-Plugin activation, or individual skill availability—rather than requesting consent. Source acquisition or host-authentication failure, missing Project Trust, a stale or mismatched snapshot, unsafe paths or filesystem objects, exceeded Validation Budget, Invalid or Incompatible classification, and unresolved identity collisions block their Registration or whole-Plugin target; a Runtime Skill Collision blocks only its colliding skill candidates, and none can be waived.
 _Avoid_: Warning, confirmation prompt
 
 **Validation Warning**:
@@ -217,8 +217,12 @@ A non-blocking finding limited to ignored Inert Metadata or optional presentatio
 _Avoid_: Blocking Finding, silent fallback
 
 **Projected Plugin**:
-An Installed Plugin admitted by Effective State and presented to Pi as one complete unit. Any losing or unresolved Runtime Skill Collision prevents the entire Plugin from being projected.
-_Avoid_: Partially loaded Plugin, individual projected skill
+An Installed Plugin admitted by Effective State after no Blocking Finding denies its whole-Plugin activation, independently of Runtime Skill Collision resolution. It contributes zero or more Projected Skills; Invalid or Incompatible Plugins cannot be partially projected.
+_Avoid_: Partially compatible Plugin, Pi package
+
+**Projected Skill**:
+A skill of a Projected Plugin that survives Runtime Skill Collision resolution and is exposed to Pi under its Skill Descriptor name while retaining its Skill ID and provenance. A colliding skill that does not survive is unavailable without changing its Plugin's Compatible or Projected status.
+_Avoid_: Compatible Plugin, renamed skill
 
 **Installation ID**:
 The canonical identity of an Installed Plugin, composed of its scope and Plugin ID. Plugin version and Marketplace source revision are attributes rather than identity.
