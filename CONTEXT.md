@@ -24,6 +24,38 @@ _Avoid_: Schema version, Resolved Revision, last-write-wins
 An explicit user-requested change to one scope's Registration or Installation state, committed atomically with every disclosed same-scope effect required by that action. Independent Registrations and Installations are never combined into a best-effort batch.
 _Avoid_: Runtime Application, partial record update, bulk confirmation
 
+**Attempt Fence**:
+The per-scope exclusivity and exact-state boundary shared by Lifecycle Operations and Runtime Applications. It admits only one attempt at a time and prevents an attempt from committing, becoming Applied, or resolving a receipt after its State Revision or applicable Validation Snapshots cease to be current.
+_Avoid_: Last-write-wins, attempt queue, cross-scope lock
+
+**Attempt Receipt**:
+A redacted, immutable, non-authoritative record of one Bridge-managed attempt, including explicit lifecycle, refresh, or retry attempts and startup reconciliation. It relates expected, target, and observed State Revisions with any available Validation Snapshots, outcomes, findings, and earlier receipt it seeks to recover; passive inspection creates none and a receipt never authorizes replay.
+_Avoid_: Operation Receipt, Bridge State, free-form log, activation authority
+
+**Receipt Journal**:
+The durable, bounded, non-authoritative history of Attempt Receipts that preserves every active recovery chain across restarts. It establishes attempt history before an attempt proceeds and remains reconstructible from authoritative state after partial failure without rolling back a verified commit.
+_Avoid_: Bridge State, best-effort log, audit authority
+
+**Receipt Resolution**:
+The derived relationship in which a later receipt resolves an earlier active receipt by verifying the same state, or supersedes it by committing a replacement state; a failed retry leaves the active condition unresolved. Receipts remain immutable, and only history outside every active recovery chain may be cleared.
+_Avoid_: Receipt mutation, acknowledgement, deletion of active diagnostics
+
+**Attempt Summary**:
+The current user-visible headline derived from an Attempt Receipt's outcomes and findings rather than stored as authority. Its closed values are `Completed`, `Completed with diagnostics`, `Declined`, `Blocked`, `Rejected as Stale`, `Persistence Failed`, `Persistence Indeterminate`, and `Pending Application`.
+_Avoid_: Success boolean, authoritative state, free-form status
+
+**Persistence Indeterminate**:
+The fail-closed outcome after a persistence attempt when neither the previous nor target State Revision can be verified as the exact durable Bridge State. No Runtime Application or further Lifecycle Operation may proceed until the state is readable and exact; the Bridge neither assumes no commit nor performs automatic rollback.
+_Avoid_: Unchanged, Committed, best-effort rollback
+
+**Persistence Failed**:
+The outcome after a Bridge State write fails while the exact previous State Revision remains verified, proving that the target state did not commit. Receipt Journal degradation is diagnosed separately and never changes this outcome.
+_Avoid_: Persistence Indeterminate, receipt failure, assumed rollback
+
+**Recovery Action**:
+A stable next step eligible under the exact current State Revision, applicable Validation Snapshots, and finding outcome. It expresses only a currently safe recovery path and never authorizes replay or automatic remediation.
+_Avoid_: Free-form advice, generic retry button, automatic remediation
+
 **Global Scope**:
 The Bridge scope whose registrations and installations form the baseline across Pi projects. Project-specific changes affect their effective use without mutating the global records.
 _Avoid_: Project Scope, machine-wide effective state
@@ -261,12 +293,16 @@ A machine-readable validation result identified by a stable rule code and carryi
 _Avoid_: Free-form log line, persisted source truth
 
 **Blocking Finding**:
-A validation result that denies its stated target—Registration, whole-Plugin activation, or individual skill availability—rather than requesting consent. Source acquisition or host-authentication failure, missing Project Trust, a stale or mismatched snapshot, unsafe paths or filesystem objects, exceeded Validation Budget, Invalid or Incompatible classification, and unresolved identity collisions block their Registration or whole-Plugin target; a Runtime Skill Collision blocks only its colliding skill candidates, and none can be waived.
+A structured finding that denies its stated target—Registration, whole-Plugin activation, individual skill availability, or one management attempt—rather than requesting consent. Source, trust, snapshot, safety, budget, classification, or identity failures deny their Registration or whole-Plugin target; a Runtime Skill Collision denies only its colliding skill candidates, an active Attempt Fence or Global Pending Barrier denies only the requested attempt, and none can be waived.
 _Avoid_: Warning, confirmation prompt
 
 **Validation Warning**:
 A non-blocking finding limited to ignored Inert Metadata or optional presentation data that does not affect active behaviour and has no path, symlink, or filesystem safety violation. It is always disclosed and may be accepted through the applicable confirmation without changing Plugin classification.
 _Avoid_: Blocking Finding, silent fallback
+
+**Operational Notice**:
+A non-blocking diagnostic about a post-commit host-observed Runtime Skill Collision, evidence-limited Skill Availability, or post-commit diagnostic degradation that does not alter Plugin classification or whole-state application. It is distinct from a pre-application collision Blocking Finding, is not a Validation Warning, and requires no acceptance.
+_Avoid_: Validation Warning, Blocking Finding, free-form log
 
 **Projected Plugin**:
 An Installed Plugin admitted by Effective State after no Blocking Finding denies its whole-Plugin activation, independently of Runtime Skill Collision resolution. It contributes zero or more Projected Skills; Invalid or Incompatible Plugins cannot be partially projected.
@@ -276,14 +312,22 @@ _Avoid_: Partially compatible Plugin, Pi package
 A skill of a Projected Plugin that survives Runtime Skill Collision resolution and is exposed to Pi under its Skill Descriptor name while retaining its Skill ID and provenance. A colliding skill that does not survive is unavailable without changing its Plugin's Compatible or Projected status.
 _Avoid_: Compatible Plugin, renamed skill
 
+**Skill Availability**:
+The evidence status of an Installed Plugin skill, for which the Bridge may report snapshot-bound eligibility, known unavailability, or unverified availability while only independent host evidence may establish that it is Available. It does not alter Plugin classification or whole-state application, and zero Available skills can coexist with an Applied Runtime Application with diagnostics.
+_Avoid_: Compatibility, projection success, inferred availability
+
 **Installation ID**:
 The canonical identity of an Installed Plugin, composed of its scope and Plugin ID. It remains stable across Plugin version, source revision, Marketplace Entry ordinal, and path changes, while a new Plugin ID requires a new Installation ID.
 _Avoid_: Manifest name alone, install attempt ID
 
 **Runtime Application**:
-The immediate post-commit attempt to make a Lifecycle Operation's new Effective State participate in Pi through runtime reload. It succeeds only when reload completes, the Bridge Extension re-enters at the expected State Revision, and no whole-Plugin Blocking Finding remains; Runtime Skill Collisions remain per-skill diagnostics, and any other outcome enters Pending Application.
-_Avoid_: Lifecycle Operation, Marketplace Refresh, startup
+An Attempt Fence-bound attempt after commit, explicit retry, or startup reconciliation to make the current Effective State participate in Pi through runtime reload. It is Applied only through host-verifiable Bridge re-entry at the expected State Revision with no whole-Plugin Blocking Finding; this does not establish Skill Availability, and reload completion alone is insufficient.
+_Avoid_: Lifecycle Operation, Marketplace Refresh, background retry
 
 **Pending Application**:
-The condition after a Lifecycle Operation commits but its Runtime Application fails. Bridge State remains desired and no prior runtime is claimed valid; retry or startup application may reuse prior confirmations only while the State Revision and Validation Snapshots remain identical, otherwise recovery requires new preflight and confirmation rather than automatic rollback.
+The condition after Bridge State commits but Runtime Application has not been verified; Bridge State remains desired and no prior runtime is claimed valid. Recovery may verify the same state or explicitly commit a replacement, while inspection and Marketplace Refresh never supersede it and unrelated state changes, background retry, and automatic rollback remain prohibited.
 _Avoid_: Successful activation, reverted state, last-known-good runtime
+
+**Global Pending Barrier**:
+The Compatibility Profile v1 condition while a Global Scope Attempt Fence is held or global recovery is required by Pending Application, Persistence Indeterminate, or Receipt Journal degradation. It blocks every Project Scope state mutation or Runtime Application, including Lifecycle Operations, Repair State, and project startup reconciliation; global recovery remains available and precedes any project reconciliation, while inspection and Marketplace Refresh also remain available.
+_Avoid_: Affected-subtree barrier, independent Project Application, queued project mutation
