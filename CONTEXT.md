@@ -16,6 +16,14 @@ _Avoid_: Bridge Package, Codex plugin
 The Bridge-owned durable desired state stored independently for global and project scopes. Each state document contains a schema version, scope-local Registration and Installation records, and any project-only Scope Overrides; source-derived catalogs, compatibility results, effective precedence, and diagnostics are recomputed.
 _Avoid_: Pi settings, runtime snapshot, cache
 
+**State Revision**:
+An opaque identifier for one exact scope-local Bridge State version, bound with the applicable Validation Snapshot to every Lifecycle Operation and confirmation. If either changes before commit, the operation is rejected as stale and requires new preflight and confirmation without automatic merge.
+_Avoid_: Schema version, Resolved Revision, last-write-wins
+
+**Lifecycle Operation**:
+An explicit user-requested change to one scope's Registration or Installation state, committed atomically with every disclosed same-scope effect required by that action. Independent Registrations and Installations are never combined into a best-effort batch.
+_Avoid_: Runtime Application, partial record update, bulk confirmation
+
 **Global Scope**:
 The Bridge scope whose registrations and installations form the baseline across Pi projects. Project-specific changes affect their effective use without mutating the global records.
 _Avoid_: Project Scope, machine-wide effective state
@@ -25,7 +33,7 @@ The Bridge scope associated with the current trusted Pi working directory and id
 _Avoid_: Isolated scope, complete replacement state
 
 **Project Trust**:
-Pi's host-owned decision that permits Project Scope state and resources to participate. The Bridge Package never grants or persists it; without Project Trust, project records remain stored but are excluded from Effective State.
+Pi's host-owned decision that permits Project Scope state, resources, and Lifecycle Operations to participate. The Bridge Package never grants or persists it; without Project Trust, project records remain stored but are excluded from Effective State and no Project Scope Lifecycle Operation may mutate them.
 _Avoid_: Registration Confirmation, Activation Confirmation, sandbox
 
 **Scope Override**:
@@ -33,7 +41,7 @@ A Project Scope record keyed by canonical Registration ID or Installation ID tha
 _Avoid_: Copy of global state, global mutation
 
 **Effective State**:
-The computed project view of inherited Global Scope records, Project Scope additions, and Scope Overrides. It selects effective records without merging or mutating their independently persisted provenance.
+The computed project view of inherited Global Scope records, Project Scope additions, and Scope Overrides. Only enabled Installations participate, and no selected record's independently persisted provenance is merged or mutated.
 _Avoid_: Bridge State, persisted merged state
 
 **Marketplace**:
@@ -53,7 +61,7 @@ The snapshot-scoped identity of a Marketplace Entry, composed of its Marketplace
 _Avoid_: Entry name, Plugin ID, durable per-entry UUID
 
 **Marketplace ID**:
-The canonical identity of a Marketplace, composed of its Registration ID and declared Marketplace name. It distinguishes same-named Marketplaces from different registrations; changing the declared name changes the Marketplace identity.
+The canonical identity of a Marketplace, composed of its Registration ID and declared Marketplace name. It distinguishes same-named Marketplaces from different registrations; changing the declared name creates a new Marketplace ID without automatically migrating downstream identities.
 _Avoid_: Registration Alias, globally unique Marketplace name
 
 **Marketplace Root**:
@@ -108,12 +116,44 @@ _Avoid_: Cache retention policy, warning threshold
 Previously acquired or cached material whose verified locator, selector, Resolved Revision, content, path, or symlink metadata no longer matches the operation being confirmed. It may inform a diagnostic but never substitutes for a current Validation Snapshot.
 _Avoid_: Offline success, last-known-good activation
 
+**Source Cache**:
+Non-authoritative retained Marketplace Source material that may support only the exact Validation Snapshot that references it. Material referenced by committed Bridge State or a pending Update Candidate is retained; cached material never makes a Stale Snapshot valid or turns offline state into success.
+_Avoid_: Bridge State, last-known-good source, source of truth
+
+**Source Drift**:
+An external change to a local Marketplace Source that makes its live tree differ from the recorded Validation Snapshot outside Marketplace Refresh. Detection is a Blocking Finding: Bridge State remains unchanged, affected Installations cannot become Projected Plugins, and only an explicit Marketplace Refresh may produce an Update Candidate.
+_Avoid_: Marketplace Refresh, Update Candidate, automatic update
+
+**Marketplace Refresh**:
+An explicit, non-mutating inspection and validation of the current Marketplace Source for one Registration, producing either no change or an Update Candidate. Startup and runtime reload do not refresh Marketplaces.
+_Avoid_: Lifecycle Operation, automatic update, Plugin activation
+
+**Update Candidate**:
+A newly validated source state for one Registration that differs from its recorded Validation Snapshot and may be applied only by a separate Lifecycle Operation. Plugin version metadata alone does not establish one, and a full-commit Git Selector cannot produce one solely through ref movement.
+_Avoid_: Available version, live source tree, applied update
+
+**Update Plan**:
+A Validation Snapshot- and State Revision-bound set of explicit outcomes required before Apply Update can replace one Registration's source state. It requires fresh Registration Confirmation and an update, disablement, or removal outcome for each Installation; every enabled Installation that remains enabled needs Activation Confirmation, an existing Installation without a Compatible candidate must be disabled or removed or the plan abandoned, and the plan commits once without mixing source revisions.
+_Avoid_: Bulk confirmation, partial Plugin update, per-Plugin source pin
+
+**Apply Update**:
+A Lifecycle Operation that replaces one Marketplace Registration's recorded Validation Snapshot according to one complete Update Plan and atomically applies every disclosed same-scope consequence. It never refreshes the source, silently changes another scope, or retains an enabled Installation from another source revision.
+_Avoid_: Marketplace Refresh, Registration Rebind, automatic update
+
 **Marketplace Registration**:
 The user-approved association of a Marketplace Source with either a global or project scope in Pi. Each registration has an immutable Registration ID and independently scoped state; its source locator, Source Key, alias, and declared Marketplace name are attributes.
 _Avoid_: Subscription, automatic discovery
 
+**Registration Rebind**:
+A Lifecycle Operation that explicitly replaces a Marketplace Registration's source locator or Git Selector and is distinct from Marketplace Refresh and Apply Update. It preserves the Registration ID only after fresh validation, Registration Confirmation, and a complete Update Plan for every existing Installation; prior activation consent never carries over.
+_Avoid_: Update Candidate, repeated registration, silent relocation
+
+**Registration Removal**:
+A Lifecycle Operation that removes one scope-local Marketplace Registration and all of its same-scope Installations as one disclosed atomic effect. It does not mutate other scopes or projects; references left there fail closed as unavailable and surface diagnostics until repaired or removed.
+_Avoid_: Disablement, Scope Override, cross-project cascade
+
 **Registration Confirmation**:
-The user's snapshot-bound approval of one validated Marketplace Source, catalog summary, and target scope after a complete Validation Disclosure and an explicit yes-or-no choice that defaults to No. It cannot be remembered or applied in bulk and authorizes only the Marketplace Registration, not activation of any Plugin it lists.
+The user's Validation Snapshot- and State Revision-bound approval of one validated Marketplace Source, catalog summary, and target scope after a complete Validation Disclosure and an explicit yes-or-no choice that defaults to No. It cannot be remembered or applied in bulk and authorizes only the Marketplace Registration, not activation of any Plugin it lists.
 _Avoid_: Project trust, blanket Plugin approval
 
 **Registration ID**:
@@ -133,7 +173,7 @@ A Codex-format bundle whose `.codex-plugin/plugin.json` manifest describes its i
 _Avoid_: Pi package, Pi extension
 
 **Plugin ID**:
-The canonical identity of a Plugin, composed of its Marketplace ID and authoritative manifest name. Version, source revision, and directory path are attributes, so same-named Plugins from different Marketplaces remain distinct.
+The canonical identity of a Plugin, composed of its Marketplace ID and authoritative manifest name. Version, source revision, Marketplace Entry ordinal, and directory path are attributes; changing the manifest name creates a new Plugin ID without automatically migrating an Installation.
 _Avoid_: Marketplace entry name, Plugin path
 
 **Unavailable Entry**:
@@ -192,16 +232,28 @@ _Avoid_: Invalid Plugin, degraded Plugin
 A Plugin whose required identity or component structure cannot be safely parsed or validated against its Compatibility Profile.
 _Avoid_: Incompatible Plugin, Plugin with warnings
 
+**Plugin Installation**:
+A Lifecycle Operation that creates an Installation in one scope after current compatibility validation and disclosure. `Install Disabled` creates disabled state without Activation Confirmation, while `Install and Enable` atomically creates enabled state only after Activation Confirmation.
+_Avoid_: Pi package installation, Marketplace Registration, implicit activation
+
 **Installed Plugin**:
-A Compatible Plugin selected from a Marketplace and made available within either a global or project scope in Pi. A project Installation of an inherited global Plugin ID takes effective precedence over its retained global Installation.
+A Compatible Plugin selected from a Marketplace and durably recorded within either a global or project scope in Pi. Its Installation State determines whether it participates in Effective State, and an enabled project Installation of an inherited global Plugin ID takes precedence over its retained global Installation.
 _Avoid_: Marketplace entry, bundled plugin
 
+**Installation State**:
+The durable `enabled` or `disabled` condition of an Installed Plugin. A disabled Installation retains its Installation ID and recorded provenance but is excluded from Effective State; enabling it is a new activation requiring fresh validation and Activation Confirmation.
+_Avoid_: Scope Override, Plugin classification, runtime status
+
+**Installation Removal**:
+A Lifecycle Operation that deletes one scope-local Installation while retaining its Marketplace Registration. Its disclosure identifies any inherited Installation that will become effective afterward.
+_Avoid_: Disablement, Registration Removal, Scope Override
+
 **Activation Confirmation**:
-The user's snapshot-bound approval of one Compatible Plugin for one target scope after a complete Validation Disclosure and an explicit yes-or-no choice that defaults to No. It cannot be remembered or applied in bulk, is separate from Registration Confirmation, and expires when the confirmed source changes.
+The user's Validation Snapshot- and State Revision-bound approval of one Compatible Plugin for one target scope after a complete Validation Disclosure and an explicit yes-or-no choice that defaults to No. It cannot be remembered or applied in bulk, is separate from Registration Confirmation, expires when the confirmed source changes, and is required again when enabling a disabled Installation.
 _Avoid_: Registration Confirmation, permanent source trust
 
 **Validation Disclosure**:
-The source, scope, identity, snapshot, classification, and finding summary presented before a Bridge confirmation. Registration disclosure covers the Marketplace and its entry outcomes; activation disclosure covers the exact Plugin, skills, resources, Invocation Policies, and projected precedence.
+The source, scope, identity, State Revision, Validation Snapshot, classification, and finding summary presented before a Bridge confirmation. Registration disclosure covers the Marketplace and its entry outcomes; activation disclosure covers the exact Plugin, skills, resources, Invocation Policies, and projected precedence.
 _Avoid_: Confirmation itself, raw diagnostic dump
 
 **Validation Finding**:
@@ -225,5 +277,13 @@ A skill of a Projected Plugin that survives Runtime Skill Collision resolution a
 _Avoid_: Compatible Plugin, renamed skill
 
 **Installation ID**:
-The canonical identity of an Installed Plugin, composed of its scope and Plugin ID. Plugin version and Marketplace source revision are attributes rather than identity.
+The canonical identity of an Installed Plugin, composed of its scope and Plugin ID. It remains stable across Plugin version, source revision, Marketplace Entry ordinal, and path changes, while a new Plugin ID requires a new Installation ID.
 _Avoid_: Manifest name alone, install attempt ID
+
+**Runtime Application**:
+The immediate post-commit attempt to make a Lifecycle Operation's new Effective State participate in Pi through runtime reload. It succeeds only when reload completes, the Bridge Extension re-enters at the expected State Revision, and no whole-Plugin Blocking Finding remains; Runtime Skill Collisions remain per-skill diagnostics, and any other outcome enters Pending Application.
+_Avoid_: Lifecycle Operation, Marketplace Refresh, startup
+
+**Pending Application**:
+The condition after a Lifecycle Operation commits but its Runtime Application fails. Bridge State remains desired and no prior runtime is claimed valid; retry or startup application may reuse prior confirmations only while the State Revision and Validation Snapshots remain identical, otherwise recovery requires new preflight and confirmation rather than automatic rollback.
+_Avoid_: Successful activation, reverted state, last-known-good runtime
