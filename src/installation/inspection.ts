@@ -98,7 +98,8 @@ export function inspectMarketplaceEntries(registration: Registration, scope: Sco
     const collision = item.identity && (identities.get(item.identity) ?? 0) > 1
       ? [inspectionFinding(scope, CODE.PLUGIN_ID_COLLISION, RULE.PLUGIN_ID_COLLISION, 'plugin', `Plugin ID '${item.identity}' collides with another Marketplace Entry; neither entry is activatable`)]
       : [];
-    const findings = sortFindings([...parsed.findings, ...item.findings, ...collision, ...drift, ...snapshotResult.findings]);
+    const catalogFindings = parsed.findings.filter((finding) => finding.target !== 'entry' || finding.pointer === item.entry.entryId);
+    const findings = sortFindings([...catalogFindings, ...item.findings, ...collision, ...drift, ...snapshotResult.findings]);
     const unavailableReason = item.unavailableReason
       ?? (hasBlocking(findings) || !item.plugin ? findings.find((finding) => finding.classification === 'blocking')?.outcome ?? 'incompatible' : undefined);
     return { entry: item.entry, plugin: item.plugin, findings, unavailableReason };

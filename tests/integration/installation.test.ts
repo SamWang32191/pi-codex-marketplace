@@ -264,4 +264,15 @@ describe('Plugin Installation lifecycle', () => {
     expect(choices).toHaveLength(2);
     expect(choices.map((choice) => choice.pointer)).toEqual(['/plugins/0', '/plugins/1']);
   });
+
+  it('keeps a valid Entry installable when a sibling Entry is malformed', () => {
+    writeFileSync(join(env.marketplace, '.agents', 'plugins', 'marketplace.json'), JSON.stringify({
+      name: 'acme-marketplace',
+      plugins: [{ source: { source: 'local', path: './plugins/release-helper' } }, 'malformed'],
+    }));
+    const inspected = inspectMarketplaceEntries({ id: registrationId, sourceKind: 'local', source: env.marketplace }, 'global');
+    expect(inspected.entries[0]!.unavailableReason).toBeUndefined();
+    expect(inspected.entries[0]!.plugin).toBeDefined();
+    expect(inspected.entries[1]!.unavailableReason).toBeDefined();
+  });
 });
