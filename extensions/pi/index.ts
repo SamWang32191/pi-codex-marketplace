@@ -15,6 +15,7 @@ import { truncateToWidth } from '@earendil-works/pi-tui';
 import { readBridgeStateSync } from '../../src/bridge-state/store.js';
 import type { BridgeState, ReadResult } from '../../src/bridge-state/types.js';
 import { runLocalRegistrationFlow } from './registration.js';
+import { runGitRegistrationFlow } from './git-registration.js';
 
 // Closed helper to format state summary for disclosure
 function formatStateSummary(result: ReadResult, scopeLabel: string): string {
@@ -173,11 +174,16 @@ export default function (pi: ExtensionAPI) {
       const choice = await ctx.ui.select('Codex Marketplace — Bridge State', [
         '檢視 Global / Project 分區',
         '註冊本地 Marketplace…',
+        '註冊 Git Marketplace…',
       ]);
       if (!choice) return;
 
-      if (choice.startsWith('註冊')) {
+      if (choice === '註冊本地 Marketplace…') {
         await runLocalRegistrationFlow(ctx);
+        return;
+      }
+      if (choice === '註冊 Git Marketplace…') {
+        await runGitRegistrationFlow(ctx);
         return;
       }
 

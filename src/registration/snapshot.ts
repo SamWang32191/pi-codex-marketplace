@@ -4,6 +4,7 @@
  *
  * Covers the complete inspected tree: ordered paths, object types, modes, symlink targets, content
  * hashes. Binds the Source Key, Compatibility Profile, Validation Ruleset, and Validation Budget.
+ * For Git, also binds Canonical Git Locator and Resolved Revision.
  * The fingerprint must still match before durable state mutation; a mismatch is a Blocking Finding.
  *
  * Deterministic: entries are always ordered by relative path; the fingerprint is a sha256 over the
@@ -48,11 +49,17 @@ export interface ValidationSnapshot {
   scope: Scope;
   /** Ordered (sorted) inspected tree entries. */
   entries: SnapshotEntry[];
-  /** Bound Source Key (local canonical real path for #17). */
+  /** Bound Source Key (local canonical real path for #17, git canonicalUrl+selector for #18). */
   sourceKey: SourceKey;
   profile: string;
   ruleset: string;
   budget: string;
+  /** Git-only: Canonical Git Locator bound at validation time */
+  canonicalLocator?: string;
+  /** Git-only: Resolved Revision (full commit) bound at validation time */
+  resolvedRevision?: string;
+  /** Git-only: canonical selector string */
+  selectorCanonical?: string;
 }
 
 export interface SnapshotResult {
@@ -82,21 +89,13 @@ const IGNORE_DIRS = new Set(['.git', 'node_modules']);
 // snapshot still records the directory entries themselves at their own depth. Full snapshot
 // semantics over these dirs is revisited with Source Drift (#22).
 
-/**
- * Build a Validation Snapshot for a local Marketplace Root (canonical real path).
- * Walks the complete tree without following symlinks; symlink targets are recorded, not descended.
- * Budget limits produce Blocking Findings at the source boundary.
- */
-export function buildLocalSnapshot(
+function walkTree(
   canonicalRoot: string,
-  sourceKey: SourceKey,
   scope: Scope,
-  opts: { skipDirs?: Set<string> } = {},
-): SnapshotResult {
-  const findings: ValidationFinding[] = [];
-  const entries: SnapshotEntry[] = [];
-  const skip = opts.skipDirs ?? IGNORE_DIRS;
-
+  skip: Set<string>,
+  findings: ValidationFinding[],
+  entries: SnapshotEntry[],
+): { fileCount: number; totalBytes: number; budgetBlocked: boolean } {
   let fileCount = 0;
   let totalBytes = 0;
   let budgetBlocked = false;
@@ -207,17 +206,10 @@ export function buildLocalSnapshot(
   };
 
   walk(canonicalRoot, 1, []);
+  return { fileCount, totalBytes, budgetBlocked };
+}
 
-  // Sort deterministically by posix relative path.
-  entries.sort((a, b) => a.relPath.localeCompare(b.relPath));
-
-  if (budgetBlocked) {
-    return { ok: false, findings };
-  }
-
-  // Symlink containment: any symlink in the tree whose canonical target escapes the root — or
-  // cannot be resolved at all (broken / looping) — is a Blocking Finding (CONTEXT: Contained
-  // Symlink).
+function checkSymlinkContainment(canonicalRoot: string, entries: SnapshotEntry[], scope: Scope, findings: ValidationFinding[]): void {
   for (const e of entries) {
     if (e.type !== 'symlink') continue;
     const abs = join(canonicalRoot, ...e.relPath.split('/'));
@@ -253,34 +245,60 @@ export function buildLocalSnapshot(
       );
     }
   }
+}
+
+/**
+ * Build a Validation Snapshot for a local Marketplace Root (canonical real path).
+ * Walks the complete tree without following symlinks; symlink targets are recorded, not descended.
+ * Budget limits produce Blocking Findings at the source boundary.
+ */
+export function buildLocalSnapshot(
+  canonicalRoot: string,
+  sourceKey: SourceKey,
+  scope: Scope,
+  opts: { skipDirs?: Set<string> } = {},
+): SnapshotResult {
+  const findings: ValidationFinding[] = [];
+  const entries: SnapshotEntry[] = [];
+  const skip = opts.skipDirs ?? IGNORE_DIRS;
+
+  const { budgetBlocked } = walkTree(canonicalRoot, scope, skip, findings, entries);
+
+  // Sort deterministically by posix relative path.
+  entries.sort((a, b) => a.relPath.localeCompare(b.relPath));
+
+  if (budgetBlocked) {
+    return { ok: false, findings };
+  }
+
+  // Symlink containment: any symlink in the tree whose canonical target escapes the root — or
+  // cannot be resolved at all (broken / looping) — is a Blocking Finding (CONTEXT: Contained
+  // Symlink).
+  checkSymlinkContainment(canonicalRoot, entries, scope, findings);
+
+  const binds = [sourceKey.key, COMPATIBILITY_PROFILE, VALIDATION_RULESET, VALIDATION_BUDGET];
 
   if (findings.some((f) => f.classification === 'blocking')) {
-    return { ok: false, findings, snapshot: {
-      fingerprint: fingerprintOf(entries, [
-        sourceKey.key,
-        COMPATIBILITY_PROFILE,
-        VALIDATION_RULESET,
-        VALIDATION_BUDGET,
-      ]),
-      scope,
-      entries,
-      sourceKey,
-      profile: COMPATIBILITY_PROFILE,
-      ruleset: VALIDATION_RULESET,
-      budget: VALIDATION_BUDGET,
-    } };
+    return {
+      ok: false,
+      findings,
+      snapshot: {
+        fingerprint: fingerprintOf(entries, binds),
+        scope,
+        entries,
+        sourceKey,
+        profile: COMPATIBILITY_PROFILE,
+        ruleset: VALIDATION_RULESET,
+        budget: VALIDATION_BUDGET,
+      },
+    };
   }
 
   return {
     ok: true,
     findings,
     snapshot: {
-      fingerprint: fingerprintOf(entries, [
-        sourceKey.key,
-        COMPATIBILITY_PROFILE,
-        VALIDATION_RULESET,
-        VALIDATION_BUDGET,
-      ]),
+      fingerprint: fingerprintOf(entries, binds),
       scope,
       entries,
       sourceKey,
@@ -289,4 +307,62 @@ export function buildLocalSnapshot(
       budget: VALIDATION_BUDGET,
     },
   };
+}
+
+/**
+ * Build a Validation Snapshot for a Git-acquired Marketplace Root.
+ * Same tree walk as local, but binds also include Canonical Locator and Resolved Revision
+ * (Source Key already contains canonicalUrl+selector; we bind them additionally for explicitness).
+ */
+export function buildGitSnapshot(
+  acquiredRoot: string,
+  sourceKey: SourceKey,
+  scope: Scope,
+  extra: { canonicalLocator: string; resolvedRevision: string; selectorCanonical: string },
+  opts: { skipDirs?: Set<string> } = {},
+): SnapshotResult {
+  const findings: ValidationFinding[] = [];
+  const entries: SnapshotEntry[] = [];
+  const skip = opts.skipDirs ?? IGNORE_DIRS;
+
+  const { budgetBlocked } = walkTree(acquiredRoot, scope, skip, findings, entries);
+
+  entries.sort((a, b) => a.relPath.localeCompare(b.relPath));
+
+  if (budgetBlocked) {
+    return { ok: false, findings };
+  }
+
+  checkSymlinkContainment(acquiredRoot, entries, scope, findings);
+
+  const binds = [
+    sourceKey.key,
+    extra.canonicalLocator,
+    extra.resolvedRevision,
+    extra.selectorCanonical,
+    COMPATIBILITY_PROFILE,
+    VALIDATION_RULESET,
+    VALIDATION_BUDGET,
+  ];
+
+  const fingerprint = fingerprintOf(entries, binds);
+
+  const snapshot: ValidationSnapshot = {
+    fingerprint,
+    scope,
+    entries,
+    sourceKey,
+    profile: COMPATIBILITY_PROFILE,
+    ruleset: VALIDATION_RULESET,
+    budget: VALIDATION_BUDGET,
+    canonicalLocator: extra.canonicalLocator,
+    resolvedRevision: extra.resolvedRevision,
+    selectorCanonical: extra.selectorCanonical,
+  };
+
+  if (findings.some((f) => f.classification === 'blocking')) {
+    return { ok: false, findings, snapshot };
+  }
+
+  return { ok: true, findings, snapshot };
 }

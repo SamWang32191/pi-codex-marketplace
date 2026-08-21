@@ -9,6 +9,9 @@
 
 import { realpathSync, statSync } from 'node:fs';
 
+import type { CanonicalGitLocator } from './git-locator.js';
+import type { NormalizedGitSelector } from './git-selector.js';
+
 export type SourceKind = 'local' | 'git';
 
 export interface SourceKey {
@@ -17,6 +20,12 @@ export interface SourceKey {
   key: string;
   /** Canonical real path for local; resolved via fs.realpathSync. */
   canonicalPath?: string;
+  /** Canonical Git URL for git */
+  canonicalUrl?: string;
+  /** Canonical Git selector (for git) */
+  selector?: string;
+  /** Resolved Revision (git, not part of identity but stored for provenance) */
+  resolvedRevision?: string;
 }
 
 export interface SourceKeyResult {
@@ -62,6 +71,24 @@ export function localSourceKey(rootPath: string): SourceKeyResult {
       key: `local:${canonical}`,
       canonicalPath: canonical,
     },
+  };
+}
+
+/** Build a Git Source Key from its canonical locator + exact selector (type-distinct from local). */
+export function gitSourceKey(
+  locator: CanonicalGitLocator,
+  selector: NormalizedGitSelector,
+): SourceKey {
+  const canonicalUrl = locator.canonicalUrl;
+  const sel = selector.canonical;
+  // Key is deterministic: git:<canonicalUrl>#<canonicalSelector>
+  // Preserve host lowercasing and path case via canonicalUrl; selector already canonical.
+  const key = `git:${canonicalUrl}#${sel}`;
+  return {
+    kind: 'git',
+    key,
+    canonicalUrl,
+    selector: sel,
   };
 }
 

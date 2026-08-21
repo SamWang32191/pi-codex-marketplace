@@ -8,3 +8,7 @@ export * from './registration.js';
 export * from './fence.js';
 export * from './receipt.js';
 export * from './flow.js';
+export * from './git-locator.js';
+export * from './git-selector.js';
+export * from './git-acquisition.js';
+export * from './git-flow.js';
