@@ -6,19 +6,15 @@
  * and disabled → enabled require a separate, explicit Activation Confirmation.
  */
 
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-
-import { classifyPlugin, type CompatiblePlugin } from '../compatibility/profile.js';
+import type { CompatiblePlugin } from '../compatibility/profile.js';
 import { commitBridgeState, readBridgeState } from '../bridge-state/store.js';
 import type { Installation, Registration, Scope } from '../bridge-state/types.js';
-import { parseCatalog } from '../registration/catalog.js';
-import { resolveContained } from '../registration/contained.js';
 import { CODE, RULE, blocking, hasBlocking, sortFindings, type ValidationFinding } from '../registration/findings.js';
 import { acquireAttemptFence, type AttemptFenceHandle } from '../registration/fence.js';
 import { createReceipt, type AttemptReceipt } from '../registration/receipt.js';
 import { localSourceKey } from '../registration/source-key.js';
 import { buildLocalSnapshot, type ValidationSnapshot } from '../registration/snapshot.js';
+import { inspectMarketplaceEntries } from './inspection.js';
 
 export interface InstallationFlowOptions {
   cwd?: string;
@@ -149,73 +145,16 @@ async function makePreflight(
   const fence = fenceResult.handle!;
 
   try {
-    const key = localSourceKey(registration.source);
-    if (!key.ok) {
-      return blocked(scope, registrationId, entryPointer, state.stateRevision, [
-        operationFinding(scope, CODE.SOURCE_REACQUISITION_REQUIRED, RULE.SOURCE_REACQUISITION_REQUIRED, key.error ?? 'Marketplace Root cannot be revalidated', 'registration'),
-      ], fence);
+    const inspection = inspectMarketplaceEntries(registration, scope);
+    const inspected = inspection.entries.find((item) => item.entry.entryId === entryPointer);
+    const rejectedFindings = inspected?.findings ?? (inspection.findings.length > 0 ? inspection.findings : [
+      operationFinding(scope, CODE.INSTALLATION_NOT_FOUND, RULE.INSTALLATION_NOT_FOUND, `Marketplace Entry '${entryPointer}' is Unavailable`, 'entry'),
+    ]);
+    if (!inspected || !inspection.snapshot || !inspected.plugin || inspected.unavailableReason || hasBlocking(inspected.findings)) {
+      return blocked(scope, registrationId, entryPointer, state.stateRevision, rejectedFindings, fence);
     }
-    const root = key.sourceKey!.canonicalPath!;
-    let catalogValue: unknown;
-    try {
-      catalogValue = JSON.parse(readFileSync(join(root, '.agents', 'plugins', 'marketplace.json'), 'utf8'));
-    } catch {
-      return blocked(scope, registrationId, entryPointer, state.stateRevision, [
-        operationFinding(scope, CODE.CATALOG_MISSING, RULE.CATALOG_MISSING, 'Marketplace Catalog cannot be read during Installation preflight', 'catalog'),
-      ], fence);
-    }
-    const catalogResult = parseCatalog(catalogValue, { scope });
-    if (!catalogResult.ok) return blocked(scope, registrationId, entryPointer, state.stateRevision, catalogResult.findings, fence);
-    const catalog = catalogResult.catalog!;
-    const entry = catalog.entries.find((item) => item.entryId === entryPointer);
-    if (!entry || !entry.available || entry.type !== 'local' || !entry.path) {
-      return blocked(scope, registrationId, entryPointer, state.stateRevision, [
-        operationFinding(scope, CODE.INSTALLATION_NOT_FOUND, RULE.INSTALLATION_NOT_FOUND, `Marketplace Entry '${entryPointer}' is Unavailable`, 'entry'),
-      ], fence);
-    }
-    const contained = resolveContained(root, entry.path, 'directory');
-    if (contained.outcome.kind !== 'ok') {
-      return blocked(scope, registrationId, entryPointer, state.stateRevision, [
-        operationFinding(scope, CODE.INSTALLATION_NOT_FOUND, RULE.INSTALLATION_NOT_FOUND, `Marketplace Entry '${entryPointer}' cannot resolve to a contained Plugin directory`, 'entry'),
-      ], fence);
-    }
-    const marketplaceId = `${registration.id}/${catalog.name}`;
-    const marketplaceEntryId = `${marketplaceId}${entry.entryId}`;
-    const classification = classifyPlugin(contained.outcome.canonicalPath, { scope, marketplaceId, marketplaceEntryId });
-    const snapshotResult = buildLocalSnapshot(root, key.sourceKey!, scope);
-    const driftFindings: ValidationFinding[] = [];
-    if (registration.validationSnapshot && snapshotResult.snapshot?.fingerprint !== registration.validationSnapshot) {
-      driftFindings.push(blocking({ code: CODE.REJECTED_AS_STALE, rule: RULE.REJECTED_AS_STALE_SNAPSHOT, target: 'registration', pointer: '', outcome: 'Registered Validation Snapshot no longer matches the source tree; only Marketplace Refresh may produce an Update Candidate', scope, phase: 'validation' }));
-    }
-    const collisionFindings: ValidationFinding[] = [];
-    if (classification.plugin) {
-      for (const other of catalog.entries) {
-        if (other.entryId === entry.entryId || !other.available || other.type !== 'local' || !other.path) continue;
-        const otherPath = resolveContained(root, other.path, 'directory');
-        if (otherPath.outcome.kind !== 'ok') continue;
-        const otherClassification = classifyPlugin(otherPath.outcome.canonicalPath, {
-          scope,
-          marketplaceId,
-          marketplaceEntryId: `${marketplaceId}${other.entryId}`,
-        });
-        if (otherClassification.plugin?.id === classification.plugin.id) {
-          collisionFindings.push(blocking({
-            code: CODE.PLUGIN_ID_COLLISION,
-            rule: RULE.PLUGIN_ID_COLLISION,
-            target: 'plugin',
-            pointer: entry.entryId,
-            outcome: `Plugin ID '${classification.plugin.id}' collides with Marketplace Entry '${other.entryId}'; neither entry is activatable`,
-            scope,
-            phase: 'identity',
-          }));
-        }
-      }
-    }
-    const findings = sortFindings([...catalogResult.findings, ...classification.findings, ...collisionFindings, ...driftFindings, ...snapshotResult.findings]);
-    if (!snapshotResult.ok || classification.classification !== 'compatible' || hasBlocking(findings)) {
-      return blocked(scope, registrationId, entryPointer, state.stateRevision, findings, fence);
-    }
-    const plugin = classification.plugin!;
+    const findings = inspected.findings;
+    const plugin = inspected.plugin;
     const installationId = `${scope}/${plugin.id}`;
     const currentInstallation = state.installations.find((item) => item.id === installationId);
     if (operation === 'install' && currentInstallation) {
@@ -234,7 +173,7 @@ async function makePreflight(
         scope,
         registration,
         plugin,
-        snapshot: snapshotResult.snapshot!,
+        snapshot: inspection.snapshot,
         stateRevision: state.stateRevision,
         findings,
         disclosure: { plugin, projectedPrecedence: 'Pi → Project Scope → Global Scope', findings },

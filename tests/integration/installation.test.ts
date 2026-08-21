@@ -12,6 +12,8 @@ import {
   preflightPluginInstallation,
   preflightPluginEnable,
 } from '../../src/installation/flow.js';
+import { inspectMarketplaceEntries } from '../../src/installation/inspection.js';
+import { entryChoices } from '../../extensions/pi/installation.js';
 
 function makeEnv() {
   const root = mkdtempSync(join(tmpdir(), 'installation-integration-'));
@@ -132,5 +134,44 @@ describe('Plugin Installation lifecycle', () => {
     expect(result.outcome.findings).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: 'PLUGIN_ID_COLLISION', classification: 'blocking' }),
     ]));
+  });
+
+  it('fails closed when an incompatible Entry collides with a compatible Plugin ID', async () => {
+    const duplicate = join(env.marketplace, 'plugins', 'release-helper-incompatible');
+    mkdirSync(join(duplicate, '.codex-plugin'), { recursive: true });
+    mkdirSync(join(duplicate, 'skills', 'notes'), { recursive: true });
+    mkdirSync(join(duplicate, 'commands'), { recursive: true });
+    writeFileSync(join(duplicate, '.codex-plugin', 'plugin.json'), JSON.stringify({ name: 'release-helper', skills: './skills/' }));
+    writeFileSync(join(duplicate, 'skills', 'notes', 'SKILL.md'), '---\nname: notes\ndescription: Incompatible plugin\n---\n\nBody.\n');
+    writeFileSync(join(env.marketplace, '.agents', 'plugins', 'marketplace.json'), JSON.stringify({ name: 'acme-marketplace', plugins: [
+      { source: { source: 'local', path: './plugins/release-helper' } },
+      { source: { source: 'local', path: './plugins/release-helper-incompatible' } },
+    ] }));
+
+    const result = await preflightPluginInstallation('global', registrationId, '/plugins/0', { agentDir: env.agentDir, cwd: env.projectDir });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.outcome.status).toBe('blocked');
+    if (result.outcome.status !== 'blocked') return;
+    expect(result.outcome.findings).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'PLUGIN_ID_COLLISION' })]));
+  });
+
+  it('shows all compatible Entries as installable through the TUI browse seam without acquiring a lifecycle fence', async () => {
+    const alternate = join(env.marketplace, 'plugins', 'alternate-helper');
+    mkdirSync(join(alternate, '.codex-plugin'), { recursive: true });
+    mkdirSync(join(alternate, 'skills', 'alternate-notes'), { recursive: true });
+    writeFileSync(join(alternate, '.codex-plugin', 'plugin.json'), JSON.stringify({ name: 'alternate-helper', skills: './skills/' }));
+    writeFileSync(join(alternate, 'skills', 'alternate-notes', 'SKILL.md'), '---\nname: alternate-notes\ndescription: Alternate notes\n---\n\nBody.\n');
+    writeFileSync(join(env.marketplace, '.agents', 'plugins', 'marketplace.json'), JSON.stringify({ name: 'acme-marketplace', plugins: [
+      { source: { source: 'local', path: './plugins/release-helper' } },
+      { source: { source: 'local', path: './plugins/alternate-helper' } },
+    ] }));
+
+    const inspected = inspectMarketplaceEntries({ id: registrationId, sourceKind: 'local', source: env.marketplace }, 'global');
+    expect(inspected.entries).toHaveLength(2);
+    expect(inspected.entries.every((entry) => entry.unavailableReason === undefined)).toBe(true);
+    const choices = await entryChoices({ id: registrationId, sourceKind: 'local', source: env.marketplace }, 'global', { cwd: env.projectDir });
+    expect(choices).toHaveLength(2);
+    expect(choices.map((choice) => choice.pointer)).toEqual(['/plugins/0', '/plugins/1']);
   });
 });

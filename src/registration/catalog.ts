@@ -151,9 +151,19 @@ export function parseCatalog(obj: unknown, opts: { scope: 'global' | 'project' }
     const nestedSource = typeof e.source === 'object' && e.source !== null && !Array.isArray(e.source)
       ? e.source as Record<string, unknown>
       : undefined;
-    const kind = classifyKind(e.type ?? e.kind ?? nestedSource?.source ?? nestedSource?.type);
+    const nestedKind = nestedSource ? classifyKind(nestedSource.source ?? nestedSource.type) : undefined;
+    const flatKind = classifyKind(e.type ?? e.kind);
+    const nestedPath = typeof nestedSource?.path === 'string' ? nestedSource.path : undefined;
+    const flatPath = typeof e.path === 'string' ? e.path : undefined;
+    // The canonical nested v1 source is an indivisible declaration.  Never mix a flat kind/path
+    // with it: a conflicting flat `type: local` must not disguise nested `source: git`.
+    if (nestedSource && ((e.type !== undefined || e.kind !== undefined) && flatKind.type !== nestedKind!.type || (flatPath !== undefined && flatPath !== nestedPath))) {
+      entries.push({ entryId, ordinal: index, type: 'unsupported', available: false, unavailableReason: 'conflicting nested and flat source declaration' });
+      return;
+    }
+    const kind = nestedKind ?? flatKind;
     const name = typeof e.name === 'string' ? e.name : undefined;
-    const path = typeof e.path === 'string' ? e.path : typeof nestedSource?.path === 'string' ? nestedSource.path : undefined;
+    const path = nestedSource ? nestedPath : flatPath;
 
     if (kind.type !== 'local') {
       // Recognized only as an Unavailable Entry (never recursively acquired). Disclosed, not a finding.

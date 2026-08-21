@@ -72,6 +72,17 @@ function parseDescriptor(text: string): { frontmatter?: Record<string, unknown>;
   }
 }
 
+/** Read the authoritative manifest identity without projecting a Compatible Plugin. */
+export function pluginIdentity(root: string, marketplaceId: string): string | undefined {
+  try {
+    const raw: unknown = JSON.parse(readFileSync(join(root, '.codex-plugin', 'plugin.json'), 'utf8'));
+    const name = typeof raw === 'object' && raw !== null && !Array.isArray(raw) ? (raw as Record<string, unknown>).name : undefined;
+    return typeof name === 'string' && KEBAB.test(name) ? `${marketplaceId}/${name}` : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function resourcesIn(skillDirectory: string): { resources: string[]; error?: string } {
   const resources: string[] = [];
   let files = 0;

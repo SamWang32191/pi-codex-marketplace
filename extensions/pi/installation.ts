@@ -1,8 +1,5 @@
 /** TUI flow for Compatibility Profile v1 Plugin Installation and state toggles. */
 
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-
 import type { ExtensionCommandContext, ExtensionUIContext } from '@earendil-works/pi-coding-agent';
 
 import { readBridgeState } from '../../src/bridge-state/store.js';
@@ -15,8 +12,7 @@ import {
   preflightPluginInstallation,
   type InstallationOutcome,
 } from '../../src/installation/flow.js';
-import { parseCatalog } from '../../src/registration/catalog.js';
-import { localSourceKey } from '../../src/registration/source-key.js';
+import { inspectMarketplaceEntries } from '../../src/installation/inspection.js';
 import type { Registration, Scope } from '../../src/bridge-state/types.js';
 
 interface EntryChoice { label: string; pointer?: string }
@@ -36,43 +32,17 @@ function report(ctx: ExtensionCommandContext, outcome: InstallationOutcome): voi
   }
 }
 
-async function entryChoices(
+export async function entryChoices(
   registration: Registration,
   scope: Scope,
-  opts: { cwd?: string; projectTrusted?: boolean },
+  _opts: { cwd?: string; projectTrusted?: boolean },
 ): Promise<EntryChoice[]> {
-  if (registration.sourceKind !== 'local' || !registration.source) {
-    return [{ label: `${registration.alias ?? registration.id} — Unavailable (Git Source Cache lifecycle is not available yet)` }];
-  }
-  const source = localSourceKey(registration.source);
-  if (!source.ok) return [{ label: `${registration.alias ?? registration.id} — Unavailable (Marketplace Root cannot be revalidated)` }];
-  const root = source.sourceKey!.canonicalPath!;
-  try {
-    const parsed = parseCatalog(JSON.parse(readFileSync(join(root, '.agents', 'plugins', 'marketplace.json'), 'utf8')), { scope });
-    if (!parsed.ok) return [{ label: `${registration.alias ?? registration.id} — Unavailable (invalid Marketplace Catalog)` }];
-    const inspected = await Promise.all(parsed.catalog!.entries.map(async (entry) => {
-      if (!entry.available || entry.type !== 'local' || !entry.path) {
-        return { entry, unavailable: entry.unavailableReason ?? 'unsupported source kind' };
-      }
-      // Reuse the authoritative preflight inspection: browsing and installation therefore share
-      // exact snapshot drift, classification and Plugin-ID collision semantics.
-      const preflight = await preflightPluginInstallation(scope, registration.id, entry.entryId, opts);
-      if (preflight.ok) {
-        preflight.preflight.fence.release();
-        return { entry, unavailable: undefined };
-      }
-      const finding = preflight.outcome.status === 'blocked' ? preflight.outcome.findings[0] : undefined;
-      return { entry, unavailable: finding?.outcome ?? preflight.outcome.status };
-    }));
-    return inspected.map((item) => {
-      const reason = item.unavailable;
-      const status = reason ? `Unavailable (${reason})` : '可安裝';
-      const entryId = `${registration.id}/${parsed.catalog!.name}${item.entry.entryId}`;
-      return { label: `${entryId} · ${item.entry.name ?? 'unnamed'} — ${status}`, pointer: reason ? undefined : item.entry.entryId };
-    });
-  } catch {
-    return [{ label: `${registration.alias ?? registration.id} — Unavailable (Marketplace Catalog cannot be read)` }];
-  }
+  const inspection = inspectMarketplaceEntries(registration, scope);
+  if (!inspection.marketplaceId) return [{ label: `${registration.alias ?? registration.id} — Unavailable (${inspection.findings[0]?.outcome ?? 'Marketplace Catalog cannot be read'})` }];
+  return inspection.entries.map((item) => {
+    const status = item.unavailableReason ? `Unavailable (${item.unavailableReason})` : '可安裝';
+    return { label: `${inspection.marketplaceId}${item.entry.entryId} · ${item.entry.name ?? item.plugin?.manifestName ?? 'unnamed'} — ${status}`, pointer: item.unavailableReason ? undefined : item.entry.entryId };
+  });
 }
 
 export async function runPluginInstallationFlow(ctx: ExtensionCommandContext): Promise<void> {

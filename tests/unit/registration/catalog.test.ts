@@ -90,6 +90,15 @@ describe('Marketplace Catalog parsing', () => {
     expect(res.catalog!.entries[0].unavailableReason).toMatch(/no local path declared/i);
   });
 
+  it('fails closed when flat fields conflict with a nested v1 source declaration', () => {
+    const res = parseCatalog({
+      name: 'conflict',
+      plugins: [{ type: 'local', path: './plugins/pretend-local', source: { source: 'git', path: 'https://example.test/plugin.git' } }],
+    }, scopeOpts());
+    expect(res.ok).toBe(true);
+    expect(res.catalog!.entries[0]).toMatchObject({ available: false, unavailableReason: 'conflicting nested and flat source declaration' });
+  });
+
   it('sortFindings orders by class → phase → target → pointer → rule deterministically', () => {
     const res = parseCatalog(
       { name: 'acme', plugins: [{ name: 'x', path: './x' }, 'malformed'] },
