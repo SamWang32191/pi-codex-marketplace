@@ -29,7 +29,25 @@ export interface Registration {
     kind: 'local' | 'git';
     key: string;
     canonicalPath?: string;
+    /** Canonical Git URL (for git kind) */
+    canonicalUrl?: string;
+    /** Canonical selector string (for git kind), e.g. refs/heads/main or 40 hex */
+    selector?: string;
+    /** Resolved full commit at confirmation time (for git) */
+    resolvedRevision?: string;
   };
+  /** Canonical Git Locator (credential-free) — git-only, same as source for git kind */
+  canonicalLocator?: string;
+  /** Normalized Git Selector (git-only) */
+  gitSelector?: {
+    kind: 'default' | 'branch' | 'tag' | 'commit';
+    /** Canonical selector value: 'default' | 'refs/heads/*' | 'refs/tags/*' | lower 40/64 hex */
+    canonical: string;
+    /** Original display value before canonicalization */
+    raw?: string;
+  };
+  /** Resolved Revision: full commit bound to validation (git-only) */
+  resolvedRevision?: string;
   /** Validation Snapshot fingerprint bound to Registration Confirmation */
   validationSnapshot?: string;
   /** Bound Compatibility Profile / Ruleset / Budget ids at confirmation time */
