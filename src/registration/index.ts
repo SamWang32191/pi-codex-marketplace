@@ -12,3 +12,5 @@ export * from './git-locator.js';
 export * from './git-selector.js';
 export * from './git-acquisition.js';
 export * from './git-flow.js';
+export * from '../compatibility/index.js';
+export * from '../installation/index.js';

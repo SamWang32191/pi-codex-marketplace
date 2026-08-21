@@ -145,9 +145,15 @@ export function parseCatalog(obj: unknown, opts: { scope: 'global' | 'project' }
       return;
     }
     const e = entryRaw as Record<string, unknown>;
-    const kind = classifyKind(e.type ?? e.kind);
+    // Codex Marketplace v1 uses `source: { source: "local", path: "./…" }`.
+    // Retain the earlier flat shape as a backward-compatible input, but derive the canonical
+    // source kind/path from the nested object when present.
+    const nestedSource = typeof e.source === 'object' && e.source !== null && !Array.isArray(e.source)
+      ? e.source as Record<string, unknown>
+      : undefined;
+    const kind = classifyKind(e.type ?? e.kind ?? nestedSource?.source ?? nestedSource?.type);
     const name = typeof e.name === 'string' ? e.name : undefined;
-    const path = typeof e.path === 'string' ? e.path : undefined;
+    const path = typeof e.path === 'string' ? e.path : typeof nestedSource?.path === 'string' ? nestedSource.path : undefined;
 
     if (kind.type !== 'local') {
       // Recognized only as an Unavailable Entry (never recursively acquired). Disclosed, not a finding.

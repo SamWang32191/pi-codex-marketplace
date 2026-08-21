@@ -61,6 +61,16 @@ export interface Installation {
   pluginId: string;
   /** Durable enabled/disabled condition */
   installationState: 'enabled' | 'disabled';
+  /** Registration that supplied this Plugin; retained for source provenance and revalidation. */
+  registrationId?: string;
+  /** Snapshot-scoped Marketplace Entry identity that selected this Plugin. */
+  marketplaceEntryId?: string;
+  /** Validation Snapshot fingerprint accepted for this Installation. */
+  validationSnapshot?: string;
+  /** Compatibility Profile / Ruleset / Budget bound during installation. */
+  snapshotBinds?: { profile?: string; ruleset?: string; budget?: string };
+  /** Exact manifest name, retained independently of the Marketplace Entry display name. */
+  manifestName?: string;
 }
 
 export interface ScopeOverride {

@@ -26,6 +26,7 @@ Shows a menu:
 
 - **檢視 Global / Project 分區** — two partitions: **Global Scope** (`~/.pi/agent/codex-marketplace/state.json`, baseline) and **Project Scope** (`{cwd}/.pi/codex-marketplace/state.json`, overlay + sparse overrides).
 - **註冊本地 Marketplace…** — end-to-end local registration: explicit scope choice → local Marketplace Root input → Validation Disclosure (source, scope, Marketplace name, State Revision, Validation Snapshot fingerprint, entry outcomes, findings summary) → Registration Confirmation (Validation Snapshot + State Revision bound, **Default No**, never remembered or batched) → scope-atomic commit with State Revision increment → immutable redacted Attempt Receipt. Blocking Findings (Contained Path / Contained Symlink / Budget / duplicate Source Key) block the registration; a concurrent same-scope attempt is blocked by the Attempt Fence; a changed State Revision yields `Rejected as Stale`.
+- **安裝 Compatible Plugin…** — browse registered local Marketplace Entries by Marketplace Entry ID and explicit Unavailable reason. Compatibility Profile v1 classifies every Plugin atomically as Compatible / Incompatible / Invalid. `Install Disabled` persists provenance without Activation Confirmation; `Install and Enable` discloses the exact Plugin, skills, resources, Invocation Policies and `Pi → Project → Global` precedence, then requires a separate **Default No** Activation Confirmation. Re-enabling a disabled Installation repeats validation and confirmation; disabling preserves its Installation ID.
 
 ## Bridge State storage
 
