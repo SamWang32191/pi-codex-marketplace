@@ -1,0 +1,52 @@
+{
+  "name": "pi-codex-marketplace",
+  "version": "0.1.0",
+  "description": "Bridge Package for Codex Marketplace compatibility in Pi — Global/Project Bridge State, atomic persistence, and /codex-marketplace TUI",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "codex",
+    "marketplace"
+  ],
+  "license": "MIT",
+  "author": "Sam Wang",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SamWang32191/pi-codex-marketplace.git"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/pi/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "0.84.2",
+    "@earendil-works/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.2",
+    "@earendil-works/pi-tui": "^0.84.2",
+    "@types/node": "^26.2.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --coverage=false",
+    "test:watch": "vitest",
+    "build": "echo 'no build step — extensions loaded via jiti'",
+    "check": "npm run typecheck && npm test"
+  },
+  "files": [
+    "extensions",
+    "src",
+    "README.md",
+    "LICENSE"
+  ]
+}
