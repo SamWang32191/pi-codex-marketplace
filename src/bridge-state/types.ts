@@ -24,6 +24,16 @@ export interface Registration {
   sourceKind?: 'local' | 'git';
   /** Canonical source locator (credential-free) */
   source?: string;
+  /** Typed Source Key for duplicate detection / repeated registration (not identity) */
+  sourceKey?: {
+    kind: 'local' | 'git';
+    key: string;
+    canonicalPath?: string;
+  };
+  /** Validation Snapshot fingerprint bound to Registration Confirmation */
+  validationSnapshot?: string;
+  /** Bound Compatibility Profile / Ruleset / Budget ids at confirmation time */
+  snapshotBinds?: { profile?: string; ruleset?: string; budget?: string };
 }
 
 export interface Installation {
