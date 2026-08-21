@@ -46,7 +46,7 @@ function hasAmbiguousEncoding(s: string): { bad: boolean; reason?: string } {
   }
   const pct = s.match(/%[0-9A-Fa-f]{2}/g);
   if (!pct) return { bad: false };
-  const sensitive = new Set(['%2f', '%2F', '%5c', '%5C', '%3f', '%3F', '%23', '%00', '%40', '%3a', '%3A']);
+  const sensitive = new Set(['%2f', '%2F', '%5c', '%5C', '%3f', '%3F', '%23', '%00', '%40', '%3a', '%3A', '%2e', '%2E']);
   for (const enc of pct) {
     const low = enc.toLowerCase();
     if (sensitive.has(low)) {

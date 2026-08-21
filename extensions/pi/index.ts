@@ -186,10 +186,6 @@ export default function (pi: ExtensionAPI) {
         await runGitRegistrationFlow(ctx);
         return;
       }
-      if (choice.startsWith('註冊')) {
-        await runLocalRegistrationFlow(ctx);
-        return;
-      }
 
       const global = readBridgeStateSync('global', { cwd });
       const project = readBridgeStateSync('project', { cwd });

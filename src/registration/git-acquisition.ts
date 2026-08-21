@@ -122,7 +122,7 @@ function hardenedEnv(trust: AcquisitionTrustOptions | undefined, locator: Canoni
     const knownHosts = trust?.knownHostsFile ?? join(process.env.HOME ?? tmpdir(), '.ssh', 'known_hosts');
     // Only trust pre-established known_hosts; we do not create it.
     let sshCmd = trust?.sshCommand ?? 'ssh';
-    sshCmd += ` -o StrictHostKeyChecking=yes -o BatchMode=yes -o UserKnownHostsFile=${knownHosts}`;
+    sshCmd += ` -o StrictHostKeyChecking=yes -o BatchMode=yes -o UserKnownHostsFile="${knownHosts.replace(/"/g, '\\"')}"`;
     // Also disable adding keys automatically
     sshCmd += ' -o CheckHostIP=yes';
     env.GIT_SSH_COMMAND = sshCmd;
@@ -259,10 +259,12 @@ async function resolveRevision(
 
   // ls-remote output: "<sha>\t<ref>" per line. For HEAD, may also include symref info when using --symref, but we used plain.
   // For default HEAD, we want the sha of HEAD. For branch/tag, we get sha of that ref. For annotated tags, server may return both refs/tags/v1 and refs/tags/v1^{}.
-  // We take first line's sha.
-  const firstLine = out.split('\n')[0];
-  const tabIdx = firstLine.indexOf('\t');
-  const sha = tabIdx >= 0 ? firstLine.slice(0, tabIdx).trim() : firstLine.split(/\s+/)[0].trim();
+  // Prefer the peeled commit line (suffix ^{}) when present, otherwise fall back to the first line, ensuring Resolved Revision is always the commit.
+  const lines = out.split('\n').map((l) => l.trim()).filter(Boolean);
+  const peeledLine = lines.find((l) => l.includes('^{}'));
+  const targetLine = peeledLine ?? lines[0];
+  const tabIdx = targetLine.indexOf('\t');
+  const sha = tabIdx >= 0 ? targetLine.slice(0, tabIdx).trim() : targetLine.split(/\s+/)[0].trim();
   if (!isFullHex(sha.toLowerCase())) {
     return {
       ok: false,
