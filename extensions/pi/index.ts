@@ -14,6 +14,7 @@ import { truncateToWidth } from '@earendil-works/pi-tui';
 
 import { readBridgeStateSync } from '../../src/bridge-state/store.js';
 import type { BridgeState, ReadResult } from '../../src/bridge-state/types.js';
+import { runLocalRegistrationFlow } from './registration.js';
 
 // Closed helper to format state summary for disclosure
 function formatStateSummary(result: ReadResult, scopeLabel: string): string {
@@ -84,7 +85,7 @@ class MarketplaceComponent {
       const s: BridgeState = this.global.state!;
       if (s.registrations.length === 0 && s.installations.length === 0) {
         lines.push(truncateToWidth(`    ${th.fg('muted', '— No marketplace registrations —')}`, width));
-        lines.push(truncateToWidth(`    ${th.fg('dim', 'Use future Registration flow to add a Marketplace Source (local or Git). Each Registration gets an immutable Registration ID (UUIDv4) before preflight.')}`, width));
+        lines.push(truncateToWidth(`    ${th.fg('dim', 'Empty registration list — use the Registration flow (「註冊本地 Marketplace…」menu) to add a local Marketplace Source. Each Registration gets an immutable Registration ID (UUIDv4) before preflight.')}`, width));
         lines.push(truncateToWidth(`    ${th.fg('dim', 'Projected Plugins will appear here once installations are created. Collision is per-skill; whole-Plugin classification is atomic.')}`, width));
       } else {
         // Future tickets will render registrations/installations incrementally
@@ -132,9 +133,9 @@ class MarketplaceComponent {
     lines.push(truncateToWidth(hr, width));
     lines.push(truncateToWidth(`  ${th.fg('dim', 'Bridge State holds only registrations / installations (with Installation State) / scopeOverrides / schemaVersion / stateRevision. Effective State, catalogs, compatibility, diagnostics are recomputed.')}`, width));
     lines.push(truncateToWidth(`  ${th.fg('dim', 'State Revision is opaque monotonic per scope; writes are atomic (temp→fsync→rename) under file lock with read-after-verify. Corrupted/unknown schema ⇒ Indeterminate/incompatible, never auto-rollback.')}`, width));
-    lines.push(truncateToWidth(`  ${th.fg('dim', 'Future flows will add per-scope Disclosure → State Revision+Snapshot-bound confirmation (Default No) → atomic commit → reload → three-orthogonal receipt (persistence / findings / runtime).')}`, width));
+    lines.push(truncateToWidth(`  ${th.fg('dim', 'Future flows will add Git sources, Plugin installation, Effective State projection, and three-orthogonal receipts. Local Marketplace Registration is available now (Validation Snapshot + State Revision bound, Default No).')}`, width));
     lines.push('');
-    lines.push(truncateToWidth(`  ${th.fg('dim', 'Press Esc / q to close · This scaffold is intentionally empty — subsequent tickets will populate each partition incrementally.')}`, width));
+    lines.push(truncateToWidth(`  ${th.fg('dim', 'Press Esc / q to close · 「註冊本地 Marketplace…」執行驗證 + 綁定確認（預設 No）的端到端本地註冊流。')}`, width));
     lines.push('');
 
     this.width = width;
@@ -155,19 +156,33 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand('codex-marketplace', {
-    description: 'Manage Codex Marketplaces — partitioned Global / Project Bridge State (scaffold)',
+    description: 'Manage Codex Marketplaces — partitioned Global / Project Bridge State + local Registration flow',
     handler: async (_args, ctx) => {
       const cwd = ctx.cwd;
-      const global = readBridgeStateSync('global', { cwd });
-      const project = readBridgeStateSync('project', { cwd });
 
       // Non-TUI fallback: notify with summary
       if (ctx.mode !== 'tui' || !ctx.hasUI) {
+        const global = readBridgeStateSync('global', { cwd });
+        const project = readBridgeStateSync('project', { cwd });
         const g = formatStateSummary(global, 'Global Scope');
         const p = formatStateSummary(project, 'Project Scope');
-        ctx.ui.notify(`${g}\n${p}`, 'info');
+        ctx.ui.notify(`${g}\n${p}\n互動 Registration 需 TUI 模式（/codex-marketplace 於 TUI 內）`, 'info');
         return;
       }
+
+      const choice = await ctx.ui.select('Codex Marketplace — Bridge State', [
+        '檢視 Global / Project 分區',
+        '註冊本地 Marketplace…',
+      ]);
+      if (!choice) return;
+
+      if (choice.startsWith('註冊')) {
+        await runLocalRegistrationFlow(ctx);
+        return;
+      }
+
+      const global = readBridgeStateSync('global', { cwd });
+      const project = readBridgeStateSync('project', { cwd });
 
       await ctx.ui.custom<void>((_tui, theme, _kb, done) => {
         return new MarketplaceComponent(global, project, cwd, theme, () => done());

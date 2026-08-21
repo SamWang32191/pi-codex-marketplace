@@ -22,12 +22,10 @@ In Pi TUI:
 /codex-marketplace
 ```
 
-Shows two partitions:
+Shows a menu:
 
-- **Global Scope** — `~/.pi/agent/codex-marketplace/state.json` (baseline)
-- **Project Scope** — `{cwd}/.pi/codex-marketplace/state.json` (overlay + sparse overrides)
-
-On scaffold (`v0.1.0`, Issue #16) both partitions are empty. Future tickets will incrementally populate each partition with Registrations / Installations / Scope Overrides.
+- **檢視 Global / Project 分區** — two partitions: **Global Scope** (`~/.pi/agent/codex-marketplace/state.json`, baseline) and **Project Scope** (`{cwd}/.pi/codex-marketplace/state.json`, overlay + sparse overrides).
+- **註冊本地 Marketplace…** — end-to-end local registration: explicit scope choice → local Marketplace Root input → Validation Disclosure (source, scope, Marketplace name, State Revision, Validation Snapshot fingerprint, entry outcomes, findings summary) → Registration Confirmation (Validation Snapshot + State Revision bound, **Default No**, never remembered or batched) → scope-atomic commit with State Revision increment → immutable redacted Attempt Receipt. Blocking Findings (Contained Path / Contained Symlink / Budget / duplicate Source Key) block the registration; a concurrent same-scope attempt is blocked by the Attempt Fence; a changed State Revision yields `Rejected as Stale`.
 
 ## Bridge State storage
 
@@ -77,5 +75,6 @@ Canonical terms are defined in [`CONTEXT.md`](./CONTEXT.md) — use them verbati
 ## Issues / Wayfinder
 
 - Wayfinder map: #1
-- Scaffold ticket: #16 (this release)
-- Remaining: #17–#24
+- Scaffold ticket: #16 (shipped)
+- Local Marketplace Registration: #17 (this release)
+- Remaining: #18–#24
