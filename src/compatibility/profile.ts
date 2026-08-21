@@ -114,6 +114,7 @@ function isSnapshotExcluded(root: string, target: string): boolean {
 
 function resourcesIn(root: string, skillDirectory: string, capture: MaterialCapture): { resources: string[]; error?: string } {
   const resources: string[] = [];
+  const chargedTargets = new Set<string>();
   let files = 0;
   let bytes = 0;
   const walk = (directory: string, relative = '', depth = 1): void => {
@@ -128,17 +129,21 @@ function resourcesIn(root: string, skillDirectory: string, capture: MaterialCapt
       if (entry.isDirectory()) walk(path, next, depth + 1);
       else {
         const stat = lstatSync(path);
+        let chargeSize = stat.size;
         if (stat.isSymbolicLink()) {
           const target = realpathSync.native(path);
-          if (!isWithin(root, target) || isSnapshotExcluded(root, target)) {
+          if (!isWithin(skillDirectory, target) || isSnapshotExcluded(root, target)) {
             throw new Error(`Skill Resource symlink '${next}' resolves outside snapshot-covered content`);
           }
-          if (!statSync(path).isFile()) throw new Error(`Skill Resource symlink '${next}' does not resolve to a regular file`);
+          const targetStat = statSync(path);
+          if (!targetStat.isFile()) throw new Error(`Skill Resource symlink '${next}' does not resolve to a regular file`);
+          chargeSize = chargedTargets.has(target) ? 0 : targetStat.size;
+          chargedTargets.add(target);
         } else if (!stat.isFile()) {
           throw new Error(`Skill Resource '${next}' is not a regular file`);
         }
         files += 1;
-        bytes += stat.size;
+        bytes += chargeSize;
         if (files > BUDGET.maxFiles || bytes > BUDGET.maxTotalBytes) {
           throw new Error('Skill Resources exceed Validation Budget');
         }

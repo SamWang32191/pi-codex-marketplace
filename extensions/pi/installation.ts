@@ -17,6 +17,8 @@ import type { Registration, Scope } from '../../src/bridge-state/types.js';
 
 interface EntryChoice { label: string; pointer?: string }
 
+function labelText(value: string): string { return JSON.stringify(value); }
+
 function report(ctx: ExtensionCommandContext, outcome: InstallationOutcome): void {
   if (outcome.status === 'completed') {
     ctx.ui.notify(`Attempt Summary: ${outcome.receipt.summary} · ${outcome.installation.manifestName ?? outcome.installation.pluginId} is ${outcome.installation.installationState} · State Revision ${outcome.newRevision}\nReceipt ${outcome.receipt.id} — immutable, non-authoritative.`, 'info');
@@ -38,10 +40,10 @@ export async function entryChoices(
   _opts: { cwd?: string; projectTrusted?: boolean },
 ): Promise<EntryChoice[]> {
   const inspection = inspectMarketplaceEntries(registration, scope);
-  if (!inspection.marketplaceId) return [{ label: `${registration.alias ?? registration.id} — Unavailable (${inspection.findings[0]?.outcome ?? 'Marketplace Catalog cannot be read'})` }];
+  if (!inspection.marketplaceId) return [{ label: `${labelText(registration.alias ?? registration.id)} — Unavailable (${labelText(inspection.findings[0]?.outcome ?? 'Marketplace Catalog cannot be read')})` }];
   return inspection.entries.map((item) => {
     const status = item.unavailableReason ? `Unavailable (${item.unavailableReason})` : '可安裝';
-    return { label: `${inspection.marketplaceId}${item.entry.entryId} · ${item.entry.name ?? item.plugin?.manifestName ?? 'unnamed'} — ${status}`, pointer: item.unavailableReason ? undefined : item.entry.entryId };
+    return { label: `${inspection.marketplaceId}${item.entry.entryId} · ${labelText(item.entry.name ?? item.plugin?.manifestName ?? 'unnamed')} — ${labelText(status)}`, pointer: item.unavailableReason ? undefined : item.entry.entryId };
   });
 }
 

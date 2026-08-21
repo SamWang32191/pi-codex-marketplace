@@ -131,6 +131,19 @@ describe('Plugin Installation lifecycle', () => {
     expect(outcome.status).toBe('rejected-as-stale');
   });
 
+  it('rejects installation as stale when State Revision advances after confirmation', async () => {
+    const opts = { agentDir: env.agentDir, cwd: env.projectDir };
+    const preflight = await preflightPluginInstallation('global', registrationId, '/plugins/0', opts);
+    expect(preflight.ok).toBe(true);
+    if (!preflight.ok) return;
+    const outcome = await confirmPluginInstallation(preflight.preflight, 'disabled', {
+      ...opts,
+      beforeInstallationCommit: async () => { await commitBridgeState('global', (state) => ({ ...state }), opts); },
+    });
+    expect(outcome.status).toBe('rejected-as-stale');
+    expect((await readBridgeState('global', opts)).state!.installations).toEqual([]);
+  });
+
   it('escapes Marketplace-controlled resource names in the Activation Disclosure', async () => {
     writeFileSync(join(env.marketplace, 'plugins', 'release-helper', 'skills', 'release-notes', 'resource\nforged.txt'), 'opaque');
     const preflight = await preflightPluginInstallation('global', registrationId, '/plugins/0', { agentDir: env.agentDir, cwd: env.projectDir });

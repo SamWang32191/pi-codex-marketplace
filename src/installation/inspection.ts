@@ -7,7 +7,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { lstatSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { classifyPlugin, type CompatiblePlugin } from '../compatibility/profile.js';
@@ -18,6 +18,7 @@ import { resolveContained } from '../registration/contained.js';
 import { CODE, RULE, blocking, hasBlocking, sortFindings, type ValidationFinding } from '../registration/findings.js';
 import { localSourceKey } from '../registration/source-key.js';
 import { bindCapturedMaterial, buildLocalSnapshot, type ValidationSnapshot } from '../registration/snapshot.js';
+import { BUDGET } from '../registration/budget.js';
 
 export interface InspectedMarketplaceEntry {
   entry: MarketplaceEntry;
@@ -45,13 +46,23 @@ export function inspectMarketplaceEntries(registration: Registration, scope: Sco
   const key = localSourceKey(registration.source);
   if (!key.ok) return { entries: [], findings: [inspectionFinding(scope, CODE.SOURCE_REACQUISITION_REQUIRED, RULE.SOURCE_REACQUISITION_REQUIRED, 'registration', key.error ?? 'Marketplace Root cannot be revalidated')] };
   const root = key.sourceKey!.canonicalPath!;
+  const catalogPath = join(root, '.agents', 'plugins', 'marketplace.json');
+  try {
+    if (lstatSync(catalogPath).size > BUDGET.maxCatalogBytes) {
+      return { entries: [], findings: [inspectionFinding(scope, CODE.BUDGET_EXCEEDED, RULE.BUDGET_EXCEEDED, 'catalog', `Validation Budget exceeded: catalog exceeds ${BUDGET.maxCatalogBytes} bytes`)] };
+    }
+  } catch {
+    // The catalog read below provides the stable catalog-missing finding.
+  }
   const snapshotResult = buildLocalSnapshot(root, key.sourceKey!, scope);
   if (!snapshotResult.ok) return { entries: [], findings: snapshotResult.findings };
 
   let catalogRaw: string;
   let catalogValue: unknown;
   try {
-    catalogRaw = readFileSync(join(root, '.agents', 'plugins', 'marketplace.json'), 'utf8');
+    const bytes = readFileSync(catalogPath);
+    if (bytes.length > BUDGET.maxCatalogBytes) return { entries: [], snapshot: snapshotResult.snapshot, findings: [inspectionFinding(scope, CODE.BUDGET_EXCEEDED, RULE.BUDGET_EXCEEDED, 'catalog', `Validation Budget exceeded: catalog exceeds ${BUDGET.maxCatalogBytes} bytes`)] };
+    catalogRaw = bytes.toString('utf8');
     catalogValue = JSON.parse(catalogRaw);
   } catch {
     return { entries: [], snapshot: snapshotResult.snapshot, findings: [inspectionFinding(scope, CODE.CATALOG_MISSING, RULE.CATALOG_MISSING, 'catalog', 'Marketplace Catalog cannot be read')] };
@@ -64,11 +75,19 @@ export function inspectMarketplaceEntries(registration: Registration, scope: Sco
     : [];
   const material = createHash('sha256');
   material.update('catalog\u001f').update(catalogRaw).update('\u001e');
+  const classifications = new Map<string, ReturnType<typeof classifyPlugin>>();
   const draft = parsed.catalog.entries.map((entry) => {
     if (!entry.available || entry.type !== 'local' || !entry.path) return { entry, findings: [], unavailableReason: entry.unavailableReason ?? 'unsupported source kind' };
     const contained = resolveContained(root, entry.path, 'directory');
     if (contained.outcome.kind !== 'ok') return { entry, findings: [], unavailableReason: 'cannot resolve Plugin' };
-    const classification = classifyPlugin(contained.outcome.canonicalPath, { scope, marketplaceId, marketplaceEntryId: `${marketplaceId}${entry.entryId}` });
+    let baseClassification = classifications.get(contained.outcome.canonicalPath);
+    if (!baseClassification) {
+      baseClassification = classifyPlugin(contained.outcome.canonicalPath, { scope, marketplaceId, marketplaceEntryId: `${marketplaceId}${entry.entryId}` });
+      classifications.set(contained.outcome.canonicalPath, baseClassification);
+    }
+    const classification = baseClassification.plugin
+      ? { ...baseClassification, plugin: { ...baseClassification.plugin, marketplaceEntryId: `${marketplaceId}${entry.entryId}` } }
+      : baseClassification;
     material.update(`entry:${entry.entryId}\u001f`).update(classification.captureFingerprint).update('\u001e');
     return { entry, plugin: classification.plugin, identity: classification.identity, findings: classification.findings };
   });

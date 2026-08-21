@@ -22,6 +22,7 @@ export interface InstallationFlowOptions {
   fenceTimeoutMs?: number;
   /** Integration synchronization seam; production callers leave this undefined. */
   beforeDisableCommit?: () => void | Promise<void>;
+  beforeInstallationCommit?: () => void | Promise<void>;
 }
 
 export interface PluginInstallationPreflight {
@@ -297,7 +298,11 @@ export async function confirmPluginInstallation(
     };
   }
   const current = await readBridgeState(preflight.scope, { cwd: opts.cwd, agentDir: opts.agentDir });
-  if ((current.status !== 'ok' && current.status !== 'missing') || current.state!.stateRevision !== preflight.stateRevision) {
+  if (current.status !== 'ok' && current.status !== 'missing') {
+    preflight.fence.release();
+    return { status: 'persistence-failed', isIndeterminate: true, receipt: createReceipt({ operation: receiptOperation(preflight.operation), scope: preflight.scope, trigger: triggerFor(preflight.operation, preflight.registration.id, preflight.plugin.marketplaceEntryId), expectedStateRevision: preflight.stateRevision, validationSnapshot: preflight.snapshot.fingerprint, summary: 'Persistence Indeterminate', findings: [operationFinding(preflight.scope, CODE.PERSISTENCE_INDETERMINATE, 'PERSIST-01', current.error ?? 'Bridge State is not readable', 'attempt', 'persistence')] }) };
+  }
+  if (current.state!.stateRevision !== preflight.stateRevision) {
     return rejectedAsStale(preflight, 'State Revision changed since Installation disclosure; re-run preflight and confirmation');
   }
   const fresh = inspectMarketplaceEntries(preflight.registration, preflight.scope);
@@ -314,12 +319,14 @@ export async function confirmPluginInstallation(
     snapshotBinds: { profile: preflight.snapshot.profile, ruleset: preflight.snapshot.ruleset, budget: preflight.snapshot.budget },
     manifestName: preflight.plugin.manifestName,
   };
+  await opts.beforeInstallationCommit?.();
   const write = await commitBridgeState(preflight.scope, (state) => ({
     ...state,
     installations: preflight.operation === 'enable'
       ? state.installations.map((item) => item.id === installation.id ? installation : item)
       : [...state.installations, installation],
-  }), { cwd: opts.cwd, agentDir: opts.agentDir, lockTimeoutMs: opts.fenceTimeoutMs });
+  }), { cwd: opts.cwd, agentDir: opts.agentDir, lockTimeoutMs: opts.fenceTimeoutMs, expectedStateRevision: preflight.stateRevision });
+  if (write.isStale) return rejectedAsStale(preflight, 'State Revision changed after Installation confirmation; re-run preflight and confirmation');
   preflight.fence.release();
   if (!write.success) {
     const summary = write.isIndeterminate ? 'Persistence Indeterminate' : 'Persistence Failed';
