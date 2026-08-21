@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TUI Management Flow — Bridge Prototype</title>
+<style>
+:root{color-scheme:light;--ink:#141a18;--muted:#66706b;--line:#d9e1dd;--paper:#fff;--wash:#f3f6f4;--accent:#16765c;--accent-soft:#e6f3ed;--warn:#8a5b0b;--warn-soft:#fff4d9;--bad:#a53c33;--bad-soft:#fcecea;--shadow:0 10px 30px rgba(20,40,33,.07)}
+*{box-sizing:border-box}body{margin:0;background:var(--wash);color:var(--ink);font:14px/1.5 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+button{font:inherit}code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.9em}
+.wrap{width:min(1360px,calc(100% - 28px));margin:0 auto}
+header{padding:28px 0 14px}
+.eyebrow{color:var(--accent);font-weight:800;letter-spacing:.08em;text-transform:uppercase;font-size:12px}
+h1{margin:6px 0 8px;font-size:clamp(22px,4vw,34px);line-height:1.15;letter-spacing:-.03em}
+.lead{max-width:980px;color:#3a4a45}
+.question{margin:14px 0;padding:16px;border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:10px;background:var(--paper)}
+.decision{margin:10px 0 0;padding:10px 12px;border:1px dashed #b6c7c0;border-radius:8px;background:#fbfcfb;font-size:13px}
+.surface{padding:16px;border:1px solid var(--line);border-radius:12px;background:var(--paper);box-shadow:var(--shadow);margin-bottom:14px}
+h2{margin:0 0 10px;font-size:16px}
+h3{margin:12px 0 6px;font-size:14px}
+.muted{color:var(--muted)}.small{font-size:12px}
+.grid{ display:grid; gap:12px}
+.g2{grid-template-columns:1fr 1fr}
+.g3{grid-template-columns:1fr 1fr 1fr}
+@media(max-width:1020px){.g2,.g3{grid-template-columns:1fr}}
+.pill{display:inline-block;padding:2px 7px;border-radius:999px;background:#edf1ef;font-size:11px;margin:2px 4px 2px 0}
+.pill.good{background:var(--accent-soft);color:#0f5a46}
+.pill.bad{background:var(--bad-soft);color:var(--bad)}
+.pill.warn{background:var(--warn-soft);color:var(--warn)}
+.pill.scope{border:1px solid #b8c9c2;background:#fff}
+.kbd{display:inline-block;padding:1px 5px;border:1px solid #c2d0ca;border-bottom-width:2px;border-radius:4px;background:#fff;font-size:11px}
+.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:8px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{background:#f3f6f4;white-space:nowrap}
+.finding{padding:10px 11px;border:1px solid var(--line);border-radius:8px;background:#fbfcfb;margin-bottom:8px}
+.finding.blocking{border-left:4px solid var(--bad)}
+.finding.warning{border-left:4px solid var(--warn)}
+.finding.notice{border-left:4px solid var(--accent)}
+.toolbar{display:flex;flex-wrap:wrap;gap:6px}
+.btn{padding:7px 11px;border:1px solid #b9c9c2;border-radius:8px;background:#fff;cursor:pointer}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn:disabled{opacity:.45;cursor:default}
+.btn.danger{border-color:var(--bad);color:var(--bad)}
+.select{width:100%;padding:7px;border:1px solid var(--line);border-radius:8px;background:#fff}
+.disclosure{padding:12px;border:1px solid #a7d4c3;border-radius:10px;background:var(--accent-soft);margin:10px 0}
+.banner{padding:10px 12px;border-radius:8px;border:1px solid var(--line);margin:8px 0}
+.banner.bad{background:var(--bad-soft);border-color:#e2aaa4}
+.banner.warn{background:var(--warn-soft);border-color:#e7c779}
+.banner.good{background:var(--accent-soft);border-color:#a7d4c3}
+.banner h4{margin:0 0 4px;font-size:13px}
+.tui-frame{border:1px solid #1a2420;border-radius:10px;overflow:hidden;background:#0f1a17;color:#dbe6e1;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;line-height:1.5}
+.tui-header{padding:8px 10px;background:#17221e;border-bottom:1px solid #24302d;display:flex;justify-content:space-between;align-items:center}
+.tui-body{padding:10px;min-height:260px}
+.chip{display:inline-block;padding:1px 6px;border-radius:999px;background:#24302d;color:#b9d1c9;font-size:11px}
+hr.sep{border:0;border-top:1px solid var(--line);margin:10px 0}
+.variant{display:none}
+.variant.active{display:block}
+.switcher{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);display:flex;align-items:center;gap:10px;padding:8px 12px;border:1px solid #1a2420;border-radius:999px;background:#0f1a17;color:#dbe6e1;box-shadow:0 8px 24px rgba(0,0,0,.2);z-index:50}
+.switcher button{width:28px;height:28px;border-radius:999px;border:1px solid #2a3a36;background:#18231f;color:#dbe6e1;cursor:pointer}
+.switcher .label{font-size:13px;white-space:nowrap}
+.switcher .label strong{color:#7fe0c0}
+</style>
+</head>
+<body>
+<header class="wrap">
+<div class="eyebrow">Throwaway UI prototype · Pi 0.84.2 · Bridge Package</div>
+<h1>/codex-marketplace — TUI 管理流原型</h1>
+<p class="lead">一句話：Pi TUI 內以 <code>/codex-marketplace</code> 為唯一聚合入口，唯讀發現可走指令或 selector 瀏覽，任何 mutation 強制走 <strong>Scope 選擇 → Validation Disclosure → State Revision + Validation Snapshot 綁定的雙重確認（預設 No）→ 原子 commit → 立即 reload → Pending/Applied 回報</strong>。本原型用三個結構差異大的變體讓你用點擊感受差異。</p>
+<div class="question">
+<strong>本原型要回答的問題（對應 #10）</strong>：什麼指令與互動流能在 commit 前讓使用者看懂 Marketplace/Plugin 發現、scope、確認、lifecycle state、不相容、diagnostics 與 reload 後果？<br>
+已定決策 Q1–Q4：<span class="pill good">C /codex-marketplace 聚合</span> <span class="pill good">C 混合導航</span> <span class="pill good">B 每次顯式 scope</span> <span class="pill good">B+ C checklist</span>。三變體在下方以 <code>?variant=A|B|C</code> 切換。
+<div class="decision">原型假設：Pi <code>ctx.ui.select</code>/<code>confirm</code>/<code>custom</code> 為 TUI 原語；Discovery 走 <code>SelectList</code>；披露走 <code>custom</code> 全螢覆蓋；每步皆顯示 <code>State Revision</code> 與 <code>Validation Snapshot fingerprint</code>，失效即 <code>Rejected as Stale</code>。</div>
+</div>
+</header>
+
+<main class="wrap">
+<!-- shared state strip -->
+<div class="surface" id="global-strip">
+<h2>目前 Bridge State（共享 mock，供三變體讀取）</h2>
+<div class="grid g3" id="state-strip"></div>
+<div class="small muted" style="margin-top:8px">Global State @ <code>${getAgentDir()}/codex-marketplace/state.json</code> · Project State @ <code>.pi/codex-marketplace/state.json</code> · 每份文件含 <code>schemaVersion</code> + scope-local Registrations + Installations + Scope Overrides；catalog / Effective State / diagnostics 皆為衍生，不持久化。</div>
+</div>
+
+<!-- Variant A -->
+<div id="variant-a" class="variant">
+<div class="surface">
+<h2>Variant A — 指令導向（Command-first）</h2>
+<p class="small muted">頂部模擬 Pi 輸入框與 autocomplete；先用指令完成發現，再以 disclosure 卡片做確認。適合已熟悉路徑/URL 的使用者。</p>
+<div class="tui-frame">
+<div class="tui-header"><span>pi — interactive <span class="chip">/codex-marketplace</span></span><span class="small">↵ discovery · ⌘K scope</span></div>
+<div class="tui-body" id="a-tui"></div>
+</div>
+<div class="toolbar" style="margin-top:10px" id="a-actions"></div>
+<div id="a-disclosure"></div>
+<div id="a-outcome"></div>
+</div>
+<div class="grid g2">
+<div class="surface"><h3>Discovery：Marketplace 清單</h3><div id="a-mp-table"></div></div>
+<div class="surface"><h3>Discovery：Plugin 清單（選定 Marketplace）</h3><div id="a-plugin-table"></div></div>
+</div>
+<div class="surface"><h3>Diagnostics（按 class→phase→target→pointer→rule 排序）</h3><div id="a-findings"></div></div>
+</div>
+
+<!-- Variant B -->
+<div id="variant-b" class="variant">
+<div class="surface">
+<h2>Variant B — 雙欄總管（Explorer）</h2>
+<p class="small muted">左側導航：Marketplaces / Plugins / Installations / Receipts；右側詳情 + scope 預覽 + Effective State 層疊。適合在不確定要動哪個 Marketplace 時先瀏覽。</p>
+<div class="grid g2">
+<div>
+<label class="small muted">左側導航</label>
+<select class="select" id="b-nav"><option value="marketplaces">Marketplaces（註冊）</option><option value="plugins">Plugins（依 Marketplace）</option><option value="installations">Installations（enabled/disabled/suppressed）</option><option value="receipts">Receipts（Attempt Journal）</option></select>
+<div id="b-left" class="surface" style="margin-top:8px;max-height:520px;overflow:auto"></div>
+</div>
+<div>
+<div class="surface" id="b-right"></div>
+<div class="surface" id="b-effective"></div>
+</div>
+</div>
+</div>
+</div>
+
+<!-- Variant C -->
+<div id="variant-c" class="variant">
+<div class="surface">
+<h2>Variant C — Checklist 精靈（Update Plan Wizard）</h2>
+<p class="small muted">專為 #8 的 Update Plan 與 #6 的 Rebind 設計：頂部先驗 <code>Attempt Fence</code> / <code>Global Pending Barrier</code>，中央 disclosure，底部對每個 Installation 提供 radio（Update / Disable / Remove），仍 enabled 者追加 Activation Confirmation。</p>
+<div id="c-barrier" class="banner"></div>
+<div class="grid g2">
+<div class="surface" id="c-disclosure"></div>
+<div class="surface" id="c-checklist"></div>
+</div>
+<div class="toolbar" id="c-actions"></div>
+<div id="c-outcome"></div>
+</div>
+<div class="surface"><h3>Findings 與 Recovery Actions（與 C 的 checklist 同步）</h3><div id="c-findings"></div></div>
+</div>
+
+<div class="surface">
+<h2>Reload 後果模型（共用說明）</h2>
+<div class="grid g3">
+<div class="banner good"><h4>Applied</h4><div class="small">host-verifiable Bridge re-entry 在預期 State Revision 完成，且無 whole-Plugin Blocking Finding → <code>Completed</code>；有 Warning/Notice 則 <code>Completed with diagnostics</code></div></div>
+<div class="banner warn"><h4>Pending Application</h4><div class="small">target State Revision 已驗證 commit 但 runtime 未驗證 → 保留 desired state，無自動 rollback，需 <code>Retry Application</code>（同 Revision+Snapshot 才可複用確認，否則重新 preflight）</div></div>
+<div class="banner bad"><h4>Blocked / Rejected as Stale</h4><div class="small">commit 前的 non-waivable target finding → Blocked；State Revision 或 Snapshot 已變 → Rejected as Stale。皆不產生 state mutation</div></div>
+</div>
+<div class="small muted">對應 #9 的封閉 Attempt Summary：Completed / Completed with diagnostics / Declined / Blocked / Rejected as Stale / Persistence Failed / Persistence Indeterminate / Pending Application。Persistence Indeterminate 封鎖後續 mutation/application 直至 Repair State。</div>
+</div>
+</main>
+
+<div class="switcher" id="switcher" role="navigation" aria-label="Variant switcher">
+<button id="prev" aria-label="Previous variant">‹</button>
+<div class="label" id="switcher-label"></div>
+<button id="next" aria-label="Next variant">›</button>
+</div>
+
+<script>
+// ---------- Mock domain data (shared across variants) ----------
+const MOCK = {
+  global: {
+    stateRevision: "018f9a12-aaaa-4b2e-9c01-111111111111",
+    schemaVersion: 1,
+    registrations: [
+      { id:"018f9a12-bbbb-4e5a-9a11-aaaaaaaaaaaa", alias:"acme", marketplaceName:"acme-marketplace", sourceKind:"local", source:"~/code/acme-marketplace", resolvedRevision:"—", validationSnapshot:"sha256:9f3c…a1b2", entries:12, compatible:9, incompatible:2, invalid:1 },
+      { id:"018f9a12-cccc-4e5a-9a11-bbbbbbbbbbbb", alias:"codex-fixtures", marketplaceName:"codex-plugins", sourceKind:"git", source:"https://github.com/SamWang32191/codex-plugins", selector:"tag v98e78ca", resolvedRevision:"98e78ca…f9b7e99a", validationSnapshot:"sha256:4e2d…c889", entries:8, compatible:6, incompatible:1, invalid:1 }
+    ],
+    installations: [
+      { pluginId:"acme-marketplace/release-helper@1.4.0", installationId:"018f9b01-1111-4e5a-aaaa-aaaaaaaaaaaa", state:"enabled", scope:"Global Scope", marketplaceId:"018f9a12-bbbb/ acme-marketplace", skills:["release-notes","supply-chain-check"], findings:[] },
+      { pluginId:"acme-marketplace/legacy-hooks@0.2.0", installationId:"018f9b01-2222-4e5a-bbbb-bbbbbbbbbbbb", state:"disabled", scope:"Global Scope", marketplaceId:"018f9a12-bbbb/ acme-marketplace", skills:["legacy-hook"], findings:["INCOMPATIBLE_ACTIVE_COMPONENT"], suppressed:false },
+      { pluginId:"codex-plugins/docs-helper@0.9.0", installationId:"018f9b01-3333-4e5a-cccc-cccccccccccc", state:"enabled", scope:"Global Scope", marketplaceId:"018f9a12-cccc/ codex-plugins", skills:["docs-search"], findings:[] }
+    ],
+    overrides: []
+  },
+  project: {
+    stateRevision:"018f9a34-dddd-4b2e-9c01-222222222222",
+    schemaVersion: 1,
+    trusted: true,
+    registrations: [
+      { id:"018f9a34-eeee-4e5a-9a11-dddddddddddd", alias:"team", marketplaceName:"team-marketplace", sourceKind:"git", source:"https://github.com/example/team-marketplace", selector:"branch main", resolvedRevision:"a1b2c3d…e4f5a6b", validationSnapshot:"sha256:7c9a…1122", entries:5, compatible:4, incompatible:1, invalid:0, updateCandidate:{ snapshot:"sha256:8d0b…3344", newRevision:"b2c3d4e…f6a7b8c", changedEntries:"+1 Compatible" } }
+    ],
+    installations: [
+      { pluginId:"team-marketplace/release-helper@1.5.0", installationId:"018f9b02-4444-4e5a-dddd-dddddddddddd", state:"enabled", scope:"Project Scope", marketplaceId:"018f9a34-eeee/ team-marketplace", skills:["release-notes","supply-chain-check"], findings:["RUNTIME_SKILL_COLLISION"], note:"與 Global 的 release-notes 同名碰撞，僅該 skill unavailable" },
+      { pluginId:"acme-marketplace/release-helper@1.4.0", installationId:"018f9b01-1111-4e5a-aaaa-aaaaaaaaaaaa", state:"enabled", scope:"Global Scope (inherited, overridden by Project)", marketplaceId:"018f9a12-bbbb/ acme-marketplace", suppressedByProject:true }
+    ],
+    overrides: [
+      { kind:"Installation", id:"018f9b01-3333-4e5a-cccc-cccccccccccc", suppress:"Global docs-helper" }
+    ],
+    pendingUpdate: { registrationId:"018f9a34-eeee-4e5a-9a11-dddddddddddd", requires:["Registration Confirmation","每 Installation: Update/Disable/Remove + 仍 enabled 者 Activation Confirmation"] }
+  },
+  findings: [
+    { code:"PATH_CONTAINMENT_VIOLATION", cls:"Blocking", phase:"validation", target:"Marketplace Entry", pointer:"/plugins/2/path", rule:"CONT-01", scope:"Global acme", outcome:"Entry Unavailable", action:"Inspect" },
+    { code:"INCOMPATIBLE_ACTIVE_COMPONENT", cls:"Blocking", phase:"classification", target:"Plugin", pointer:"plugin.json:hooks", rule:"COMP-02", scope:"Global acme", outcome:"Plugin Incompatible", action:"Inspect" },
+    { code:"INERT_METADATA_IGNORED", cls:"Validation Warning", phase:"validation", target:"Skill", pointer:"agents/openai.yaml:presentation", rule:"WARN-01", scope:"Global codex-plugins", outcome:"Warning discloseable", action:"Confirm accepts" },
+    { code:"RUNTIME_SKILL_COLLISION", cls:"Blocking (skill-granular)", phase:"pre-application", target:"Skill", pointer:"release-notes", rule:"RSC-01", scope:"Project team", outcome:"Skill Unavailable, siblings remain", action:"Inspect" },
+    { code:"SOURCE_DRIFT", cls:"Blocking", phase:"refresh", target:"Registration", pointer:"team-marketplace", rule:"DRIFT-01", scope:"Project team", outcome:"Requires Marketplace Refresh", action:"Refresh" },
+    { code:"ATTEMPT_IN_PROGRESS", cls:"Blocking", phase:"admission", target:"Attempt", pointer:"—", rule:"FENCE-01", scope:"Global", outcome:"Blocked", action:"Inspect (no queue)" },
+    { code:"GLOBAL_PENDING_BARRIER", cls:"Blocking", phase:"admission", target:"Attempt", pointer:"—", rule:"BARRIER-01", scope:"Project", outcome:"Blocked until Global Applied", action:"Inspect" },
+    { code:"AVAILABILITY_UNVERIFIED", cls:"Operational Notice", phase:"post-commit", target:"Skill", pointer:"supply-chain-check", rule:"AVAIL-01", scope:"Global", outcome:"Eligible, verify via host", action:"Inspect" }
+  ],
+  receipts: [
+    { id:"rcpt_018f9c01_01", kind:"Lifecycle Operation", scope:"Project", trigger:"Install and Enable team/release-helper", summary:"Completed with diagnostics", durable:"Committed", runtime:"Applied", findings:["RUNTIME_SKILL_COLLISION"] },
+    { id:"rcpt_018f9c01_02", kind:"Marketplace Refresh", scope:"Project", trigger:"Refresh team-marketplace", summary:"Blocked", durable:"Unchanged", runtime:"Not Attempted", findings:["SOURCE_DRIFT"] },
+    { id:"rcpt_018f9c01_03", kind:"Lifecycle Operation", scope:"Global", trigger:"Apply Update acme-marketplace", summary:"Pending Application", durable:"Committed", runtime:"Pending Application", findings:["AVAILABILITY_UNVERIFIED"] }
+  ]
+};
+
+// order findings per CONTEXT: class → phase → target kind/ID → pointer → rule
+function findingOrder(a,b){
+  const classRank={Blocking:0,"Blocking (skill-granular)":1,"Validation Warning":2,"Operational Notice":3};
+  const phaseRank={validation:0,classification:1,"pre-application":2,refresh:3,admission:4,"post-commit":5};
+  return (classRank[a.cls]??9)-(classRank[b.cls]??9) || (phaseRank[a.phase]??9)-(phaseRank[b.phase]??9) || a.target.localeCompare(b.target) || a.pointer.localeCompare(b.pointer) || a.code.localeCompare(b.code);
+}
+
+// ---------- Switcher ----------
+const VARIANTS=["A","B","C"];
+const LABELS={A:"A — 指令導向",B:"B — 雙欄總管",C:"C — Checklist 精靈"};
+function getVariant(){ const v=new URLSearchParams(location.search).get("variant"); return VARIANTS.includes(v)?v:"A"; }
+function setVariant(v){ const u=new URL(location.href); u.searchParams.set("variant",v); history.replaceState(null,"",u.toString()); render(); }
+let current=getVariant();
+function renderSwitcher(){
+  document.getElementById("switcher-label").innerHTML=`<strong>${LABELS[current]}</strong> <span class="small">· ?variant=${current}</span>`;
+}
+document.getElementById("prev").onclick=()=>{ const i=VARIANTS.indexOf(current); setVariant(VARIANTS[(i-1+VARIANTS.length)%VARIANTS.length]); };
+document.getElementById("next").onclick=()=>{ const i=VARIANTS.indexOf(current); setVariant(VARIANTS[(i+1)%VARIANTS.length]); };
+window.addEventListener("keydown",e=>{
+  if(e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.target.isContentEditable) return;
+  if(e.key==="ArrowLeft") document.getElementById("prev").click();
+  if(e.key==="ArrowRight") document.getElementById("next").click();
+});
+
+function render(){
+  current=getVariant();
+  document.querySelectorAll(".variant").forEach(el=>el.classList.remove("active"));
+  document.getElementById("variant-"+current.toLowerCase()).classList.add("active");
+  renderSwitcher();
+  if(current==="A") renderA();
+  if(current==="B") renderB();
+  if(current==="C") renderC();
+  renderStateStrip();
+}
+window.addEventListener("popstate",render);
+
+// ---------- Shared strip ----------
+function renderStateStrip(){
+  const g=MOCK.global, p=MOCK.project;
+  document.getElementById("state-strip").innerHTML=`
+    <div class="banner good"><h4>Global Scope</h4><div class="small">State Revision <code>${g.stateRevision.slice(0,8)}…</code> · schema v${g.schemaVersion}<br>${g.registrations.length} registrations · ${g.installations.filter(i=>i.state==='enabled').length} enabled / ${g.installations.filter(i=>i.state==='disabled').length} disabled</div><div style="margin-top:6px">${g.registrations.map(r=>`<span class="pill scope">${r.alias} · ${r.marketplaceName} · ${r.sourceKind}</span>`).join("")}</div></div>
+    <div class="banner ${p.trusted?'good':'bad'}"><h4>Project Scope — ${p.trusted?'Trusted':'Untrusted（需 Pi project trust）'}</h4><div class="small">State Revision <code>${p.stateRevision.slice(0,8)}…</code> · ${p.registrations.length} registrations · ${p.installations.filter(i=>!i.suppressedByProject).length} effective installations<br>Overrides: ${p.overrides.length} · Pending Update: ${p.pendingUpdate?'有（需完整 Update Plan）':'無'}</div></div>
+    <div class="banner"><h4>Effective State（衍生，不持久化）</h4><div class="small">層疊 <code>Pi → Project Scope → Global Scope</code>，同名技能整層碰撞時該層無 winner，較低層可遞補（Decision B）。Source Cache 與 diagnostics 不作權威。</div><div class="small" style="margin-top:6px"><span class="pill">release-notes — Pi 已有 skill 時 Bridge skill unavailable（僅該 skill）</span><span class="pill warn">team/release-helper 碰撞時僅 release-notes 受影響</span></div></div>
+  `;
+}
+
+// ---------- Variant A ----------
+let aSelectedMp = MOCK.global.registrations[0].id;
+let aSelectedPlugin = "acme-marketplace/release-helper@1.4.0";
+function renderA(){
+  const mp = [...MOCK.global.registrations, ...MOCK.project.registrations].find(r=>r.id===aSelectedMp);
+  document.getElementById("a-tui").innerHTML=`
+    <div style="color:#7fe0c0">/codex-marketplace <span style="color:#b9d1c9">list</span> <span class="chip">--scope global</span> <span class="chip">--scope project</span></div>
+    <div class="small" style="color:#90a9a2;margin-top:6px">建議：先 <code>list</code>/<code>inspect</code> 做唯讀發現；任何 mutation 走 <span class="chip">disclosure → confirm(Default No)</span></div>
+    <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">
+      <span class="chip">StateRevision ${MOCK.global.stateRevision.slice(0,8)}…</span>
+      <span class="chip">Snapshot ${mp.validationSnapshot}</span>
+      <span class="chip">Attempt Fence: free</span>
+    </div>
+    <div style="margin-top:10px;padding:8px;border:1px dashed #2a3a36;border-radius:8px;background:#14201d">
+      <div style="color:#7fe0c0">disclosure — ${mp.marketplaceName}</div>
+      <div class="small" style="color:#b9d1c9">scope=${mp.sourceKind==='local'?'Global':'Global'} · source=${mp.source} · selector=${mp.selector||'—'} · revision=${mp.resolvedRevision} · movable=${mp.sourceKind==='git'?'yes':'no'}<br>entries ${mp.entries}（Compatible ${mp.compatible} / Incompatible ${mp.incompatible} / Invalid ${mp.invalid}） · Budget: catalog 1MiB / entries 1,024</div>
+      <div class="small" style="color:#e7c779;margin-top:6px">⚠ Inert Metadata Warning 可經 confirmation 接受；Blocking Finding 不可 waive（見右側 Findings 排序）。</div>
+    </div>
+    <div class="small" style="color:#90a9a2;margin-top:8px">reload 後果：commit 後立即 <code>reload</code> 嘗試 Runtime Application；host re-entry 驗證前為 <code>Pending Application</code>，可在同 Revision+Snapshot 下 <code>Retry Application</code>。</div>
+  `;
+  document.getElementById("a-actions").innerHTML=`
+    <button class="btn" onclick="aDo('refresh')">Marketplace Refresh（唯讀，不改 state）</button>
+    <button class="btn primary" onclick="aDo('register')">Register — 需 Registration Confirmation（Default No）</button>
+    <button class="btn" onclick="aDo('install-disabled')">Install Disabled（免 Activation Confirm）</button>
+    <button class="btn primary" onclick="aDo('install-enable')">Install and Enable（需 Activation Confirm）</button>
+    <button class="btn" onclick="aDo('inspect')">Inspect Receipt</button>
+  `;
+  renderATables();
+  renderAFindings();
+}
+function renderATables(){
+  const allMps=[...MOCK.global.registrations, ...MOCK.project.registrations];
+  document.getElementById("a-mp-table").innerHTML=`<div class="table-wrap"><table><thead><tr><th>alias / Marketplace ID</th><th>Source</th><th>State</th></tr></thead><tbody>${
+    allMps.map(r=>`<tr style="${r.id===aSelectedMp?'background:#e6f3ed':''};cursor:pointer" onclick="aSelectedMp='${r.id}';renderA()"><td><code>${r.alias}</code><br><span class="small muted">${r.id.slice(0,8)}… / ${r.marketplaceName}</span><br><span class="pill ${r.sourceKind==='git'?'warn':''}">${r.sourceKind}</span> <span class="pill">${r.validationSnapshot}</span> ${r.updateCandidate?'<span class="pill bad">Update Candidate</span>':''}</td><td><span class="small">${r.source}</span><br><span class="small muted">${r.selector||''} ${r.resolvedRevision}</span></td><td><span class="pill">${r.compatible} ✓</span><span class="pill bad">${r.incompatible} ✗</span><span class="pill warn">${r.invalid} !</span><br><span class="small muted">entries ${r.entries}</span></td></tr>`).join("")
+  }</tbody></table></div><div class="small muted" style="margin-top:6px">點擊切換選定 Marketplace；下方 Plugin 清單跟隨。</div>`;
+  const mp=[...MOCK.global.registrations,...MOCK.project.registrations].find(r=>r.id===aSelectedMp);
+  const plugins=[
+    { name:"release-helper", version:"1.4.0", kind:"Compatible", skills:[{name:"release-notes",invocation:"explicit"},{name:"supply-chain-check",invocation:"discoverable"}], resources:["scripts/check.sh","references/policy.md"], findings:[], marketplace:mp.marketplaceName },
+    { name:"legacy-hooks", version:"0.2.0", kind:"Incompatible", reason:"requires hooks (unsupported Active Component)", skills:[], marketplace:mp.marketplaceName },
+    { name:"broken-manifest", version:"—", kind:"Invalid", reason:"plugin.json duplicate keys", skills:[], marketplace:mp.marketplaceName },
+  ];
+  document.getElementById("a-plugin-table").innerHTML=`<div class="table-wrap"><table><thead><tr><th>Plugin ID</th><th>Skills / Invocation</th><th>分類</th></tr></thead><tbody>${
+    plugins.map(p=>`<tr style="${p.name==='release-helper'?'background:#e6f3ed':''}"><td><code>${p.marketplace}/${p.name}@${p.version}</code><br><span class="small muted">Update 連續性僅由 Marketplace ID+manifest name 決定</span></td><td>${p.skills.map(s=>`<span class="pill">${s.name}<span class="small muted"> · ${s.invocation}</span></span>`).join("")||'<span class="small muted">—</span>'}<br><span class="small muted">${p.resources? 'resources: '+p.resources.join(", "):''}</span></td><td>${p.kind==='Compatible'?'<span class="pill good">Compatible</span>': p.kind==='Incompatible'?'<span class="pill bad">Incompatible</span><br><span class="small muted">'+p.reason+'</span>':'<span class="pill warn">Invalid</span><br><span class="small muted">'+p.reason+'</span>'}</td></tr>`).join("")
+  }</tbody></table></div><div class="small muted" style="margin-top:6px">Compatible 才可 Install；Incompatible/Invalid 屬 whole-Plugin fail-closed，僅該 Plugin 不投射，Installation 仍可選 disabled 狀態安裝？否 — 需先為 Compatible（見 #4）。</div>`;
+}
+function renderAFindings(){
+  const sorted=[...MOCK.findings].sort(findingOrder);
+  document.getElementById("a-findings").innerHTML=sorted.map(f=>`
+    <div class="finding ${f.cls.includes('Blocking')?'blocking': f.cls==='Validation Warning'?'warning':'notice'}">
+      <div style="display:flex;justify-content:space-between;gap:8px"><strong>${f.code}</strong><span class="pill ${f.cls.includes('Blocking')?'bad': f.cls==='Validation Warning'?'warn':'good'}">${f.cls}</span></div>
+      <div class="small muted">${f.phase} · target ${f.target} · pointer <code>${f.pointer}</code> · rule ${f.rule} · scope ${f.scope}</div>
+      <div class="small">outcome: ${f.outcome} · eligible: <code>${f.action}</code></div>
+    </div>
+  `).join("") + `<div class="small muted">循序：class → phase → target → pointer → rule；同 receipt 內 dedup，receipt間不 dedup。</div>`;
+}
+function aDo(kind){
+  const mp=[...MOCK.global.registrations,...MOCK.project.registrations].find(r=>r.id===aSelectedMp);
+  const box=document.getElementById("a-disclosure");
+  if(kind==='inspect'){ box.innerHTML=`<div class="surface"><h3>Receipt — rcpt_018f9c01_01</h3><div class="small">Project · Install and Enable team/release-helper · <span class="pill warn">Completed with diagnostics</span> · Durable Committed / Runtime Applied<br>expected ${MOCK.project.stateRevision.slice(0,8)}… → target … → observed … · snapshot ${mp.validationSnapshot}<br>Recovery: Inspect（碰撞僅技能級）</div></div>`; document.getElementById("a-outcome").innerHTML=""; return;}
+  if(kind==='refresh'){ box.innerHTML=`<div class="disclosure"><strong>Marketplace Refresh — ${mp.marketplaceName}</strong>（不改 state、不改 runtime）<br><span class="small">Acquisition（非執行、驗 constrained trust）→ Validation Snapshot fingerprint 比對 → ${mp.updateCandidate?'產生 Update Candidate':'No change'}</span><br><span class="pill">Validation Snapshot fingerprint 必須仍匹配才可 commit/activation</span></div>`; document.getElementById("a-outcome").innerHTML=`<div class="banner good"><h4>Refresh Result — Blocked（若有 drift）</h4><div class="small">Source Drift 時 Bridge State 不變，受影響 Installations 不可成為 Projected Plugins，需顯式 Refresh 才有 Candidate。</div></div>`; return;}
+  const isEnable=kind==='install-enable';
+  box.innerHTML=`
+    <div class="disclosure">
+      <strong>Validation Disclosure — ${isEnable?'Plugin Activation':'Marketplace Registration'}</strong>（綁定 State Revision <code>${MOCK.global.stateRevision.slice(0,8)}…</code> + Snapshot <code>${mp.validationSnapshot}</code>）
+      <div class="small" style="margin-top:6px">scope: <code>${mp.sourceKind==='local'?'Global Scope':'Project Scope'}</code> · source: <code>${mp.source}</code> · selector: <code>${mp.selector||'—'}</code> · revision: <code>${mp.resolvedRevision}</code> · movable: ${mp.sourceKind==='git'?'yes':'no'}<br>
+      Marketplace: <code>${mp.marketplaceName}</code> · Compatibility Profile v1（僅 skills）· Budget: plugin 64MiB / skills 128 / files 10,000<br>
+      Plugin: <code>${mp.marketplaceName}/release-helper@1.4.0</code> · skills: <span class="pill">release-notes · explicit</span><span class="pill">supply-chain-check · discoverable</span> · resources: scripts/check.sh (opaque, 不執行)<br>
+      碰撞預期：若 Pi 已有 <code>release-notes</code>，Bridge 該 skill unavailable；siblings 繼續（Decision B）。<br>
+      <span class="small muted">注意：Registration 不等於 activation；prompt 指令可能影響模型與工具使用，無 sandbox。</span></div>
+      <div class="toolbar" style="margin-top:10px">
+        <button class="btn" onclick="aConfirm(false)">No（預設）— Declined，不產生 mutation</button>
+        <button class="btn primary" onclick="aConfirm(true)">Yes — 僅在 Revision+Snapshot 仍精確匹配時 commit</button>
+        <button class="btn" onclick="document.getElementById('a-disclosure').innerHTML=''">Cancel — 回到 discovery</button>
+      </div>
+      <div class="small muted" style="margin-top:6px">若期間 State Revision 或 Snapshot 已變，commit 前重驗失敗 → <code>Rejected as Stale</code>，需重新 preflight。</div>
+    </div>
+  `;
+  document.getElementById("a-outcome").innerHTML="";
+}
+function aConfirm(yes){
+  if(!yes){ document.getElementById("a-outcome").innerHTML=`<div class="banner warn"><h4>Declined</h4><div class="small">使用者選 No；state 未變；產生 Declined receipt（redacted、immutable、non-authoritative）。</div></div>`; return;}
+  // simulate success with diagnostics
+  document.getElementById("a-outcome").innerHTML=`
+    <div class="banner good"><h4>Completed with diagnostics — 已 commit + reload 已 Applied（host-verified）</h4><div class="small">Bridge 已嘗試 reload → re-entry 在預期 State Revision 完成且無 whole-Plugin Blocking Finding。<br>Diagnostics：<span class="pill warn">RUNTIME_SKILL_COLLISION · release-notes unavailable</span>（per-skill，不升格為 whole-Plugin failure）。<br>Receipt 已寫入 Journal（bounded 100 + active chains），後續以 Receipt Resolution（Resolve/Supersede）描述歷史。</div></div>
+    <div class="banner warn"><h4>若 reload 未驗證</h4><div class="small">則為 <span class="pill bad">Pending Application</span>：desired state 已 commit，但不可聲稱 Applied；僅在同 Revision+Snapshot 下可 <code>Retry Application</code>，否則重新 disclosure+confirm。</div></div>
+  `;
+}
+window.aDo=aDo; window.aConfirm=aConfirm;
+
+// ---------- Variant B ----------
+function renderB(){
+  const nav=document.getElementById("b-nav").value;
+  let left="", right="", effective="";
+  if(nav==="marketplaces"){
+    const all=[...MOCK.global.registrations.map(r=>({...r,scope:"Global"})), ...MOCK.project.registrations.map(r=>({...r,scope:"Project"}))];
+    left=`<div class="table-wrap"><table><thead><tr><th>Marketplace</th><th>Scope</th></tr></thead><tbody>${
+      all.map(r=>`<tr><td><code>${r.marketplaceName}</code><br><span class="small muted">${r.alias} · ${r.source}</span><br><span class="pill">${r.validationSnapshot}</span> ${r.updateCandidate?'<span class="pill bad">Update Candidate</span>':''}</td><td><span class="pill scope">${r.scope}</span><br><span class="small muted">${r.entries} entries</span></td></tr>`).join("")
+    }</tbody></table></div>`;
+    right=`<h3>詳情 — acme-marketplace（Global）</h3>
+      <div class="small">Registration ID <code>018f9a12-bbbb…</code> · Source Key（local realpath：${MOCK.global.registrations[0].source}）· 只用於重複偵測，非 identity<br>State Revision <code>${MOCK.global.stateRevision.slice(0,8)}…</code> · Snapshot <code>${MOCK.global.registrations[0].validationSnapshot}</code>（含完整 path/mode/hash/skills）</div>
+      <div class="grid g2" style="margin-top:8px"><div class="banner good"><h4>Catalog</h4><div class="small">.agents/plugins/marketplace.json closed object · name kebab-case · plugins[] 共 ${MOCK.global.registrations[0].entries} 條</div></div><div class="banner"><h4>Entries</h4><div class="small"><span class="pill good">9 Compatible</span><span class="pill bad">2 Unavailable</span><span class="pill warn">1 Invalid</span><br>Unavailable 仍各自披露 Entry ID <code>/plugins/&lt;ordinal&gt;</code>，不遞迴取得另一 source。</div></div></div>
+      <div class="toolbar" style="margin-top:8px"><button class="btn" onclick="alert('Refresh：重驗完整 catalog+Plugin tree，產生或不產生 Candidate，不改 state')">Marketplace Refresh</button><button class="btn primary" onclick="alert('Apply Update：需完整 Update Plan（見 Variant C）')">Apply Update…</button><button class="btn danger" onclick="alert('Registration Removal：原子移除同 scope 的 Registration + 全部 Installations，其他 scope 僅 fail-closed')">Registration Removal…</button></div>`;
+    effective=`<h3>Scope 預覽</h3><div class="small">Project Scope（Trusted）對 Global 的疊加視圖。<br>Global acme 有 3 Installations；Project 對其中 <code>docs-helper</code> 有 Installation Override（suppress），對 <code>team-marketplace</code> 有新 Registration。<br>移除 override 即揭示被遮蔽的 Global Installation。</div>`;
+  } else if(nav==="plugins"){
+    left=`<div class="small muted">選 Marketplace：</div><select class="select" style="margin:6px 0" onchange="bMp=this.value;renderB()"><option ${bMp==='acme'?'selected':''} value="acme">acme-marketplace (Global)</option><option ${bMp==='team'?'selected':''} value="team">team-marketplace (Project)</option></select>
+      <div class="table-wrap"><table><thead><tr><th>Plugin</th><th>狀態</th></tr></thead><tbody>
+        <tr><td><code>release-helper@1.4.0</code><br><span class="small muted">manifest name 為權威 Plugin name</span></td><td><span class="pill good">Compatible</span><br><span class="small muted">skills 2</span></td></tr>
+        <tr><td><code>legacy-hooks@0.2.0</code></td><td><span class="pill bad">Incompatible</span><br><span class="small muted">requires hooks</span></td></tr>
+        <tr><td><code>broken-manifest</code></td><td><span class="pill warn">Invalid</span><br><span class="small muted">duplicate keys</span></td></tr>
+      </tbody></table></div>`;
+    right=`<h3>release-helper — Compatible Plugin 詳情</h3>
+      <div class="small">Plugin ID <code>acme-marketplace/release-helper</code>（Marketplace ID + manifest name）· version/path/ordinal 僅為屬性<br>Compat Profile v1 逐一通過 Active Component 檢查；Inert Metadata 僅 Warning。</div>
+      <div class="table-wrap" style="margin-top:8px"><table><thead><tr><th>Skill ID</th><th>Descriptor / Invocation</th></tr></thead><tbody>
+        <tr><td><code>acme-marketplace/release-helper/release-notes</code></td><td>SKILL.md frontmatter name <code>release-notes</code> · Invocation <code>explicit</code> · Resource: scripts/check.sh (opaque)</td></tr>
+        <tr><td><code>acme-marketplace/release-helper/supply-chain-check</code></td><td><code>supply-chain-check</code> · <code>discoverable</code></td></tr>
+      </tbody></table></div>
+      <div class="banner warn"><h4>Incompatibility 告知</h4><div class="small">Incompatible 插件整體 fail-closed，不投射任何 skill；需顯示 rule code 與「requires MCP/hooks 等 unsupported component」原因，並提供 <code>Inspect</code>。</div></div>
+      <div class="toolbar"><button class="btn" onclick="alert('Install Disabled：記錄 disabled Installation，免 Activation Confirm')">Install Disabled</button><button class="btn primary" onclick="alert('Install and Enable：需 Activation Confirmation（Default No，綁定 Snapshot+Revision）')">Install and Enable…</button></div>`;
+    effective=`<h3>Precedence 預覽（更新前）</h3><div class="small">若 Pi 已有 <code>release-notes</code>，Bridge 的 <code>release-notes</code> 將為 <span class="pill bad">Unavailable（RUNTIME_SKILL_COLLISION）</span>；<code>supply-chain-check</code> 仍 <span class="pill good">Eligible</span>。此為 per-skill 結果，不改變 Compatible 分類。</div>`;
+  } else if(nav==="installations"){
+    left=`<div class="table-wrap"><table><thead><tr><th>Installation</th><th>State</th></tr></thead><tbody>
+      <tr><td><code>release-helper</code><br><span class="small muted">Project team · enabled</span></td><td><span class="pill good">enabled</span><br><span class="pill bad">RUNTIME_SKILL_COLLISION</span></td></tr>
+      <tr><td><code>release-helper</code><br><span class="small muted">Global acme · inherited, suppressed</span></td><td><span class="pill">suppressed</span></td></tr>
+      <tr><td><code>docs-helper</code><br><span class="small muted">Global → Project Override</span></td><td><span class="pill bad">suppressed by Project Override</span></td></tr>
+      <tr><td><code>legacy-hooks</code><br><span class="small muted">Global · disabled</span></td><td><span class="pill">disabled</span></td></tr>
+    </tbody></table></div><div class="small muted" style="margin-top:6px">disabled 保留 Installation ID 與 provenance；恢復需重新 Activation Confirm。</div>`;
+    right=`<h3>Installation — team/release-helper（Project enabled）</h3>
+      <div class="small">Installation ID <code>018f9b02-4444…</code> · scope Project · snapshot <code>sha256:7c9a…1122</code> · State Revision <code>${MOCK.project.stateRevision.slice(0,8)}…</code><br>狀態 <span class="pill good">enabled（參與 Effective State）</span> · findings: <span class="pill bad">RUNTIME_SKILL_COLLISION（per-skill）</span></div>
+      <div class="toolbar" style="margin-top:8px"><button class="btn" onclick="alert('Disable：保留 ID，排除於 Effective State')">Disable</button><button class="btn" onclick="alert('Enable：需重新 Activation Confirm + 重驗 snapshot')">Enable…</button><button class="btn danger" onclick="alert('Remove：僅刪此 scope 的 Installation，並披露將揭示的 inherited Global Installation')">Remove…</button><button class="btn" onclick="alert('Rebind：改 source locator/selector，保留 Registration ID，需 fresh validation + 完整 Update Plan')">Rebind…</button></div>
+      <hr class="sep"><div class="small"><strong>Suppression 語意</strong>：Registration-override 抑制整個 Marketplace 子樹；Installation-override 僅抑該 Plugin。Global 的 docs-helper 被 Project Installation Override 抑制，移除 override 即揭示。</div>`;
+    effective=`<h3>Effective State（此 cwd）</h3><div class="small">Layers：<code>Pi skills</code> → <code>Project Bridge</code> → <code>Global Bridge</code>。同層同名無 winner；僅 surviving skill 保留名稱至下一層。<br><code>release-notes</code> 在 Project 碰撞，Global 遞補不可產生（因 Pi 已有）；<code>supply-chain-check</code> 來自 Project，正常投射。</div>`;
+  } else {
+    left=`<div class="table-wrap"><table><thead><tr><th>Receipt</th><th>Summary</th></tr></thead><tbody>${
+      MOCK.receipts.map(r=>`<tr><td><code>${r.id}</code><br><span class="small muted">${r.kind} · ${r.scope}</span><br><span class="small">${r.trigger}</span></td><td><span class="pill ${r.summary.includes('Completed')?'good': r.summary==='Blocked'?'bad':'warn'}">${r.summary}</span><br><span class="small muted">Durable ${r.durable} · Runtime ${r.runtime}</span></td></tr>`).join("")
+    }</tbody></table></div><div class="small muted" style="margin-top:6px">Journal bounded 100 + active chains；Receipt immutable，僅非 active 的 resolved history 可 clear。</div>`;
+    right=`<h3>Receipt 詳情 — rcpt_018f9c01_03（Global Pending Application）</h3>
+      <div class="small">expected ${MOCK.global.stateRevision.slice(0,8)}… → target … → observed …<br>Findings：<span class="pill warn">AVAILABILITY_UNVERIFIED</span>（Operational Notice，evidence-limited）<br>Recovery：<span class="pill">Retry Application（同 Revision+Snapshot）</span> · <span class="pill">Inspect</span></div>
+      <div class="banner bad"><h4>Global Pending Barrier 生效中</h4><div class="small">當 Global 有 Pending Application / Persistence Indeterminate / Journal degradation 時，Project 的 mutation 與 Runtime Application 皆 Blocked（startup 採 global-first）。此為 #9 新增的 Compatibility Profile v1 policy。</div></div>
+      <div class="banner warn"><h4>Persistence Indeterminate</h4><div class="small">舊與 target State Revision 皆無法精確驗證 → 不假設 commit、不 runtime、不後續 mutation、不自動 rollback，直至 Repair State 精確讀回。</div></div>`;
+    effective=`<h3>Attempt Fence</h3><div class="small">每 scope 單一 flight，不排隊。持有人自 admission 持有至 terminal outcome（Applied/Pending/其他）。未取得者得 <code>ATTEMPT_IN_PROGRESS</code> 的 immutable Blocked receipt。</div>`;
+  }
+  document.getElementById("b-left").innerHTML=left;
+  document.getElementById("b-right").innerHTML=right;
+  document.getElementById("b-effective").innerHTML=effective;
+}
+let bMp="acme";
+document.getElementById("b-nav").addEventListener("change",renderB);
+
+// ---------- Variant C ----------
+function renderC(){
+  const mp=MOCK.project.registrations[0];
+  document.getElementById("c-barrier").innerHTML=`<h4>Barrier 檢查（commit 前重驗）</h4><div class="small">Attempt Fence（Project）：<span class="pill good">free</span> · Global Pending Barrier：<span class="pill bad">active（Global rcpt_018f9c01_03 Pending）</span> → Project 的 Apply Update / Rebind 將 <span class="pill bad">Blocked / GLOBAL_PENDING_BARRIER</span>（Global 先修復）。<br>Stale 檢查：若 State Revision <code>${MOCK.project.stateRevision.slice(0,8)}…</code> 或 Snapshot <code>${mp.validationSnapshot}</code> ≠ 預期 → <code>Rejected as Stale</code>。</div>`;
+  document.getElementById("c-disclosure").innerHTML=`
+    <h3>Validation Disclosure — Update Candidate</h3>
+    <div class="small">Registration <code>${mp.marketplaceName}</code>（ID ${mp.id.slice(0,8)}…）· scope Project · source <code>${mp.source}</code> · selector <code>${mp.selector}</code>（movable）<br>目前 Snapshot <code>${mp.validationSnapshot}</code> → 候選 <code>${mp.updateCandidate.snapshot}</code>（${mp.updateCandidate.changedEntries}）· 新 Revision <code>${mp.updateCandidate.newRevision}</code></div>
+    <div class="disclosure"><strong>Update Plan 要求（需一次性承諾，不混用多個 source revision）</strong><div class="small">1) Registration Confirmation（Default No，綁定候選 Snapshot + 當前 State Revision）<br>2) 每個 Installation：Update / Disable / Remove（三選一）<br>3) 仍 enabled 者：各自的 Activation Confirmation（Default No）</div></div>
+    <div class="small muted">若既有 Installation 在候選中無 Compatible（例如 Incompatible），必須 Disable/Remove，否則整段 Plan 放棄（abandon）。</div>
+  `;
+  document.getElementById("c-checklist").innerHTML=`
+    <h3>Checklist — 每個 Installation 的處置</h3>
+    <div class="small muted">（僅展示 Project scope 的 Installations；同 scope 原子 commit）</div>
+    <div style="margin-top:8px;padding:10px;border:1px solid var(--line);border-radius:8px;background:#fbfcfb">
+      <div><strong>team/release-helper@1.5.0</strong> <span class="pill good">enabled → 候選仍 Compatible</span></div>
+      <div class="toolbar" style="margin-top:6px">
+        <label><input type="radio" name="ch0" checked> Update（保留 enabled，需 Activation Confirm）</label>
+        <label><input type="radio" name="ch0"> Disable</label>
+        <label><input type="radio" name="ch0"> Remove</label>
+      </div>
+      <div class="small muted">→ 勾選 Update 時，下方需一次 Activation Disclosure（展示 skills、Invocation Policy、resources、碰撞預期）。</div>
+    </div>
+    <div style="margin-top:8px;padding:10px;border:1px solid var(--line);border-radius:8px;background:#fbfcfb">
+      <div><strong>acme/release-helper（Global inherited, Project 無 Installation）</strong> <span class="pill">無 Project 記錄</span></div>
+      <div class="small muted">不受此 Registration 的 Update Plan 影響（#8：每 Registration 各自的 Plan）。</div>
+    </div>
+    <div class="small" style="margin-top:8px">全部處理後，Yes 才 commit；期間任何 Blocking Finding 或 barrier → Blocked；Revision/Snapshot 變 → Stale。</div>
+  `;
+  document.getElementById("c-actions").innerHTML=`
+    <button class="btn" onclick="cOutcome('declined')">No — Declined（不產生 mutation）</button>
+    <button class="btn" onclick="cOutcome('blocked')">Simulate Blocked（Global Barrier）</button>
+    <button class="btn primary" onclick="cOutcome('commit')">Yes — Commit + 立即 reload</button>
+  `;
+  document.getElementById("c-outcome").innerHTML="";
+  renderCFindings();
+}
+function renderCFindings(){
+  const sorted=[...MOCK.findings].sort(findingOrder);
+  document.getElementById("c-findings").innerHTML=sorted.slice(0,5).map(f=>`
+    <div class="finding ${f.cls.includes('Blocking')?'blocking':'warning'}"><strong>${f.code}</strong> <span class="pill ${f.cls.includes('Blocking')?'bad':'warn'}">${f.cls}</span> — ${f.target} <code>${f.pointer}</code> · outcome ${f.outcome} · action <code>${f.action}</code></div>
+  `).join("")+`<div class="small muted">Recovery Actions 封閉集合：Retry / Revalidate / Refresh / Rebind / Retry Application / Disable / Remove / Repair State / Inspect（僅在 exact State Revision + snapshots 下顯示）。</div>`;
+}
+function cOutcome(kind){
+  if(kind==='declined') document.getElementById("c-outcome").innerHTML=`<div class="banner warn"><h4>Declined</h4><div class="small">使用者選 No；state Unchanged；產生 Declined receipt。</div></div>`;
+  else if(kind==='blocked') document.getElementById("c-outcome").innerHTML=`<div class="banner bad"><h4>Blocked — GLOBAL_PENDING_BARRIER</h4><div class="small">Project commit 前 barrier 仍 active → immutable Blocked receipt，不產生 state mutation；需先完成 Global 的 <code>Retry Application / Repair State</code>。</div></div>`;
+  else document.getElementById("c-outcome").innerHTML=`<div class="banner good"><h4>Committed — 等待 host re-entry 驗證</h4><div class="small">target State Revision 已驗證 commit，但 runtime 尚未驗證 → <span class="pill warn">Pending Application</span>。同 Revision+Snapshot 可 <code>Retry Application</code>；任何 drift → 重新 disclosure+confirm。<br>Receipt Journal：target commit 已驗證後若 finalize 失敗 → <code>RECEIPT_PERSISTENCE_FAILED</code> 的 Operational Notice，不 rollback，進入 journal-repair barrier（僅 Repair State/Inspect）。</div></div>`;
+}
+window.cOutcome=cOutcome;
+
+// initial
+render();
+</script>
+</body>
+</html>
