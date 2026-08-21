@@ -16,6 +16,7 @@ import { readBridgeStateSync } from '../../src/bridge-state/store.js';
 import type { BridgeState, ReadResult } from '../../src/bridge-state/types.js';
 import { runLocalRegistrationFlow } from './registration.js';
 import { runGitRegistrationFlow } from './git-registration.js';
+import { runPluginInstallationFlow, runPluginStateFlow } from './installation.js';
 
 // Closed helper to format state summary for disclosure
 function formatStateSummary(result: ReadResult, scopeLabel: string): string {
@@ -175,6 +176,8 @@ export default function (pi: ExtensionAPI) {
         '檢視 Global / Project 分區',
         '註冊本地 Marketplace…',
         '註冊 Git Marketplace…',
+        '安裝 Compatible Plugin…',
+        '管理已安裝 Plugin（Enable / Disable）…',
       ]);
       if (!choice) return;
 
@@ -184,6 +187,14 @@ export default function (pi: ExtensionAPI) {
       }
       if (choice === '註冊 Git Marketplace…') {
         await runGitRegistrationFlow(ctx);
+        return;
+      }
+      if (choice === '安裝 Compatible Plugin…') {
+        await runPluginInstallationFlow(ctx);
+        return;
+      }
+      if (choice === '管理已安裝 Plugin（Enable / Disable）…') {
+        await runPluginStateFlow(ctx);
         return;
       }
 

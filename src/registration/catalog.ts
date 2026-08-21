@@ -9,6 +9,7 @@
  */
 
 import { CODE, RULE, blocking, type ValidationFinding } from './findings.js';
+import { BUDGET } from './budget.js';
 
 export type EntryType = 'local' | 'git' | 'unsupported';
 
@@ -126,6 +127,21 @@ export function parseCatalog(obj: unknown, opts: { scope: 'global' | 'project' }
     };
   }
 
+  if (o.plugins.length > BUDGET.maxEntries) {
+    return {
+      ok: false,
+      findings: [blocking({
+        code: CODE.BUDGET_EXCEEDED,
+        phase: 'validation',
+        target: 'catalog',
+        scope: opts.scope,
+        pointer: '/plugins',
+        rule: RULE.BUDGET_EXCEEDED,
+        outcome: `Validation Budget exceeded: ${o.plugins.length} entries > ${BUDGET.maxEntries}`,
+      })],
+    };
+  }
+
   const entries: MarketplaceEntry[] = [];
   o.plugins.forEach((entryRaw, index) => {
     const entryId = `/plugins/${index}`;
@@ -145,9 +161,25 @@ export function parseCatalog(obj: unknown, opts: { scope: 'global' | 'project' }
       return;
     }
     const e = entryRaw as Record<string, unknown>;
-    const kind = classifyKind(e.type ?? e.kind);
+    // Codex Marketplace v1 uses `source: { source: "local", path: "./…" }`.
+    // Retain the earlier flat shape as a backward-compatible input, but derive the canonical
+    // source kind/path from the nested object when present.
+    const nestedSource = typeof e.source === 'object' && e.source !== null && !Array.isArray(e.source)
+      ? e.source as Record<string, unknown>
+      : undefined;
+    const nestedKind = nestedSource ? classifyKind(nestedSource.source ?? nestedSource.type) : undefined;
+    const flatKind = classifyKind(e.type ?? e.kind);
+    const nestedPath = typeof nestedSource?.path === 'string' ? nestedSource.path : undefined;
+    const flatPath = typeof e.path === 'string' ? e.path : undefined;
+    // The canonical nested v1 source is an indivisible declaration.  Never mix a flat kind/path
+    // with it: a conflicting flat `type: local` must not disguise nested `source: git`.
+    if (nestedSource && ((e.type !== undefined || e.kind !== undefined) && flatKind.type !== nestedKind!.type || (flatPath !== undefined && flatPath !== nestedPath))) {
+      entries.push({ entryId, ordinal: index, type: 'unsupported', available: false, unavailableReason: 'conflicting nested and flat source declaration' });
+      return;
+    }
+    const kind = nestedKind ?? flatKind;
     const name = typeof e.name === 'string' ? e.name : undefined;
-    const path = typeof e.path === 'string' ? e.path : undefined;
+    const path = nestedSource ? nestedPath : flatPath;
 
     if (kind.type !== 'local') {
       // Recognized only as an Unavailable Entry (never recursively acquired). Disclosed, not a finding.
