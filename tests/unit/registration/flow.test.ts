@@ -267,6 +267,37 @@ describe('Local Marketplace Registration flow', () => {
     expect(res.outcome.findings[0].code).toBe('CATALOG_MISSING');
   });
 
+  it('surfaces the structured CATALOG_MALFORMED finding when marketplace.json is valid JSON but not an object', async () => {
+    writeFileSync(join(root, '.agents', 'plugins', 'marketplace.json'), '[]', 'utf-8');
+    const res = await preflightLocalRegistration('global', root, opts(env));
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.outcome.status).toBe('blocked');
+    if (res.outcome.status !== 'blocked') return;
+    expect(res.outcome.findings.some((f) => f.code === 'CATALOG_MALFORMED')).toBe(true);
+    expect(res.outcome.findings.some((f) => f.code === 'PREFLIGHT_ERROR')).toBe(false);
+  });
+
+  it('surfaces the structured CATALOG_MALFORMED finding when marketplace.json lacks a plugins array', async () => {
+    writeFileSync(join(root, '.agents', 'plugins', 'marketplace.json'), '{"name":"acme"}', 'utf-8');
+    const res = await preflightLocalRegistration('global', root, opts(env));
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.outcome.status).toBe('blocked');
+    if (res.outcome.status !== 'blocked') return;
+    expect(res.outcome.findings.some((f) => f.code === 'CATALOG_MALFORMED')).toBe(true);
+  });
+
+  it('blocks Project Scope registration when the trust flag is omitted (fail-closed default)', async () => {
+    // opts() does not set projectTrusted → not granted (Bridge never grants trust)
+    const res = await preflightLocalRegistration('project', root, opts(env));
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.outcome.status).toBe('blocked');
+    if (res.outcome.status !== 'blocked') return;
+    expect(res.outcome.findings[0].code).toBe('PROJECT_TRUST_DENIED');
+  });
+
   it('blocks registration on Contained Path violations at the entry boundary', async () => {
     // entry path escapes the owning root
     const outside = mkdtempSync(join(tmpdir(), 'outside-mkt-'));

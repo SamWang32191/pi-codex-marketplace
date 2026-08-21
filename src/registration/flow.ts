@@ -160,9 +160,10 @@ export async function preflightLocalRegistration(
     };
   }
 
-  // Project Trust: host-owned. Untrusted project scope blocks the operation; stored records stay
-  // durable and are only excluded from derived Effective State (that read-time projection is #20).
-  if (scope === 'project' && opts.projectTrusted === false) {
+  // Project Trust: host-owned. Fail-closed: an omitted trust flag is NOT a grant. Untrusted
+  // project scope blocks the operation; stored records stay durable and are only excluded from
+  // derived Effective State (that read-time projection is #20).
+  if (scope === 'project' && opts.projectTrusted !== true) {
     const finding = blocking({
       code: CODE.PROJECT_TRUST_DENIED,
       phase: 'admission',
@@ -249,7 +250,12 @@ export async function preflightLocalRegistration(
 
     const catalogResult = parseCatalog(parsed, { scope });
     findings.push(...catalogResult.findings);
-    const catalog = catalogResult.catalog!;
+    if (!catalogResult.ok) {
+      // Structurally malformed catalog (non-object JSON, or plugins not an array): surface the
+      // structured CATALOG_MALFORMED finding instead of dereferencing a missing catalog.
+      return blockedResult(scope, rootPath, expectedRevision, sortFindings(findings), handle);
+    }
+    const catalog = catalogResult.catalog!; // guarded by catalogResult.ok above
 
     if (catalog.name.length > BUDGET.maxNameLength) {
       findings.push(
