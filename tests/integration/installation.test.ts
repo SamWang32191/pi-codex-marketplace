@@ -167,6 +167,28 @@ describe('Plugin Installation lifecycle', () => {
     if (disable.status === 'blocked') expect(disable.receipt.operation).toBe('Plugin Disablement');
   });
 
+  it('rejects disablement as stale when the State Revision advances after fence admission', async () => {
+    const opts = { agentDir: env.agentDir, cwd: env.projectDir };
+    const preflight = await preflightPluginInstallation('global', registrationId, '/plugins/0', opts);
+    expect(preflight.ok).toBe(true);
+    if (!preflight.ok) return;
+    const installed = await confirmPluginInstallation(preflight.preflight, 'enabled', true, opts);
+    expect(installed.status).toBe('completed');
+    if (installed.status !== 'completed') return;
+
+    const outcome = await disablePluginInstallation('global', installed.installation.id, {
+      ...opts,
+      beforeDisableCommit: async () => {
+        await commitBridgeState('global', (state) => ({ ...state }), opts);
+      },
+    });
+    expect(outcome.status).toBe('rejected-as-stale');
+    if (outcome.status === 'rejected-as-stale') expect(outcome.receipt.summary).toBe('Rejected as Stale');
+
+    const state = await readBridgeState('global', opts);
+    expect(state.state!.installations.find((item) => item.id === installed.installation.id)!.installationState).toBe('enabled');
+  });
+
   it('fails closed when another Marketplace Entry has the same authoritative Plugin ID', async () => {
     const duplicate = join(env.marketplace, 'plugins', 'release-helper-copy');
     mkdirSync(join(duplicate, '.codex-plugin'), { recursive: true });

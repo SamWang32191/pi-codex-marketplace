@@ -9,6 +9,7 @@
  */
 
 import { CODE, RULE, blocking, type ValidationFinding } from './findings.js';
+import { BUDGET } from './budget.js';
 
 export type EntryType = 'local' | 'git' | 'unsupported';
 
@@ -123,6 +124,21 @@ export function parseCatalog(obj: unknown, opts: { scope: 'global' | 'project' }
     return {
       ok: false,
       findings,
+    };
+  }
+
+  if (o.plugins.length > BUDGET.maxEntries) {
+    return {
+      ok: false,
+      findings: [blocking({
+        code: CODE.BUDGET_EXCEEDED,
+        phase: 'validation',
+        target: 'catalog',
+        scope: opts.scope,
+        pointer: '/plugins',
+        rule: RULE.BUDGET_EXCEEDED,
+        outcome: `Validation Budget exceeded: ${o.plugins.length} entries > ${BUDGET.maxEntries}`,
+      })],
     };
   }
 

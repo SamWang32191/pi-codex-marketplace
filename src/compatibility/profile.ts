@@ -256,6 +256,15 @@ export function classifyPlugin(root: string, opts: ClassificationOptions): Class
       if (descriptor.frontmatter?.['disable-model-invocation'] !== undefined && typeof descriptor.frontmatter['disable-model-invocation'] !== 'boolean') {
         findings.push(finding(opts, CODE.SKILL_DESCRIPTOR_INVALID, RULE.SKILL_DESCRIPTOR_INVALID, 'skill', `skills/${entry.name}/SKILL.md#/disable-model-invocation`, 'disable-model-invocation must be a boolean when declared'));
       }
+      // Pi conventionally discovers this companion as an Agent Profile. Its invocation and
+      // external-dependency declarations are active behavior, not an opaque resource.
+      try {
+        if (lstatSync(join(skillDirectory, 'agents', 'openai.yaml')).isFile()) {
+          findings.push(finding(opts, CODE.UNSUPPORTED_ACTIVE_COMPONENT, RULE.UNSUPPORTED_ACTIVE_COMPONENT, 'skill', `skills/${entry.name}/agents/openai.yaml`, 'Compatibility Profile v1 does not support Skill Agent Profiles'));
+        }
+      } catch {
+        // Optional companion is absent; the descriptor remains the only accepted declaration.
+      }
       const disabled = descriptor.frontmatter?.['disable-model-invocation'] === true;
       const pluginId = manifest && typeof manifest.name === 'string' ? `${opts.marketplaceId}/${manifest.name}` : '';
       const resourceResult = resourcesIn(root, skillDirectory, capture);

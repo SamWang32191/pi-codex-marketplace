@@ -146,4 +146,18 @@ describe('Compatibility Profile v1', () => {
     expect(result.classification).toBe('compatible');
     expect(result.plugin!.skills[0]!.resources).not.toContain('node_modules/ignored/package.js');
   });
+
+  it('treats a conventionally discovered Skill Agent Profile as unsupported active behavior', () => {
+    const root = pluginRoot();
+    mkdirSync(join(root, 'skills', 'release-notes', 'agents'), { recursive: true });
+    writeFileSync(join(root, 'skills', 'release-notes', 'agents', 'openai.yaml'), 'invocation: automatic\nexternal_dependencies: [network]\n');
+
+    const result = classifyPlugin(root, {
+      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+    });
+
+    expect(result.classification).toBe('incompatible');
+    expect(result.plugin).toBeUndefined();
+    expect(result.findings).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'UNSUPPORTED_ACTIVE_COMPONENT', pointer: 'skills/release-notes/agents/openai.yaml' })]));
+  });
 });

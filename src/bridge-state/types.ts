@@ -116,6 +116,10 @@ export interface WriteResult {
   error?: string;
   /** Whether the file was previously corrupted/incompatible and write was rejected as indeterminate */
   isIndeterminate?: boolean;
+  /** The commit was safely refused because the caller's exact revision was no longer current. */
+  isStale?: boolean;
+  /** Current revision observed under the atomic store lock when a CAS refusal occurs. */
+  observedRevision?: StateRevision;
 }
 
 /** Findings-like error codes for store diagnostics (closed set for scaffold) */

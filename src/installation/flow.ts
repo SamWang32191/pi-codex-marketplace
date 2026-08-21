@@ -20,6 +20,8 @@ export interface InstallationFlowOptions {
   agentDir?: string;
   projectTrusted?: boolean;
   fenceTimeoutMs?: number;
+  /** Integration synchronization seam; production callers leave this undefined. */
+  beforeDisableCommit?: () => void | Promise<void>;
 }
 
 export interface PluginInstallationPreflight {
@@ -359,36 +361,53 @@ export async function confirmPluginEnable(preflight: PluginInstallationPreflight
 }
 
 export async function disablePluginInstallation(scope: Scope, installationId: string, opts: InstallationFlowOptions = {}): Promise<InstallationOutcome> {
-  const read = await readBridgeState(scope, { cwd: opts.cwd, agentDir: opts.agentDir });
-  if (read.status !== 'ok' && read.status !== 'missing') {
-    return { status: 'persistence-failed', isIndeterminate: true, receipt: createReceipt({ operation: receiptOperation('disable'), scope, trigger: triggerFor('disable', 'unknown', installationId), expectedStateRevision: '?', summary: 'Persistence Indeterminate', findings: [operationFinding(scope, CODE.PERSISTENCE_INDETERMINATE, 'PERSIST-01', read.error ?? 'Bridge State is not readable', 'attempt', 'persistence')] }) };
-  }
   const trust = scopeDenied(scope, opts);
   if (trust) {
-    const result = blocked('disable', scope, 'unknown', installationId, read.state!.stateRevision, [trust]);
+    const result = blocked('disable', scope, 'unknown', installationId, '?', [trust]);
     if (!result.ok) return result.outcome;
     throw new Error('unreachable blocked Installation preflight result');
   }
   const fence = await acquireAttemptFence(scope, { cwd: opts.cwd, agentDir: opts.agentDir, fenceTimeoutMs: opts.fenceTimeoutMs });
   if (!fence.ok) {
-    const result = blocked('disable', scope, 'unknown', installationId, read.state!.stateRevision, [fence.finding!]);
+    const result = blocked('disable', scope, 'unknown', installationId, '?', [fence.finding!]);
     if (!result.ok) return result.outcome;
     throw new Error('unreachable blocked Installation preflight result');
   }
-  const installation = read.state?.installations.find((item) => item.id === installationId);
+  const read = await readBridgeState(scope, { cwd: opts.cwd, agentDir: opts.agentDir });
+  if (read.status !== 'ok' && read.status !== 'missing') {
+    fence.handle!.release();
+    return { status: 'persistence-failed', isIndeterminate: true, receipt: createReceipt({ operation: receiptOperation('disable'), scope, trigger: triggerFor('disable', 'unknown', installationId), expectedStateRevision: '?', summary: 'Persistence Indeterminate', findings: [operationFinding(scope, CODE.PERSISTENCE_INDETERMINATE, 'PERSIST-01', read.error ?? 'Bridge State is not readable', 'attempt', 'persistence')] }) };
+  }
+  const state = read.state!;
+  const installation = state.installations.find((item) => item.id === installationId);
   if (!installation) {
-    const result = blocked('disable', scope, 'unknown', installationId, read.state?.stateRevision ?? '?', [operationFinding(scope, CODE.INSTALLATION_NOT_FOUND, RULE.INSTALLATION_NOT_FOUND, `Installation '${installationId}' was not found`)], fence.handle!);
+    const result = blocked('disable', scope, 'unknown', installationId, state.stateRevision, [operationFinding(scope, CODE.INSTALLATION_NOT_FOUND, RULE.INSTALLATION_NOT_FOUND, `Installation '${installationId}' was not found`)], fence.handle!);
     if (!result.ok) return result.outcome;
     throw new Error('unreachable blocked Installation preflight result');
   }
+  await opts.beforeDisableCommit?.();
   const write = await commitBridgeState(scope, (state) => ({
     ...state,
     installations: state.installations.map((item) => item.id === installationId ? { ...item, installationState: 'disabled' } : item),
-  }), { cwd: opts.cwd, agentDir: opts.agentDir, lockTimeoutMs: opts.fenceTimeoutMs });
+  }), { cwd: opts.cwd, agentDir: opts.agentDir, lockTimeoutMs: opts.fenceTimeoutMs, expectedStateRevision: state.stateRevision });
   fence.handle!.release();
+  if (write.isStale) {
+    return {
+      status: 'rejected-as-stale',
+      receipt: createReceipt({
+        operation: receiptOperation('disable'),
+        scope,
+        trigger: triggerFor('disable', 'unknown', installationId),
+        expectedStateRevision: state.stateRevision,
+        observedStateRevision: write.observedRevision,
+        summary: 'Rejected as Stale',
+        findings: [operationFinding(scope, CODE.REJECTED_AS_STALE, RULE.REJECTED_AS_STALE, 'State Revision changed after disablement admission; re-run the lifecycle operation', 'installation', 'persistence')],
+      }),
+    };
+  }
   if (!write.success) {
-    return { status: 'persistence-failed', isIndeterminate: write.isIndeterminate ?? false, receipt: createReceipt({ operation: receiptOperation('disable'), scope, trigger: triggerFor('disable', 'unknown', installationId), expectedStateRevision: read.state!.stateRevision, summary: write.isIndeterminate ? 'Persistence Indeterminate' : 'Persistence Failed' }) };
+    return { status: 'persistence-failed', isIndeterminate: write.isIndeterminate ?? false, receipt: createReceipt({ operation: receiptOperation('disable'), scope, trigger: triggerFor('disable', 'unknown', installationId), expectedStateRevision: state.stateRevision, summary: write.isIndeterminate ? 'Persistence Indeterminate' : 'Persistence Failed' }) };
   }
   const disabled = { ...installation, installationState: 'disabled' as const };
-  return { status: 'completed', installation: disabled, newRevision: write.newRevision!, receipt: createReceipt({ operation: receiptOperation('disable'), scope, trigger: triggerFor('disable', 'unknown', installationId), expectedStateRevision: read.state!.stateRevision, targetStateRevision: write.newRevision, observedStateRevision: write.newRevision, summary: 'Completed', stateChanged: true }) };
+  return { status: 'completed', installation: disabled, newRevision: write.newRevision!, receipt: createReceipt({ operation: receiptOperation('disable'), scope, trigger: triggerFor('disable', 'unknown', installationId), expectedStateRevision: state.stateRevision, targetStateRevision: write.newRevision, observedStateRevision: write.newRevision, summary: 'Completed', stateChanged: true }) };
 }

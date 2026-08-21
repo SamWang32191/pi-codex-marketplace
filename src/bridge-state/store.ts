@@ -36,6 +36,8 @@ export interface StoreOptions {
   agentDir?: string;
   /** lock timeout ms (default 5000) */
   lockTimeoutMs?: number;
+  /** Refuse the atomic mutation unless this is still the current State Revision under lock. */
+  expectedStateRevision?: string;
 }
 
 /** Read a scope's Bridge State with closed handling of missing/corrupted/incompatible. */
@@ -185,6 +187,14 @@ export async function commitBridgeState(
     }
 
     const current = currentResult.state!;
+    if (opts.expectedStateRevision !== undefined && current.stateRevision !== opts.expectedStateRevision) {
+      return {
+        success: false,
+        isStale: true,
+        observedRevision: current.stateRevision,
+        error: `Rejected as Stale: expected State Revision ${opts.expectedStateRevision}, observed ${current.stateRevision}`,
+      };
+    }
     const draft = updater(structuredClone(current));
 
     // Ensure draft has correct schemaVersion and scopeOverrides shape

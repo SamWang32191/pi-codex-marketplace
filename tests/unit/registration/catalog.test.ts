@@ -99,6 +99,16 @@ describe('Marketplace Catalog parsing', () => {
     expect(res.catalog!.entries[0]).toMatchObject({ available: false, unavailableReason: 'conflicting nested and flat source declaration' });
   });
 
+  it('enforces the Entry Validation Budget before any per-entry traversal', () => {
+    const within = parseCatalog({ name: 'bounded', plugins: Array.from({ length: 1024 }, () => ({ path: './plugin' })) }, scopeOpts());
+    expect(within.ok).toBe(true);
+
+    const over = parseCatalog({ name: 'over-budget', plugins: Array.from({ length: 1025 }, () => ({ path: './plugin' })) }, scopeOpts());
+    expect(over.ok).toBe(false);
+    expect(over.catalog).toBeUndefined();
+    expect(over.findings).toEqual([expect.objectContaining({ code: 'BUDGET_EXCEEDED', pointer: '/plugins' })]);
+  });
+
   it('sortFindings orders by class → phase → target → pointer → rule deterministically', () => {
     const res = parseCatalog(
       { name: 'acme', plugins: [{ name: 'x', path: './x' }, 'malformed'] },
