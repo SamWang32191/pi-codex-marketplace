@@ -6,17 +6,18 @@
  * all browse results for a Marketplace.
  */
 
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { classifyPlugin, pluginIdentity, type CompatiblePlugin } from '../compatibility/profile.js';
+import { classifyPlugin, type CompatiblePlugin } from '../compatibility/profile.js';
 import type { Registration, Scope } from '../bridge-state/types.js';
 import type { MarketplaceEntry } from '../registration/catalog.js';
 import { parseCatalog } from '../registration/catalog.js';
 import { resolveContained } from '../registration/contained.js';
 import { CODE, RULE, blocking, hasBlocking, sortFindings, type ValidationFinding } from '../registration/findings.js';
 import { localSourceKey } from '../registration/source-key.js';
-import { buildLocalSnapshot, type ValidationSnapshot } from '../registration/snapshot.js';
+import { bindCapturedMaterial, buildLocalSnapshot, type ValidationSnapshot } from '../registration/snapshot.js';
 
 export interface InspectedMarketplaceEntry {
   entry: MarketplaceEntry;
@@ -47,9 +48,11 @@ export function inspectMarketplaceEntries(registration: Registration, scope: Sco
   const snapshotResult = buildLocalSnapshot(root, key.sourceKey!, scope);
   if (!snapshotResult.ok) return { entries: [], findings: snapshotResult.findings };
 
+  let catalogRaw: string;
   let catalogValue: unknown;
   try {
-    catalogValue = JSON.parse(readFileSync(join(root, '.agents', 'plugins', 'marketplace.json'), 'utf8'));
+    catalogRaw = readFileSync(join(root, '.agents', 'plugins', 'marketplace.json'), 'utf8');
+    catalogValue = JSON.parse(catalogRaw);
   } catch {
     return { entries: [], snapshot: snapshotResult.snapshot, findings: [inspectionFinding(scope, CODE.CATALOG_MISSING, RULE.CATALOG_MISSING, 'catalog', 'Marketplace Catalog cannot be read')] };
   }
@@ -59,13 +62,17 @@ export function inspectMarketplaceEntries(registration: Registration, scope: Sco
   const drift = registration.validationSnapshot && registration.validationSnapshot !== snapshotResult.snapshot!.fingerprint
     ? [inspectionFinding(scope, CODE.REJECTED_AS_STALE, RULE.REJECTED_AS_STALE_SNAPSHOT, 'registration', 'Registered Validation Snapshot no longer matches the source tree; Marketplace Refresh is required')]
     : [];
+  const material = createHash('sha256');
+  material.update('catalog\u001f').update(catalogRaw).update('\u001e');
   const draft = parsed.catalog.entries.map((entry) => {
     if (!entry.available || entry.type !== 'local' || !entry.path) return { entry, findings: [], unavailableReason: entry.unavailableReason ?? 'unsupported source kind' };
     const contained = resolveContained(root, entry.path, 'directory');
     if (contained.outcome.kind !== 'ok') return { entry, findings: [], unavailableReason: 'cannot resolve Plugin' };
     const classification = classifyPlugin(contained.outcome.canonicalPath, { scope, marketplaceId, marketplaceEntryId: `${marketplaceId}${entry.entryId}` });
-    return { entry, plugin: classification.plugin, identity: pluginIdentity(contained.outcome.canonicalPath, marketplaceId), findings: classification.findings };
+    material.update(`entry:${entry.entryId}\u001f`).update(classification.captureFingerprint).update('\u001e');
+    return { entry, plugin: classification.plugin, identity: classification.identity, findings: classification.findings };
   });
+  const snapshot = bindCapturedMaterial(snapshotResult.snapshot!, material.digest('hex'));
   const identities = new Map<string, number>();
   for (const item of draft) if (item.identity) identities.set(item.identity, (identities.get(item.identity) ?? 0) + 1);
   const entries = draft.map((item): InspectedMarketplaceEntry => {
@@ -77,5 +84,5 @@ export function inspectMarketplaceEntries(registration: Registration, scope: Sco
       ?? (hasBlocking(findings) || !item.plugin ? findings.find((finding) => finding.classification === 'blocking')?.outcome ?? 'incompatible' : undefined);
     return { entry: item.entry, plugin: item.plugin, findings, unavailableReason };
   });
-  return { entries, findings: sortFindings([...parsed.findings, ...drift, ...snapshotResult.findings]), marketplaceId, snapshot: snapshotResult.snapshot };
+  return { entries, findings: sortFindings([...parsed.findings, ...drift, ...snapshotResult.findings]), marketplaceId, snapshot };
 }

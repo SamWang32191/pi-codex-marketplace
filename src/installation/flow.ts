@@ -12,8 +12,7 @@ import type { Installation, Registration, Scope } from '../bridge-state/types.js
 import { CODE, RULE, blocking, hasBlocking, sortFindings, type ValidationFinding } from '../registration/findings.js';
 import { acquireAttemptFence, type AttemptFenceHandle } from '../registration/fence.js';
 import { createReceipt, type AttemptReceipt } from '../registration/receipt.js';
-import { localSourceKey } from '../registration/source-key.js';
-import { buildLocalSnapshot, type ValidationSnapshot } from '../registration/snapshot.js';
+import type { ValidationSnapshot } from '../registration/snapshot.js';
 import { inspectMarketplaceEntries } from './inspection.js';
 
 export interface InstallationFlowOptions {
@@ -49,13 +48,20 @@ export type InstallationPreflightResult =
   | { ok: true; preflight: PluginInstallationPreflight }
   | { ok: false; outcome: InstallationOutcome };
 
-const OPERATION = 'Plugin Installation';
+type LifecycleOperation = 'install' | 'enable' | 'disable';
 
-function triggerFor(registrationId: string, entryId: string): string {
-  return `install ${registrationId}#${entryId}`;
+function receiptOperation(operation: LifecycleOperation): string {
+  return operation === 'install' ? 'Plugin Installation'
+    : operation === 'enable' ? 'Plugin Enablement'
+      : 'Plugin Disablement';
+}
+
+function triggerFor(operation: LifecycleOperation, registrationId: string, entryId: string): string {
+  return operation === 'disable' ? `disable ${entryId}` : `${operation} ${registrationId}#${entryId}`;
 }
 
 function blocked(
+  operation: LifecycleOperation,
   scope: Scope,
   registrationId: string,
   entryId: string,
@@ -70,9 +76,9 @@ function blocked(
       status: 'blocked',
       findings,
       receipt: createReceipt({
-        operation: OPERATION,
+        operation: receiptOperation(operation),
         scope,
-        trigger: triggerFor(registrationId, entryId),
+        trigger: triggerFor(operation, registrationId, entryId),
         expectedStateRevision: revision,
         summary: 'Blocked',
         findings,
@@ -116,9 +122,9 @@ async function makePreflight(
   const read = await readBridgeState(scope, { cwd: opts.cwd, agentDir: opts.agentDir });
   if (read.status !== 'ok' && read.status !== 'missing') {
     const receipt = createReceipt({
-      operation: OPERATION,
+      operation: receiptOperation(operation),
       scope,
-      trigger: triggerFor(registrationId, entryPointer),
+      trigger: triggerFor(operation, registrationId, entryPointer),
       expectedStateRevision: '?',
       summary: 'Persistence Indeterminate',
       findings: [operationFinding(scope, CODE.PERSISTENCE_INDETERMINATE, 'PERSIST-01', read.error ?? 'Bridge State is not readable', 'attempt', 'persistence')],
@@ -127,21 +133,21 @@ async function makePreflight(
   }
   const state = read.state!;
   const trust = scopeDenied(scope, opts);
-  if (trust) return blocked(scope, registrationId, entryPointer, state.stateRevision, [trust]);
+  if (trust) return blocked(operation, scope, registrationId, entryPointer, state.stateRevision, [trust]);
   const registration = state.registrations.find((item) => item.id === registrationId);
   if (!registration) {
-    return blocked(scope, registrationId, entryPointer, state.stateRevision, [
+    return blocked(operation, scope, registrationId, entryPointer, state.stateRevision, [
       operationFinding(scope, CODE.INSTALLATION_NOT_FOUND, RULE.INSTALLATION_NOT_FOUND, `Registration '${registrationId}' is not in ${scope} Bridge State`, 'registration'),
     ]);
   }
   if (registration.sourceKind !== 'local' || !registration.source) {
-    return blocked(scope, registrationId, entryPointer, state.stateRevision, [
+    return blocked(operation, scope, registrationId, entryPointer, state.stateRevision, [
       operationFinding(scope, CODE.SOURCE_REACQUISITION_REQUIRED, RULE.SOURCE_REACQUISITION_REQUIRED, 'This Registration has no retained local Validation Snapshot tree; Git Installation waits for the Source Cache lifecycle', 'registration'),
     ]);
   }
 
   const fenceResult = await acquireAttemptFence(scope, { cwd: opts.cwd, agentDir: opts.agentDir, fenceTimeoutMs: opts.fenceTimeoutMs });
-  if (!fenceResult.ok) return blocked(scope, registrationId, entryPointer, state.stateRevision, [fenceResult.finding!]);
+  if (!fenceResult.ok) return blocked(operation, scope, registrationId, entryPointer, state.stateRevision, [fenceResult.finding!]);
   const fence = fenceResult.handle!;
 
   try {
@@ -151,19 +157,19 @@ async function makePreflight(
       operationFinding(scope, CODE.INSTALLATION_NOT_FOUND, RULE.INSTALLATION_NOT_FOUND, `Marketplace Entry '${entryPointer}' is Unavailable`, 'entry'),
     ]);
     if (!inspected || !inspection.snapshot || !inspected.plugin || inspected.unavailableReason || hasBlocking(inspected.findings)) {
-      return blocked(scope, registrationId, entryPointer, state.stateRevision, rejectedFindings, fence);
+      return blocked(operation, scope, registrationId, entryPointer, state.stateRevision, rejectedFindings, fence);
     }
     const findings = inspected.findings;
     const plugin = inspected.plugin;
     const installationId = `${scope}/${plugin.id}`;
     const currentInstallation = state.installations.find((item) => item.id === installationId);
     if (operation === 'install' && currentInstallation) {
-      return blocked(scope, registrationId, entryPointer, state.stateRevision, [
+      return blocked(operation, scope, registrationId, entryPointer, state.stateRevision, [
         operationFinding(scope, CODE.INSTALLATION_ALREADY_EXISTS, RULE.INSTALLATION_ALREADY_EXISTS, `Installation '${installationId}' already exists; use enable or disable lifecycle actions`),
       ], fence);
     }
     if (operation === 'enable' && (!currentInstallation || currentInstallation.installationState !== 'disabled')) {
-      return blocked(scope, registrationId, entryPointer, state.stateRevision, [
+      return blocked(operation, scope, registrationId, entryPointer, state.stateRevision, [
         operationFinding(scope, CODE.INSTALLATION_NOT_FOUND, RULE.INSTALLATION_NOT_FOUND, `Disabled Installation '${installationId}' is no longer current`),
       ], fence);
     }
@@ -184,19 +190,24 @@ async function makePreflight(
       },
     };
   } catch (error) {
-    return blocked(scope, registrationId, entryPointer, state.stateRevision, [
+    return blocked(operation, scope, registrationId, entryPointer, state.stateRevision, [
       operationFinding(scope, CODE.INSTALLATION_NOT_FOUND, RULE.INSTALLATION_NOT_FOUND, error instanceof Error ? error.message : String(error)),
     ], fence);
   }
+}
+
+/** Quote all Marketplace-controlled text so one value can never create a new disclosure line. */
+function disclosureText(value: string): string {
+  return JSON.stringify(value);
 }
 
 export function installationDisclosure(preflight: PluginInstallationPreflight): string {
   const plugin = preflight.plugin;
   const lines = [
     `Scope: ${preflight.scope}`,
-    `Plugin: ${plugin.manifestName} (${plugin.id})`,
-    `Source: ${preflight.registration.source ?? preflight.registration.canonicalLocator ?? 'unavailable'}`,
-    `Marketplace Entry: ${plugin.marketplaceEntryId}`,
+    `Plugin: ${disclosureText(plugin.manifestName)} (${disclosureText(plugin.id)})`,
+    `Source: ${disclosureText(preflight.registration.source ?? preflight.registration.canonicalLocator ?? 'unavailable')}`,
+    `Marketplace Entry: ${disclosureText(plugin.marketplaceEntryId)}`,
     `State Revision: ${preflight.stateRevision}`,
     `Validation Snapshot: ${preflight.snapshot.fingerprint.slice(0, 16)}…`,
     `Classification: Compatible`,
@@ -204,9 +215,9 @@ export function installationDisclosure(preflight: PluginInstallationPreflight): 
     `Skills: ${plugin.skills.length}`,
   ];
   for (const skill of plugin.skills) {
-    lines.push(`  ${skill.name} · ${skill.invocationPolicy} · resources: ${skill.resources.length === 0 ? 'none' : skill.resources.join(', ')}`);
+    lines.push(`  ${disclosureText(skill.name)} · ${skill.invocationPolicy} · resources: ${skill.resources.length === 0 ? 'none' : skill.resources.map(disclosureText).join(', ')}`);
   }
-  lines.push(`Findings: ${preflight.findings.length === 0 ? 'none' : preflight.findings.map((finding) => `${finding.classification} ${finding.code}: ${finding.outcome}`).join(' | ')}`);
+  lines.push(`Findings: ${preflight.findings.length === 0 ? 'none' : preflight.findings.map((finding) => `${finding.classification} ${finding.code}: ${disclosureText(finding.outcome)}`).join(' | ')}`);
   return lines.join('\n');
 }
 
@@ -224,9 +235,9 @@ function rejectedAsStale(preflight: PluginInstallationPreflight, outcome: string
   return {
     status: 'rejected-as-stale',
     receipt: createReceipt({
-      operation: OPERATION,
+      operation: receiptOperation(preflight.operation),
       scope: preflight.scope,
-      trigger: triggerFor(preflight.registration.id, preflight.plugin.marketplaceEntryId),
+      trigger: triggerFor(preflight.operation, preflight.registration.id, preflight.plugin.marketplaceEntryId),
       expectedStateRevision: preflight.stateRevision,
       validationSnapshot: preflight.snapshot.fingerprint,
       summary: 'Rejected as Stale',
@@ -253,7 +264,7 @@ export async function confirmPluginInstallation(
   const activationConfirmed = typeof activationConfirmedOrOpts === 'boolean' ? activationConfirmedOrOpts : false;
   const opts = typeof activationConfirmedOrOpts === 'boolean' ? maybeOpts : activationConfirmedOrOpts;
   if (preflight.terminal) {
-    const result = blocked(preflight.scope, preflight.registration.id, preflight.plugin.marketplaceEntryId, preflight.stateRevision, [
+    const result = blocked(preflight.operation, preflight.scope, preflight.registration.id, preflight.plugin.marketplaceEntryId, preflight.stateRevision, [
       operationFinding(preflight.scope, CODE.ATTEMPT_IN_PROGRESS, RULE.ATTEMPT_IN_PROGRESS, 'attempt already reached a terminal outcome', 'attempt', 'admission'),
     ]);
     if (!result.ok) return result.outcome;
@@ -265,9 +276,9 @@ export async function confirmPluginInstallation(
     return {
       status: 'declined',
       receipt: createReceipt({
-        operation: OPERATION,
+        operation: receiptOperation(preflight.operation),
         scope: preflight.scope,
-        trigger: triggerFor(preflight.registration.id, preflight.plugin.marketplaceEntryId),
+        trigger: triggerFor(preflight.operation, preflight.registration.id, preflight.plugin.marketplaceEntryId),
         expectedStateRevision: preflight.stateRevision,
         validationSnapshot: preflight.snapshot.fingerprint,
         summary: 'Declined',
@@ -287,10 +298,8 @@ export async function confirmPluginInstallation(
   if ((current.status !== 'ok' && current.status !== 'missing') || current.state!.stateRevision !== preflight.stateRevision) {
     return rejectedAsStale(preflight, 'State Revision changed since Installation disclosure; re-run preflight and confirmation');
   }
-  const root = preflight.registration.source!;
-  const key = localSourceKey(root);
-  const fresh = key.ok ? buildLocalSnapshot(key.sourceKey!.canonicalPath!, key.sourceKey!, preflight.scope) : undefined;
-  if (!fresh?.ok || fresh.snapshot!.fingerprint !== preflight.snapshot.fingerprint) {
+  const fresh = inspectMarketplaceEntries(preflight.registration, preflight.scope);
+  if (!fresh.snapshot || fresh.snapshot.fingerprint !== preflight.snapshot.fingerprint) {
     return rejectedAsStale(preflight, 'Validation Snapshot changed since Installation disclosure; re-run preflight and confirmation');
   }
   const installation: Installation = {
@@ -315,26 +324,26 @@ export async function confirmPluginInstallation(
     return {
       status: 'persistence-failed',
       isIndeterminate: write.isIndeterminate ?? false,
-      receipt: createReceipt({ operation: OPERATION, scope: preflight.scope, trigger: triggerFor(preflight.registration.id, preflight.plugin.marketplaceEntryId), expectedStateRevision: preflight.stateRevision, validationSnapshot: preflight.snapshot.fingerprint, summary, findings: [] }),
+      receipt: createReceipt({ operation: receiptOperation(preflight.operation), scope: preflight.scope, trigger: triggerFor(preflight.operation, preflight.registration.id, preflight.plugin.marketplaceEntryId), expectedStateRevision: preflight.stateRevision, validationSnapshot: preflight.snapshot.fingerprint, summary, findings: [] }),
     };
   }
   return {
     status: 'completed',
     installation,
     newRevision: write.newRevision!,
-    receipt: createReceipt({ operation: OPERATION, scope: preflight.scope, trigger: triggerFor(preflight.registration.id, preflight.plugin.marketplaceEntryId), expectedStateRevision: preflight.stateRevision, targetStateRevision: write.newRevision, observedStateRevision: write.newRevision, validationSnapshot: preflight.snapshot.fingerprint, summary: preflight.findings.length > 0 ? 'Completed with diagnostics' : 'Completed', findings: preflight.findings, stateChanged: true }),
+    receipt: createReceipt({ operation: receiptOperation(preflight.operation), scope: preflight.scope, trigger: triggerFor(preflight.operation, preflight.registration.id, preflight.plugin.marketplaceEntryId), expectedStateRevision: preflight.stateRevision, targetStateRevision: write.newRevision, observedStateRevision: write.newRevision, validationSnapshot: preflight.snapshot.fingerprint, summary: preflight.findings.length > 0 ? 'Completed with diagnostics' : 'Completed', findings: preflight.findings, stateChanged: true }),
   };
 }
 
 export async function preflightPluginEnable(scope: Scope, installationId: string, opts: InstallationFlowOptions = {}): Promise<InstallationPreflightResult> {
   const read = await readBridgeState(scope, { cwd: opts.cwd, agentDir: opts.agentDir });
   if (read.status !== 'ok' && read.status !== 'missing') {
-    const receipt = createReceipt({ operation: OPERATION, scope, trigger: installationId, expectedStateRevision: '?', summary: 'Persistence Indeterminate', findings: [operationFinding(scope, CODE.PERSISTENCE_INDETERMINATE, 'PERSIST-01', read.error ?? 'Bridge State is not readable', 'attempt', 'persistence')] });
+    const receipt = createReceipt({ operation: receiptOperation('enable'), scope, trigger: `enable ${installationId}`, expectedStateRevision: '?', summary: 'Persistence Indeterminate', findings: [operationFinding(scope, CODE.PERSISTENCE_INDETERMINATE, 'PERSIST-01', read.error ?? 'Bridge State is not readable', 'attempt', 'persistence')] });
     return { ok: false, outcome: { status: 'persistence-failed', receipt, isIndeterminate: true } };
   }
   const existing = read.state?.installations.find((item) => item.id === installationId);
   if (!existing?.registrationId || !existing.marketplaceEntryId) {
-    return blocked(scope, 'unknown', installationId, read.state?.stateRevision ?? '?', [
+    return blocked('enable', scope, 'unknown', installationId, read.state?.stateRevision ?? '?', [
       operationFinding(scope, CODE.INSTALLATION_NOT_FOUND, RULE.INSTALLATION_NOT_FOUND, `Disabled Installation '${installationId}' has no revalidatable provenance`),
     ]);
   }
@@ -352,23 +361,23 @@ export async function confirmPluginEnable(preflight: PluginInstallationPreflight
 export async function disablePluginInstallation(scope: Scope, installationId: string, opts: InstallationFlowOptions = {}): Promise<InstallationOutcome> {
   const read = await readBridgeState(scope, { cwd: opts.cwd, agentDir: opts.agentDir });
   if (read.status !== 'ok' && read.status !== 'missing') {
-    return { status: 'persistence-failed', isIndeterminate: true, receipt: createReceipt({ operation: 'Plugin Disablement', scope, trigger: installationId, expectedStateRevision: '?', summary: 'Persistence Indeterminate', findings: [operationFinding(scope, CODE.PERSISTENCE_INDETERMINATE, 'PERSIST-01', read.error ?? 'Bridge State is not readable', 'attempt', 'persistence')] }) };
+    return { status: 'persistence-failed', isIndeterminate: true, receipt: createReceipt({ operation: receiptOperation('disable'), scope, trigger: triggerFor('disable', 'unknown', installationId), expectedStateRevision: '?', summary: 'Persistence Indeterminate', findings: [operationFinding(scope, CODE.PERSISTENCE_INDETERMINATE, 'PERSIST-01', read.error ?? 'Bridge State is not readable', 'attempt', 'persistence')] }) };
   }
   const trust = scopeDenied(scope, opts);
   if (trust) {
-    const result = blocked(scope, 'unknown', installationId, read.state!.stateRevision, [trust]);
+    const result = blocked('disable', scope, 'unknown', installationId, read.state!.stateRevision, [trust]);
     if (!result.ok) return result.outcome;
     throw new Error('unreachable blocked Installation preflight result');
   }
   const fence = await acquireAttemptFence(scope, { cwd: opts.cwd, agentDir: opts.agentDir, fenceTimeoutMs: opts.fenceTimeoutMs });
   if (!fence.ok) {
-    const result = blocked(scope, 'unknown', installationId, read.state!.stateRevision, [fence.finding!]);
+    const result = blocked('disable', scope, 'unknown', installationId, read.state!.stateRevision, [fence.finding!]);
     if (!result.ok) return result.outcome;
     throw new Error('unreachable blocked Installation preflight result');
   }
   const installation = read.state?.installations.find((item) => item.id === installationId);
   if (!installation) {
-    const result = blocked(scope, 'unknown', installationId, read.state?.stateRevision ?? '?', [operationFinding(scope, CODE.INSTALLATION_NOT_FOUND, RULE.INSTALLATION_NOT_FOUND, `Installation '${installationId}' was not found`)], fence.handle!);
+    const result = blocked('disable', scope, 'unknown', installationId, read.state?.stateRevision ?? '?', [operationFinding(scope, CODE.INSTALLATION_NOT_FOUND, RULE.INSTALLATION_NOT_FOUND, `Installation '${installationId}' was not found`)], fence.handle!);
     if (!result.ok) return result.outcome;
     throw new Error('unreachable blocked Installation preflight result');
   }
@@ -378,8 +387,8 @@ export async function disablePluginInstallation(scope: Scope, installationId: st
   }), { cwd: opts.cwd, agentDir: opts.agentDir, lockTimeoutMs: opts.fenceTimeoutMs });
   fence.handle!.release();
   if (!write.success) {
-    return { status: 'persistence-failed', isIndeterminate: write.isIndeterminate ?? false, receipt: createReceipt({ operation: 'Plugin Disablement', scope, trigger: installationId, expectedStateRevision: read.state!.stateRevision, summary: write.isIndeterminate ? 'Persistence Indeterminate' : 'Persistence Failed' }) };
+    return { status: 'persistence-failed', isIndeterminate: write.isIndeterminate ?? false, receipt: createReceipt({ operation: receiptOperation('disable'), scope, trigger: triggerFor('disable', 'unknown', installationId), expectedStateRevision: read.state!.stateRevision, summary: write.isIndeterminate ? 'Persistence Indeterminate' : 'Persistence Failed' }) };
   }
   const disabled = { ...installation, installationState: 'disabled' as const };
-  return { status: 'completed', installation: disabled, newRevision: write.newRevision!, receipt: createReceipt({ operation: 'Plugin Disablement', scope, trigger: installationId, expectedStateRevision: read.state!.stateRevision, targetStateRevision: write.newRevision, observedStateRevision: write.newRevision, summary: 'Completed', stateChanged: true }) };
+  return { status: 'completed', installation: disabled, newRevision: write.newRevision!, receipt: createReceipt({ operation: receiptOperation('disable'), scope, trigger: triggerFor('disable', 'unknown', installationId), expectedStateRevision: read.state!.stateRevision, targetStateRevision: write.newRevision, observedStateRevision: write.newRevision, summary: 'Completed', stateChanged: true }) };
 }

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -9,6 +9,7 @@ import {
   confirmPluginInstallation,
   confirmPluginEnable,
   disablePluginInstallation,
+  installationDisclosure,
   preflightPluginInstallation,
   preflightPluginEnable,
 } from '../../src/installation/flow.js';
@@ -91,6 +92,7 @@ describe('Plugin Installation lifecycle', () => {
     if (!first.ok) return;
     const declined = await confirmPluginInstallation(first.preflight, 'enabled', false, opts);
     expect(declined.status).toBe('declined');
+    if (declined.status === 'declined') expect(declined.receipt.operation).toBe('Plugin Installation');
 
     const second = await preflightPluginInstallation('global', registrationId, '/plugins/0', opts);
     expect(second.ok).toBe(true);
@@ -101,6 +103,7 @@ describe('Plugin Installation lifecycle', () => {
 
     const disabled = await disablePluginInstallation('global', installed.installation.id, opts);
     expect(disabled.status).toBe('completed');
+    if (disabled.status === 'completed') expect(disabled.receipt.operation).toBe('Plugin Disablement');
 
     const enablePreflight = await preflightPluginEnable('global', installed.installation.id, opts);
     expect(enablePreflight.ok).toBe(true);
@@ -110,6 +113,58 @@ describe('Plugin Installation lifecycle', () => {
     if (enabled.status !== 'completed') return;
     expect(enabled.installation.id).toBe(installed.installation.id);
     expect(enabled.installation.installationState).toBe('enabled');
+    expect(enabled.receipt.operation).toBe('Plugin Enablement');
+  });
+
+  it('rejects a source change after preflight as stale before it can commit the disclosed Plugin', async () => {
+    const opts = { agentDir: env.agentDir, cwd: env.projectDir };
+    const preflight = await preflightPluginInstallation('global', registrationId, '/plugins/0', opts);
+    expect(preflight.ok).toBe(true);
+    if (!preflight.ok) return;
+
+    writeFileSync(
+      join(env.marketplace, 'plugins', 'release-helper', 'skills', 'release-notes', 'SKILL.md'),
+      '---\nname: release-notes\ndescription: Changed after disclosure\n---\n\nDifferent body.\n',
+    );
+
+    const outcome = await confirmPluginInstallation(preflight.preflight, 'disabled', opts);
+    expect(outcome.status).toBe('rejected-as-stale');
+  });
+
+  it('escapes Marketplace-controlled resource names in the Activation Disclosure', async () => {
+    writeFileSync(join(env.marketplace, 'plugins', 'release-helper', 'skills', 'release-notes', 'resource\nforged.txt'), 'opaque');
+    const preflight = await preflightPluginInstallation('global', registrationId, '/plugins/0', { agentDir: env.agentDir, cwd: env.projectDir });
+    expect(preflight.ok).toBe(true);
+    if (!preflight.ok) return;
+
+    const disclosure = installationDisclosure(preflight.preflight);
+    expect(disclosure).toContain('"resource\\nforged.txt"');
+    expect(disclosure).not.toContain('resources: resource\nforged.txt');
+    preflight.preflight.fence.release();
+  });
+
+  it('fails closed when a Skill Resource symlink targets snapshot-excluded content', () => {
+    const skill = join(env.marketplace, 'plugins', 'release-helper', 'skills', 'release-notes');
+    mkdirSync(join(skill, 'node_modules'), { recursive: true });
+    writeFileSync(join(skill, 'node_modules', 'untracked.js'), 'untracked');
+    symlinkSync('node_modules/untracked.js', join(skill, 'linked-resource.js'));
+
+    const inspected = inspectMarketplaceEntries({ id: registrationId, sourceKind: 'local', source: env.marketplace }, 'global');
+    const entry = inspected.entries[0]!;
+    expect(entry.plugin).toBeUndefined();
+    expect(entry.unavailableReason).toBeDefined();
+    expect(entry.findings).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'SKILL_DESCRIPTOR_INVALID' })]));
+  });
+
+  it('records the requested enablement or disablement operation even when it is blocked', async () => {
+    const opts = { agentDir: env.agentDir, cwd: env.projectDir };
+    const enable = await preflightPluginEnable('global', 'global/missing-plugin', opts);
+    expect(enable.ok).toBe(false);
+    if (!enable.ok) expect(enable.outcome.receipt.operation).toBe('Plugin Enablement');
+
+    const disable = await disablePluginInstallation('global', 'global/missing-plugin', opts);
+    expect(disable.status).toBe('blocked');
+    if (disable.status === 'blocked') expect(disable.receipt.operation).toBe('Plugin Disablement');
   });
 
   it('fails closed when another Marketplace Entry has the same authoritative Plugin ID', async () => {

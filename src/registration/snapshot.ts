@@ -62,6 +62,20 @@ export interface ValidationSnapshot {
   selectorCanonical?: string;
 }
 
+/**
+ * Bind material captured while deriving a disclosure into the Validation Snapshot.
+ * The base tree fingerprint remains available to registration-drift checks, while the
+ * activation snapshot also proves the exact catalog/profile bytes observed by preflight.
+ */
+export function bindCapturedMaterial(snapshot: ValidationSnapshot, captureFingerprint: string): ValidationSnapshot {
+  const fingerprint = createHash('sha256')
+    .update(snapshot.fingerprint)
+    .update('\u001f')
+    .update(captureFingerprint)
+    .digest('hex');
+  return { ...snapshot, fingerprint };
+}
+
 export interface SnapshotResult {
   ok: boolean;
   snapshot?: ValidationSnapshot;

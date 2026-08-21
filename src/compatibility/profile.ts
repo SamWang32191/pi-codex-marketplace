@@ -6,8 +6,9 @@
  * intentionally outside this module; they do not change whole-Plugin classification.
  */
 
-import { lstatSync, readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { join, relative, sep } from 'node:path';
 
 import { parseFrontmatter } from '@earendil-works/pi-coding-agent';
 
@@ -36,6 +37,10 @@ export interface CompatiblePlugin {
 export interface ClassificationResult {
   classification: PluginClassification;
   plugin?: CompatiblePlugin;
+  /** Valid manifest identity even when the complete Plugin is Invalid/Incompatible. */
+  identity?: string;
+  /** Hash of the exact manifest, descriptors, and resources used to derive this result. */
+  captureFingerprint: string;
   findings: ValidationFinding[];
 }
 
@@ -83,7 +88,31 @@ export function pluginIdentity(root: string, marketplaceId: string): string | un
   }
 }
 
-function resourcesIn(skillDirectory: string): { resources: string[]; error?: string } {
+class MaterialCapture {
+  private readonly hash = createHash('sha256');
+
+  add(kind: string, value: string | Buffer): void {
+    this.hash.update(kind);
+    this.hash.update('\u001f');
+    this.hash.update(value);
+    this.hash.update('\u001e');
+  }
+
+  fingerprint(): string {
+    return this.hash.digest('hex');
+  }
+}
+
+function isWithin(root: string, target: string): boolean {
+  return target === root || target.startsWith(root.endsWith(sep) ? root : root + sep);
+}
+
+function isSnapshotExcluded(root: string, target: string): boolean {
+  const rel = relative(root, target);
+  return rel.split(sep).some((part) => part === '.git' || part === 'node_modules');
+}
+
+function resourcesIn(root: string, skillDirectory: string, capture: MaterialCapture): { resources: string[]; error?: string } {
   const resources: string[] = [];
   let files = 0;
   let bytes = 0;
@@ -95,14 +124,25 @@ function resourcesIn(skillDirectory: string): { resources: string[]; error?: str
       // accepted as projected Skill Resources, otherwise disclosure could outlive its snapshot.
       if (entry.isDirectory() && (entry.name === '.git' || entry.name === 'node_modules')) continue;
       const next = relative === '' ? entry.name : `${relative}/${entry.name}`;
-      if (entry.isDirectory()) walk(join(directory, entry.name), next, depth + 1);
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) walk(path, next, depth + 1);
       else {
-        const stat = lstatSync(join(directory, entry.name));
+        const stat = lstatSync(path);
+        if (stat.isSymbolicLink()) {
+          const target = realpathSync.native(path);
+          if (!isWithin(root, target) || isSnapshotExcluded(root, target)) {
+            throw new Error(`Skill Resource symlink '${next}' resolves outside snapshot-covered content`);
+          }
+          if (!statSync(path).isFile()) throw new Error(`Skill Resource symlink '${next}' does not resolve to a regular file`);
+        } else if (!stat.isFile()) {
+          throw new Error(`Skill Resource '${next}' is not a regular file`);
+        }
         files += 1;
         bytes += stat.size;
         if (files > BUDGET.maxFiles || bytes > BUDGET.maxTotalBytes) {
           throw new Error('Skill Resources exceed Validation Budget');
         }
+        capture.add(`resource:${next}`, readFileSync(path));
         resources.push(next);
       }
     }
@@ -118,13 +158,17 @@ function resourcesIn(skillDirectory: string): { resources: string[]; error?: str
 /** Classify the complete Plugin tree as one indivisible unit under Compatibility Profile v1. */
 export function classifyPlugin(root: string, opts: ClassificationOptions): ClassificationResult {
   const findings: ValidationFinding[] = [];
+  const capture = new MaterialCapture();
   const manifestPath = join(root, '.codex-plugin', 'plugin.json');
   let manifest: Record<string, unknown> | undefined;
 
   try {
-    const parsed: unknown = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    const raw = readFileSync(manifestPath, 'utf8');
+    capture.add('manifest', raw);
+    const parsed: unknown = JSON.parse(raw);
     if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) manifest = parsed as Record<string, unknown>;
   } catch {
+    capture.add('manifest-error', manifestPath);
     // classified below with one stable, safely-presentable finding
   }
 
@@ -191,8 +235,11 @@ export function classifyPlugin(root: string, opts: ClassificationOptions): Class
       let descriptor: ReturnType<typeof parseDescriptor> = {};
       try {
         if (!lstatSync(skillPath).isFile()) throw new Error('not a file');
-        descriptor = parseDescriptor(readFileSync(skillPath, 'utf8'));
+        const raw = readFileSync(skillPath, 'utf8');
+        capture.add(`descriptor:${entry.name}`, raw);
+        descriptor = parseDescriptor(raw);
       } catch {
+        capture.add(`descriptor-error:${entry.name}`, skillPath);
         // reported by shared condition below
       }
       const name = descriptor.frontmatter?.name;
@@ -211,7 +258,7 @@ export function classifyPlugin(root: string, opts: ClassificationOptions): Class
       }
       const disabled = descriptor.frontmatter?.['disable-model-invocation'] === true;
       const pluginId = manifest && typeof manifest.name === 'string' ? `${opts.marketplaceId}/${manifest.name}` : '';
-      const resourceResult = resourcesIn(skillDirectory);
+      const resourceResult = resourcesIn(root, skillDirectory, capture);
       if (resourceResult.error) {
         findings.push(finding(opts, CODE.SKILL_DESCRIPTOR_INVALID, RULE.SKILL_DESCRIPTOR_INVALID, 'skill', `skills/${entry.name}`, `Skill Resources cannot be scanned safely: ${resourceResult.error}`));
         continue;
@@ -241,13 +288,16 @@ export function classifyPlugin(root: string, opts: ClassificationOptions): Class
   }
 
   const sorted = sortFindings(findings);
+  const identity = manifest && typeof manifest.name === 'string' && KEBAB.test(manifest.name)
+    ? `${opts.marketplaceId}/${manifest.name}`
+    : undefined;
   if (sorted.some((item) => item.code === CODE.PLUGIN_MANIFEST_INVALID || item.code === CODE.SKILL_DESCRIPTOR_INVALID)) {
-    return { classification: 'invalid', findings: sorted };
+    return { classification: 'invalid', identity, captureFingerprint: capture.fingerprint(), findings: sorted };
   }
   if (sorted.some((item) => item.code === CODE.UNSUPPORTED_ACTIVE_COMPONENT && item.classification === 'blocking')) {
-    return { classification: 'incompatible', findings: sorted };
+    return { classification: 'incompatible', identity, captureFingerprint: capture.fingerprint(), findings: sorted };
   }
-  if (sorted.some((item) => item.classification === 'blocking')) return { classification: 'invalid', findings: sorted };
+  if (sorted.some((item) => item.classification === 'blocking')) return { classification: 'invalid', identity, captureFingerprint: capture.fingerprint(), findings: sorted };
   const manifestName = manifest!.name as string;
   return {
     classification: 'compatible',
@@ -257,6 +307,8 @@ export function classifyPlugin(root: string, opts: ClassificationOptions): Class
       marketplaceEntryId: opts.marketplaceEntryId,
       skills,
     },
+    identity: `${opts.marketplaceId}/${manifestName}`,
+    captureFingerprint: capture.fingerprint(),
     findings: sorted,
   };
 }
