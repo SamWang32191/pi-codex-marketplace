@@ -105,4 +105,45 @@ describe('Compatibility Profile v1', () => {
     expect(result.classification).toBe('compatible');
     expect(result.plugin!.skills[0]!.invocationPolicy).toBe('explicit');
   });
+
+  it('returns Invalid rather than throwing when the skills root is not a directory', () => {
+    const root = pluginRoot();
+    rmSync(join(root, 'skills'), { recursive: true });
+    writeFileSync(join(root, 'skills'), 'not a directory');
+
+    const result = classifyPlugin(root, {
+      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+    });
+
+    expect(result.classification).toBe('invalid');
+    expect(result.plugin).toBeUndefined();
+    expect(result.findings).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'SKILL_DESCRIPTOR_INVALID' })]));
+  });
+
+  it('rejects duplicate canonical Skill IDs', () => {
+    const root = pluginRoot();
+    mkdirSync(join(root, 'skills', 'duplicate'), { recursive: true });
+    writeFileSync(join(root, 'skills', 'duplicate', 'SKILL.md'), '---\nname: release-notes\ndescription: Duplicate\n---\n\nDuplicate.\n');
+
+    const result = classifyPlugin(root, {
+      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+    });
+
+    expect(result.classification).toBe('invalid');
+    expect(result.plugin).toBeUndefined();
+    expect(result.findings).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'SKILL_DESCRIPTOR_INVALID' })]));
+  });
+
+  it('does not accept resources the Validation Snapshot deliberately excludes', () => {
+    const root = pluginRoot();
+    mkdirSync(join(root, 'skills', 'release-notes', 'node_modules', 'ignored'), { recursive: true });
+    writeFileSync(join(root, 'skills', 'release-notes', 'node_modules', 'ignored', 'package.js'), 'untrusted');
+
+    const result = classifyPlugin(root, {
+      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+    });
+
+    expect(result.classification).toBe('compatible');
+    expect(result.plugin!.skills[0]!.resources).not.toContain('node_modules/ignored/package.js');
+  });
 });

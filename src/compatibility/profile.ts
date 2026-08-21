@@ -6,12 +6,13 @@
  * intentionally outside this module; they do not change whole-Plugin classification.
  */
 
-import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
+import { lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { parseFrontmatter } from '@earendil-works/pi-coding-agent';
 
 import type { Scope } from '../bridge-state/types.js';
+import { BUDGET } from '../registration/budget.js';
 import { CODE, RULE, blocking, sortFindings, warning, type ValidationFinding } from '../registration/findings.js';
 
 export type PluginClassification = 'compatible' | 'incompatible' | 'invalid';
@@ -71,18 +72,36 @@ function parseDescriptor(text: string): { frontmatter?: Record<string, unknown>;
   }
 }
 
-function resourcesIn(skillDirectory: string): string[] {
+function resourcesIn(skillDirectory: string): { resources: string[]; error?: string } {
   const resources: string[] = [];
-  const walk = (directory: string, relative = ''): void => {
+  let files = 0;
+  let bytes = 0;
+  const walk = (directory: string, relative = '', depth = 1): void => {
+    if (depth > BUDGET.maxTreeDepth) throw new Error(`Skill Resource depth exceeds Validation Budget (${BUDGET.maxTreeDepth})`);
     for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
       if (relative === '' && entry.name === 'SKILL.md') continue;
+      // These trees are deliberately excluded from the Validation Snapshot.  They must never be
+      // accepted as projected Skill Resources, otherwise disclosure could outlive its snapshot.
+      if (entry.isDirectory() && (entry.name === '.git' || entry.name === 'node_modules')) continue;
       const next = relative === '' ? entry.name : `${relative}/${entry.name}`;
-      if (entry.isDirectory()) walk(join(directory, entry.name), next);
-      else resources.push(next);
+      if (entry.isDirectory()) walk(join(directory, entry.name), next, depth + 1);
+      else {
+        const stat = lstatSync(join(directory, entry.name));
+        files += 1;
+        bytes += stat.size;
+        if (files > BUDGET.maxFiles || bytes > BUDGET.maxTotalBytes) {
+          throw new Error('Skill Resources exceed Validation Budget');
+        }
+        resources.push(next);
+      }
     }
   };
-  walk(skillDirectory);
-  return resources;
+  try {
+    walk(skillDirectory);
+    return { resources };
+  } catch (error) {
+    return { resources: [], error: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 /** Classify the complete Plugin tree as one indivisible unit under Compatibility Profile v1. */
@@ -107,8 +126,7 @@ export function classifyPlugin(root: string, opts: ClassificationOptions): Class
 
   if (manifest) {
     for (const key of Object.keys(manifest).sort((a, b) => a.localeCompare(b))) {
-      if (key === 'name') continue;
-      if (key === 'skills' && typeof manifest.skills === 'string' && manifest.skills === './skills/') continue;
+      if (key === 'name' || key === 'skills') continue;
       if (UNSUPPORTED_COMPONENTS.has(key)) {
         findings.push(finding(opts, CODE.UNSUPPORTED_ACTIVE_COMPONENT, RULE.UNSUPPORTED_ACTIVE_COMPONENT, 'plugin', `.codex-plugin/plugin.json#/${key}`, `Compatibility Profile v1 does not support active manifest component '${key}'`));
       } else if (INERT_MANIFEST_FIELDS.has(key)) {
@@ -127,7 +145,14 @@ export function classifyPlugin(root: string, opts: ClassificationOptions): Class
     }
   }
 
-  for (const name of readdirSync(root, { withFileTypes: true }).map((entry) => entry.name).sort((a, b) => a.localeCompare(b))) {
+  let rootEntries: string[] = [];
+  try {
+    if (!lstatSync(root).isDirectory()) throw new Error('Plugin root is not a directory');
+    rootEntries = readdirSync(root, { withFileTypes: true }).map((entry) => entry.name).sort((a, b) => a.localeCompare(b));
+  } catch (error) {
+    findings.push(finding(opts, CODE.PLUGIN_MANIFEST_INVALID, RULE.PLUGIN_MANIFEST_INVALID, 'plugin', '', `Plugin root cannot be read: ${error instanceof Error ? error.message : String(error)}`));
+  }
+  for (const name of rootEntries) {
     if (UNSUPPORTED_COMPONENTS.has(name)) {
       findings.push(finding(opts, CODE.UNSUPPORTED_ACTIVE_COMPONENT, RULE.UNSUPPORTED_ACTIVE_COMPONENT, 'plugin', name, `Compatibility Profile v1 does not support Active Component '${name}'`));
     }
@@ -135,10 +160,17 @@ export function classifyPlugin(root: string, opts: ClassificationOptions): Class
 
   const skills: CompatibleSkill[] = [];
   const skillsDirectory = join(root, 'skills');
-  if (!existsSync(skillsDirectory)) {
+  let skillEntries: import('node:fs').Dirent[] = [];
+  let skillsReadable = true;
+  try {
+    if (!lstatSync(skillsDirectory).isDirectory()) throw new Error('skills is not a directory');
+    skillEntries = readdirSync(skillsDirectory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
+  } catch (error) {
+    skillsReadable = false;
     findings.push(finding(opts, CODE.SKILL_DESCRIPTOR_INVALID, RULE.SKILL_DESCRIPTOR_INVALID, 'plugin', 'skills', 'Compatibility Profile v1 requires at least one skills/<directory>/SKILL.md descriptor'));
-  } else {
-    for (const entry of readdirSync(skillsDirectory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+  }
+  if (skillsReadable) {
+    for (const entry of skillEntries) {
       if (!entry.isDirectory()) {
         findings.push(finding(opts, CODE.SKILL_DESCRIPTOR_INVALID, RULE.SKILL_DESCRIPTOR_INVALID, 'skill', `skills/${entry.name}`, 'A skill must be a directory containing SKILL.md'));
         continue;
@@ -168,14 +200,29 @@ export function classifyPlugin(root: string, opts: ClassificationOptions): Class
       }
       const disabled = descriptor.frontmatter?.['disable-model-invocation'] === true;
       const pluginId = manifest && typeof manifest.name === 'string' ? `${opts.marketplaceId}/${manifest.name}` : '';
+      const resourceResult = resourcesIn(skillDirectory);
+      if (resourceResult.error) {
+        findings.push(finding(opts, CODE.SKILL_DESCRIPTOR_INVALID, RULE.SKILL_DESCRIPTOR_INVALID, 'skill', `skills/${entry.name}`, `Skill Resources cannot be scanned safely: ${resourceResult.error}`));
+        continue;
+      }
       skills.push({
         id: `${pluginId}/${name}`,
         name,
         path: skillDirectory,
-        resources: resourcesIn(skillDirectory),
+        resources: resourceResult.resources,
         invocationPolicy: disabled ? 'explicit' : 'implicit',
       });
     }
+  }
+
+  const duplicateSkills = new Set<string>();
+  const seenSkills = new Set<string>();
+  for (const skill of skills) {
+    if (seenSkills.has(skill.id)) duplicateSkills.add(skill.id);
+    seenSkills.add(skill.id);
+  }
+  for (const id of [...duplicateSkills].sort((a, b) => a.localeCompare(b))) {
+    findings.push(finding(opts, CODE.SKILL_DESCRIPTOR_INVALID, RULE.SKILL_DESCRIPTOR_INVALID, 'skill', id, `Skill ID '${id}' is declared by more than one Skill Descriptor`));
   }
 
   if (skills.length === 0 && !findings.some((item) => item.code === CODE.SKILL_DESCRIPTOR_INVALID)) {
@@ -183,6 +230,9 @@ export function classifyPlugin(root: string, opts: ClassificationOptions): Class
   }
 
   const sorted = sortFindings(findings);
+  if (sorted.some((item) => item.code === CODE.PLUGIN_MANIFEST_INVALID || item.code === CODE.SKILL_DESCRIPTOR_INVALID)) {
+    return { classification: 'invalid', findings: sorted };
+  }
   if (sorted.some((item) => item.code === CODE.UNSUPPORTED_ACTIVE_COMPONENT && item.classification === 'blocking')) {
     return { classification: 'incompatible', findings: sorted };
   }

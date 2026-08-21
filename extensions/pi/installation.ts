@@ -5,7 +5,6 @@ import { join } from 'node:path';
 
 import type { ExtensionCommandContext, ExtensionUIContext } from '@earendil-works/pi-coding-agent';
 
-import { classifyPlugin } from '../../src/compatibility/profile.js';
 import { readBridgeState } from '../../src/bridge-state/store.js';
 import {
   confirmPluginEnable,
@@ -17,7 +16,6 @@ import {
   type InstallationOutcome,
 } from '../../src/installation/flow.js';
 import { parseCatalog } from '../../src/registration/catalog.js';
-import { resolveContained } from '../../src/registration/contained.js';
 import { localSourceKey } from '../../src/registration/source-key.js';
 import type { Registration, Scope } from '../../src/bridge-state/types.js';
 
@@ -38,7 +36,11 @@ function report(ctx: ExtensionCommandContext, outcome: InstallationOutcome): voi
   }
 }
 
-function entryChoices(registration: Registration, scope: Scope): EntryChoice[] {
+async function entryChoices(
+  registration: Registration,
+  scope: Scope,
+  opts: { cwd?: string; projectTrusted?: boolean },
+): Promise<EntryChoice[]> {
   if (registration.sourceKind !== 'local' || !registration.source) {
     return [{ label: `${registration.alias ?? registration.id} — Unavailable (Git Source Cache lifecycle is not available yet)` }];
   }
@@ -48,27 +50,25 @@ function entryChoices(registration: Registration, scope: Scope): EntryChoice[] {
   try {
     const parsed = parseCatalog(JSON.parse(readFileSync(join(root, '.agents', 'plugins', 'marketplace.json'), 'utf8')), { scope });
     if (!parsed.ok) return [{ label: `${registration.alias ?? registration.id} — Unavailable (invalid Marketplace Catalog)` }];
-    const marketplaceId = `${registration.id}/${parsed.catalog!.name}`;
-    const inspected = parsed.catalog!.entries.map((entry) => {
+    const inspected = await Promise.all(parsed.catalog!.entries.map(async (entry) => {
       if (!entry.available || entry.type !== 'local' || !entry.path) {
-        return { entry, classification: undefined, unavailable: entry.unavailableReason ?? 'unsupported source kind' };
+        return { entry, unavailable: entry.unavailableReason ?? 'unsupported source kind' };
       }
-      const contained = resolveContained(root, entry.path, 'directory');
-      if (contained.outcome.kind !== 'ok') return { entry, classification: undefined, unavailable: 'cannot resolve Plugin' };
-      const classified = classifyPlugin(contained.outcome.canonicalPath, { scope, marketplaceId, marketplaceEntryId: `${marketplaceId}${entry.entryId}` });
-      return { entry, classification: classified, unavailable: classified.classification === 'compatible' ? undefined : classified.classification };
-    });
-    const compatibleIds = new Map<string, number>();
-    for (const item of inspected) {
-      const id = item.classification?.plugin?.id;
-      if (id) compatibleIds.set(id, (compatibleIds.get(id) ?? 0) + 1);
-    }
+      // Reuse the authoritative preflight inspection: browsing and installation therefore share
+      // exact snapshot drift, classification and Plugin-ID collision semantics.
+      const preflight = await preflightPluginInstallation(scope, registration.id, entry.entryId, opts);
+      if (preflight.ok) {
+        preflight.preflight.fence.release();
+        return { entry, unavailable: undefined };
+      }
+      const finding = preflight.outcome.status === 'blocked' ? preflight.outcome.findings[0] : undefined;
+      return { entry, unavailable: finding?.outcome ?? preflight.outcome.status };
+    }));
     return inspected.map((item) => {
-      const plugin = item.classification?.plugin;
-      const collision = plugin && (compatibleIds.get(plugin.id) ?? 0) > 1;
-      const reason = collision ? 'Plugin ID collision' : item.unavailable;
+      const reason = item.unavailable;
       const status = reason ? `Unavailable (${reason})` : '可安裝';
-      return { label: `${item.entry.entryId} · ${item.entry.name ?? plugin?.manifestName ?? 'unnamed'} — ${status}`, pointer: reason ? undefined : item.entry.entryId };
+      const entryId = `${registration.id}/${parsed.catalog!.name}${item.entry.entryId}`;
+      return { label: `${entryId} · ${item.entry.name ?? 'unnamed'} — ${status}`, pointer: reason ? undefined : item.entry.entryId };
     });
   } catch {
     return [{ label: `${registration.alias ?? registration.id} — Unavailable (Marketplace Catalog cannot be read)` }];
@@ -89,7 +89,7 @@ export async function runPluginInstallationFlow(ctx: ExtensionCommandContext): P
   const selectedLabel = await ui.select('選擇已註冊 Marketplace', labels);
   if (!selectedLabel) return;
   const registration = registrations[labels.indexOf(selectedLabel)]!;
-  const choices = entryChoices(registration, scope);
+  const choices = await entryChoices(registration, scope, opts);
   const entryLabel = await ui.select('Marketplace Entries（顯示 Marketplace Entry ID 與可安裝/Unavailable 原因）', choices.map((item) => item.label));
   if (!entryLabel) return;
   const selected = choices.find((item) => item.label === entryLabel);
