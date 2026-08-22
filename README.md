@@ -2,20 +2,24 @@
 
 Bridge Package for Codex Marketplace compatibility in Pi (`Pi 0.84.2`).
 
-> **One-line:** `pi install pi-codex-marketplace` → `/codex-marketplace` shows Global / Project partitioned Bridge State and lifecycle controls with Validation Disclosure, dual Confirmation, and three-orthogonal Receipt reporting.
+> **One-line:** `pi install npm:pi-codex-marketplace` → `/codex-marketplace` shows Global / Project partitioned Bridge State and lifecycle controls with Validation Disclosure, dual Confirmation, and three-orthogonal Receipt reporting.
 
 ## Install
 
 ```bash
-pi install pi-codex-marketplace            # Global Scope (writes to ~/.pi/agent/settings.json)
-pi install -l pi-codex-marketplace         # Project Scope (.pi/settings.json)
-pi install -e ./path/to/pi-codex-marketplace  # External link (try without publishing)
-pi update pi-codex-marketplace             # Update to latest compatible Bridge Package
-pi remove pi-codex-marketplace             # Remove Registration + Installations atomically
-pi -e ./path/to/repo                       # Ephemeral run without installing
+pi install npm:pi-codex-marketplace                    # Global Scope (writes to ~/.pi/agent/settings.json)
+pi install npm:pi-codex-marketplace -l                 # Project Scope (.pi/settings.json)
+pi install ./path/to/pi-codex-marketplace              # Local path (try without publishing)
+pi install ./path/to/pi-codex-marketplace -l           # Local path, Project Scope
+pi -e npm:pi-codex-marketplace                         # Ephemeral try without installing (temporary)
+pi update npm:pi-codex-marketplace                     # Update one package
+pi update --all                                        # Update pi + all packages
+pi remove npm:pi-codex-marketplace                     # Remove package
+pi list                                                # List installed packages
+pi config                                              # Enable/disable resources (Tab switches scope)
 ```
 
-All `pi install / -e / -l / update / remove` semantics are handled by the Pi host; this package declares a single `pi` extension entry (`extensions/pi/index.ts`) loaded via `jiti` and requires no build step.
+Source types follow `docs/packages.md`: `npm:` for registry, `git:`/`https://` for git, and absolute/relative paths for local. Ephemeral runs use `pi -e <source>` (not `pi install -e`). This package declares a single `pi` extension entry (`extensions/pi/index.ts`) loaded via `jiti` and requires no build step.
 
 Requirements: **Pi 0.84.2**, **Node >=22.19.0**, **macOS / Linux** (Windows not supported).
 
@@ -78,7 +82,7 @@ Project Scope mutations and Effective-State participation require Pi's `Project 
 | OS | **macOS**, **Linux** | Windows not supported (path containment, symlink, `flock` semantics are POSIX-only) |
 | Node | **>=22.19.0** | `engines.node` enforced; `npm-shrinkwrap.json` pins Pi 0.84.2 host |
 | Pi host | **0.84.2** | `peerDependencies` exact `0.84.2`; expected compatible range `^0.84.2` (devDeps). `pi-ai`/`pi-tui` peers `*` per Pi extension docs. |
-| Semantics | `pi install` / `pi install -e` / `pi install -l` / `pi update` / `pi remove` | Single `pi` extension package; `files` ships `extensions/`, `src/`, `README.md`, `LICENSE` only |
+| Semantics | `pi install` / `pi -e` / `pi install -l` / `pi update` / `pi remove` / `pi list` / `pi config` | Single `pi` extension package; `files` ships `extensions/`, `src/`, `README.md`, `LICENSE` only |
 
 Peer declaration (dual): **精確 `0.84.2`** in `peerDependencies` (exact host that this version was validated against) + **預期 `^0.84.2`** in `devDependencies` (range expected to remain compatible). `pi-ai` and `pi-tui` remain `*` because they are bundled by Pi.
 
