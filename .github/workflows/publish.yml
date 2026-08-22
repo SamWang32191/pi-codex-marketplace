@@ -39,7 +39,7 @@ jobs:
           REF="${GITHUB_REF_NAME#v}"
           echo "version=$REF" >> "$GITHUB_OUTPUT"
           # Validate SemVer (strict)
-          node -e "const v=process.env.V; if(!/^\\d+\\.\\d+\\.\\d+(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?\$/.test(v)) { console.error('Invalid SemVer:', v); process.exit(1) }" V="$REF"
+          V="$REF" node -e "const v=process.env.V; if(!/^\\d+\\.\\d+\\.\\d+(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?\$/.test(v)) { console.error('Invalid SemVer:', v); process.exit(1) }"
           PKG=$(node -p "require('./package.json').version")
           if [ "$PKG" != "$REF" ]; then
             echo "::error::Tag version $REF does not match package.json version $PKG — aborting (Git tags mirror npm versions)"
