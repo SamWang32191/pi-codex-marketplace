@@ -1,6 +1,6 @@
 {
   "name": "pi-codex-marketplace",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Bridge Package for Codex Marketplace compatibility in Pi — Global/Project Bridge State, atomic persistence, and /codex-marketplace TUI",
   "type": "module",
   "keywords": [

@@ -2,6 +2,11 @@
 
 All notable changes to `pi-codex-marketplace` are documented here. Format follows Keep a Changelog and SemVer (starting at `0.1.0`; Git tags `v*` mirror npm versions).
 
+## [0.1.6] - 2026-08-22
+
+### Added
+- **Git Marketplace Plugin 檢驗與安裝** (#34)：接合 `SourceCache`（Git 定址快取）與 `buildGitSnapshot` 指紋驗證，支援 Git Marketplace 的 Plugin 檢驗、TUI 條目呈現（顯示「可安裝」）、`Install Disabled` / `Install and Enable` 以及啟用（Enable）完整生命週期；快取遺失或指紋漂移時精確產生 `SOURCE_REACQUISITION_REQUIRED` / `SOURCE_DRIFT` Blocking Finding。
+
 ## [0.1.5] - 2026-08-22
 
 ### Fixed
@@ -46,6 +51,7 @@ Initial Bridge Package release — single `pi` extension, Pi `0.84.2` baseline.
 - **TUI management flow** (`/codex-marketplace`): single aggregated command faithful to `prototype/tui-management-flow@c9107d2` — hybrid discovery/guided, explicit scope choice per operation, Registration/Activation separated snapshot+revision bound Default No confirmations, Update Plan Checklist, partitioned Global/Project lists, skill-granular diagnostics, synchronized Findings, closed Recovery Actions, immediate-reload three-orthogonal Receipt report, Pending/Global Barrier blocking hints.
 - **Verification matrix**: synthetic / pinned `SamWang32191/codex-plugins@98e78ca` / adversarial three-tier fixtures × (unit + integration + E2E at the TUI seam) on Pi `0.84.2` / macOS / Linux / Node `>=22.19.0`; every row is a release gate (`v*` → CI full matrix green → `npm publish --provenance` `latest`/`next` channels, `0.y`/`1.0` maintenance windows).
 
+[0.1.6]: https://github.com/SamWang32191/pi-codex-marketplace/releases/tag/v0.1.6
 [0.1.5]: https://github.com/SamWang32191/pi-codex-marketplace/releases/tag/v0.1.5
 [0.1.4]: https://github.com/SamWang32191/pi-codex-marketplace/releases/tag/v0.1.4
 [0.1.3]: https://github.com/SamWang32191/pi-codex-marketplace/releases/tag/v0.1.3
