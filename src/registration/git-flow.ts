@@ -26,6 +26,7 @@ import { gitSourceKey, type SourceKey } from './source-key.js';
 import { normalizeGitLocator, type CanonicalGitLocator } from './git-locator.js';
 import { normalizeGitSelector, parseGitSelectorString, type GitSelectorInput, type NormalizedGitSelector } from './git-selector.js';
 import { acquireGitSource, cleanupAcquisition, type GitExecutor, type AcquisitionTrustOptions } from './git-acquisition.js';
+import { SourceCache } from '../cache/source-cache.js';
 import { MARKETPLACE_CATALOG_RELPATH } from './flow.js';
 
 export interface GitRegistrationFlowOptions {
@@ -38,6 +39,8 @@ export interface GitRegistrationFlowOptions {
   executor?: GitExecutor;
   /** Trust base options */
   trust?: AcquisitionTrustOptions;
+  /** Injected Source Cache (defaults to a cache under the given agentDir). */
+  cache?: SourceCache;
   /** Destination dir for acquisition (tests) — if not provided, temp is created */
   destDir?: string;
 }
@@ -373,6 +376,22 @@ export async function preflightGitRegistration(
       registrations.map((r) => r.alias).filter((a): a is string => Boolean(a)),
     );
 
+    // Cache the validated tree under its fingerprint and record the locator+selector index
+    // entry for future exact-fingerprint hits (#22).
+    const cache = opts.cache ?? new SourceCache({ agentDir: opts.agentDir });
+    try {
+      await cache.storeTree(acquiredPath, snapshotResult.snapshot!.fingerprint);
+      cache.recordIndex({
+        fingerprint: snapshotResult.snapshot!.fingerprint,
+        resolvedRevision,
+        canonicalLocator: locator.canonicalUrl,
+        selectorCanonical: selCanonical,
+      });
+    } catch {
+      // Cache is non-authoritative: store failures never block registration.
+    }
+
+    // Keep acquiredPath for potential cleanup on cancel/confirm; snapshot already captured
     const preflight: GitRegistrationPreflight = {
       scope,
       registrationId,

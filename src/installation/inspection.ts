@@ -1,5 +1,4 @@
-/**
- * Read-only Marketplace Entry inspection.
+/** Read-only Marketplace Entry inspection.
  *
  * This is deliberately separate from lifecycle preflight: it never acquires an Attempt Fence,
  * creates a receipt, or reads Bridge State.  One bounded snapshot and one catalog parse produce
@@ -38,28 +37,46 @@ export interface MarketplaceInspection {
   treeFingerprint?: string;
 }
 
+export interface InspectionOptions {
+  /** Inspect this explicit root with this caller-bound base Validation Snapshot (e.g. a Git acquisition tree) instead of deriving a local one from the Registration. */
+  root?: string;
+  baseSnapshot?: ValidationSnapshot;
+  /** Suppress the recorded-snapshot drift Blocking Finding — Refresh compares fingerprints explicitly instead. */
+  ignoreRecordedDrift?: boolean;
+}
+
 function inspectionFinding(scope: Scope, code: string, rule: string, target: ValidationFinding['target'], outcome: string): ValidationFinding {
   return blocking({ code, rule, target, pointer: '', outcome, scope, phase: 'validation' });
 }
 
 /** Inspect every Marketplace Entry once. All filesystem work occurs after a bounded snapshot. */
-export function inspectMarketplaceEntries(registration: Registration, scope: Scope): MarketplaceInspection {
-  if (registration.sourceKind !== 'local' || !registration.source) {
-    return { entries: [], findings: [inspectionFinding(scope, CODE.SOURCE_REACQUISITION_REQUIRED, RULE.SOURCE_REACQUISITION_REQUIRED, 'registration', 'Git Source Cache lifecycle is not available yet')] };
-  }
-  const key = localSourceKey(registration.source);
-  if (!key.ok) return { entries: [], findings: [inspectionFinding(scope, CODE.SOURCE_REACQUISITION_REQUIRED, RULE.SOURCE_REACQUISITION_REQUIRED, 'registration', key.error ?? 'Marketplace Root cannot be revalidated')] };
-  const root = key.sourceKey!.canonicalPath!;
-  const catalogPath = join(root, '.agents', 'plugins', 'marketplace.json');
-  try {
-    if (lstatSync(catalogPath).size > BUDGET.maxCatalogBytes) {
-      return { entries: [], findings: [inspectionFinding(scope, CODE.BUDGET_EXCEEDED, RULE.BUDGET_EXCEEDED, 'catalog', `Validation Budget exceeded: catalog exceeds ${BUDGET.maxCatalogBytes} bytes`)] };
+export function inspectMarketplaceEntries(registration: Registration, scope: Scope, opts: InspectionOptions = {}): MarketplaceInspection {
+  const override = Boolean(opts.root && opts.baseSnapshot);
+  let root: string;
+  let snapshotResult: { ok: boolean; snapshot?: ValidationSnapshot; findings: ValidationFinding[] };
+  if (override) {
+    root = opts.root!;
+    snapshotResult = { ok: true, snapshot: opts.baseSnapshot, findings: [] };
+  } else {
+    if (registration.sourceKind !== 'local' || !registration.source) {
+      return { entries: [], findings: [inspectionFinding(scope, CODE.SOURCE_REACQUISITION_REQUIRED, RULE.SOURCE_REACQUISITION_REQUIRED, 'registration', 'Git Source Cache lifecycle is not available yet')] };
     }
-  } catch {
-    // The catalog read below provides the stable catalog-missing finding.
+    const key = localSourceKey(registration.source);
+    if (!key.ok) return { entries: [], findings: [inspectionFinding(scope, CODE.SOURCE_REACQUISITION_REQUIRED, RULE.SOURCE_REACQUISITION_REQUIRED, 'registration', key.error ?? 'Marketplace Root cannot be revalidated')] };
+    root = key.sourceKey!.canonicalPath!;
+    const catalogPath = join(root, '.agents', 'plugins', 'marketplace.json');
+    try {
+      if (lstatSync(catalogPath).size > BUDGET.maxCatalogBytes) {
+        return { entries: [], findings: [inspectionFinding(scope, CODE.BUDGET_EXCEEDED, RULE.BUDGET_EXCEEDED, 'catalog', `Validation Budget exceeded: catalog exceeds ${BUDGET.maxCatalogBytes} bytes`)] };
+      }
+    } catch {
+      // The catalog read below provides the stable catalog-missing finding.
+    }
+    snapshotResult = buildLocalSnapshot(root, key.sourceKey!, scope);
+    if (!snapshotResult.ok) return { entries: [], findings: snapshotResult.findings };
   }
-  const snapshotResult = buildLocalSnapshot(root, key.sourceKey!, scope);
-  if (!snapshotResult.ok) return { entries: [], findings: snapshotResult.findings };
+
+  const catalogPath = join(root, '.agents', 'plugins', 'marketplace.json');
 
   let catalogRaw: string;
   let catalogValue: unknown;
@@ -74,7 +91,7 @@ export function inspectMarketplaceEntries(registration: Registration, scope: Sco
   const parsed = parseCatalog(catalogValue, { scope });
   if (!parsed.catalog) return { entries: [], snapshot: snapshotResult.snapshot, findings: parsed.findings };
   const marketplaceId = `${registration.id}/${parsed.catalog.name}`;
-  const drift = registration.validationSnapshot && registration.validationSnapshot !== snapshotResult.snapshot!.fingerprint
+  const drift = !opts.ignoreRecordedDrift && registration.validationSnapshot && registration.validationSnapshot !== snapshotResult.snapshot!.fingerprint
     ? [inspectionFinding(scope, CODE.REJECTED_AS_STALE, RULE.REJECTED_AS_STALE_SNAPSHOT, 'registration', 'Registered Validation Snapshot no longer matches the source tree; Marketplace Refresh is required')]
     : [];
   const material = createHash('sha256');

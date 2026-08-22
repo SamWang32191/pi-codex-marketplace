@@ -275,6 +275,18 @@ async function resolveRevision(
   return { ok: true, sha: sha.toLowerCase() };
 }
 
+/** Resolve a selector to a full commit SHA via non-executing ls-remote (#22 cache seam). */
+export async function resolveGitRevision(
+  locator: CanonicalGitLocator,
+  selector: NormalizedGitSelector,
+  scope: Scope,
+  opts: { executor?: GitExecutor; trust?: AcquisitionTrustOptions } = {},
+): Promise<{ ok: true; sha: string } | { ok: false; findings: ValidationFinding[]; stderr?: string }> {
+  const env = hardenedEnv(opts.trust, locator);
+  const configArgs = hardenedConfigArgs(opts.trust);
+  return resolveRevision(locator, selector, scope, opts.executor ?? defaultGitExecutor(), env, configArgs);
+}
+
 /**
  * Acquire a Git source non-executingly at its Resolved Revision.
  * Uses `clone --no-checkout` with hardened config/env, then checks out the resolved revision.
