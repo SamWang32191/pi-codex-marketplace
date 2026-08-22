@@ -2,6 +2,11 @@
 
 All notable changes to `pi-codex-marketplace` are documented here. Format follows Keep a Changelog and SemVer (starting at `0.1.0`; Git tags `v*` mirror npm versions).
 
+## [0.1.3] - 2026-08-22
+
+### Fixed
+- 調試 OIDC：新增暫時性 `debug OIDC token` 步驟與 `verbose` 日誌以定位 `ENEEDAUTH`。
+
 ## [0.1.2] - 2026-08-22
 
 ### Fixed
@@ -31,6 +36,7 @@ Initial Bridge Package release — single `pi` extension, Pi `0.84.2` baseline.
 - **TUI management flow** (`/codex-marketplace`): single aggregated command faithful to `prototype/tui-management-flow@c9107d2` — hybrid discovery/guided, explicit scope choice per operation, Registration/Activation separated snapshot+revision bound Default No confirmations, Update Plan Checklist, partitioned Global/Project lists, skill-granular diagnostics, synchronized Findings, closed Recovery Actions, immediate-reload three-orthogonal Receipt report, Pending/Global Barrier blocking hints.
 - **Verification matrix**: synthetic / pinned `SamWang32191/codex-plugins@98e78ca` / adversarial three-tier fixtures × (unit + integration + E2E at the TUI seam) on Pi `0.84.2` / macOS / Linux / Node `>=22.19.0`; every row is a release gate (`v*` → CI full matrix green → `npm publish --provenance` `latest`/`next` channels, `0.y`/`1.0` maintenance windows).
 
+[0.1.3]: https://github.com/SamWang32191/pi-codex-marketplace/releases/tag/v0.1.3
 [0.1.2]: https://github.com/SamWang32191/pi-codex-marketplace/releases/tag/v0.1.2
 [0.1.1]: https://github.com/SamWang32191/pi-codex-marketplace/releases/tag/v0.1.1
 [0.1.0]: https://github.com/SamWang32191/pi-codex-marketplace/releases/tag/v0.1.0

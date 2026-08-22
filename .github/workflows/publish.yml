@@ -54,10 +54,19 @@ jobs:
           fi
           echo "Ref $REF → npm dist-tag $([ "$REF" = *"-"* ] && echo next || echo latest)"
 
+      - name: debug OIDC token (temporary)
+        run: |
+          echo "ACTIONS_ID_TOKEN_REQUEST_URL exists: $([ -n "$ACTIONS_ID_TOKEN_REQUEST_URL" ] && echo yes || echo no)"
+          echo "GITHUB_REF=$GITHUB_REF GITHUB_REF_NAME=$GITHUB_REF_NAME"
+          # Try to fetch an OIDC token for npm audience and show its claims (no secret)
+          if [ -n "$ACTIONS_ID_TOKEN_REQUEST_URL" ]; then
+            curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=npm:registry.npmjs.org" | python3 -c "import sys,json; d=json.load(sys.stdin); print({k: d.get(k) for k in ['aud','iss','repository','repository_owner','workflow','ref','workflow_ref']})" 2>&1 | head -n 20 || echo "OIDC fetch failed or not JSON"
+          fi
+
       - name: npm publish --provenance (OIDC)
         run: |
           # Requires a trusted publisher configured in npm (OIDC). For manual runs without it, this step will fail closed.
-          npm publish --provenance --tag "${{ steps.tag.outputs.npm_tag }}" --access public
+          npm publish --provenance --tag "${{ steps.tag.outputs.npm_tag }}" --access public --loglevel verbose
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
