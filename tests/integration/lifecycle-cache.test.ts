@@ -189,4 +189,33 @@ describe('Source Cache + Source Drift — Git lifecycle (#22)', () => {
     await cache.prune();
     expect(await cache.hitExact(outcome.candidate.snapshot.fingerprint)).not.toBeNull();
   });
+
+  it('Apply Update fails closed when no cached tree verifies the Git candidate', async () => {
+    const { applyUpdate } = await import('../../src/lifecycle/update.js');
+    const { buildUpdatePlan } = await import('../../src/lifecycle/update-plan.js');
+    const registrationId = await register(SHA_A);
+
+    makeFixture(env.fixture, { extra: true });
+    const refreshed = await refreshRegistration('global', registrationId, {
+      agentDir: env.agentDir,
+      cwd: env.projectDir,
+      executor: makeExecutor(env.fixture, SHA_B, counters),
+    });
+    expect(refreshed.status).toBe('update-candidate');
+    if (refreshed.status !== 'update-candidate') return;
+    const candidate = refreshed.candidate;
+
+    const state = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
+    const planResult = buildUpdatePlan(candidate, [], state.state!.stateRevision, { registrationConfirmed: true, choices: {} });
+    expect(planResult.ok).toBe(true);
+    if (!planResult.ok) throw new Error(`plan problems: ${planResult.problems.map((p) => p.outcome).join('; ')}`);
+
+    // Evict the candidate tree so nothing can verify its fingerprint.
+    rmSync(new SourceCache({ agentDir: env.agentDir }).entryPath(candidate.snapshot.fingerprint), { recursive: true, force: true });
+
+    const applied = await applyUpdate(planResult.plan, { agentDir: env.agentDir, cwd: env.projectDir });
+    expect(applied.status).toBe('rejected-as-stale');
+    if (applied.status !== 'rejected-as-stale') return;
+    expect(applied.receipt.summary).toBe('Rejected as Stale');
+  });
 });

@@ -438,12 +438,8 @@ export async function confirmInstallationRemoval(
   if (!write.success) return persistenceFailure(OPERATION, preflight.scope, trigger, preflight.stateRevision, write);
 
   const newRevision = write.newRevision!;
-  // Installation Removal does not invalidate a pending Update Candidate (the Registration and
-  // its candidate remain); the pin stays aligned with surviving records (#22).
-  if (preflight.registrationId) {
-    const cache = opts.cache ?? new SourceCache({ agentDir: opts.agentDir });
-    cache.clearPendingUpdate(preflight.scope, preflight.registrationId);
-  }
+  // Installation Removal does not invalidate the pending Update Candidate: the Registration and
+  // its candidate survive, so the pin must remain (fail-closed, #22).
   return {
     status: 'completed',
     newRevision,

@@ -204,21 +204,26 @@ export async function applyUpdate(plan: UpdatePlan, opts: ApplyUpdateOptions = {
     }
   } else {
     // Git candidates verify against the fingerprint-addressed Source Cache (default-constructed
-    // so pin hygiene and verification never depend on caller injection).
+    // so pin hygiene and verification never depend on caller injection). Fail-closed: an absent
+    // or mismatching cached tree rejects the attempt as stale — never an unverified apply.
     const cache = opts.cache ?? new SourceCache({ agentDir: opts.agentDir });
     const hit = await cache.hitExact(plan.candidate.snapshot.fingerprint);
-    if (hit) {
-      const revalidated = buildGitSnapshot(hit.path, plan.candidate.snapshot.sourceKey, plan.scope, {
-        canonicalLocator: plan.candidate.canonicalLocator ?? plan.candidate.snapshot.canonicalLocator ?? '',
-        resolvedRevision: plan.candidate.resolvedRevision ?? plan.candidate.snapshot.resolvedRevision ?? '',
-        selectorCanonical: plan.candidate.selectorCanonical ?? plan.candidate.snapshot.selectorCanonical ?? '',
-      });
-      if (!revalidated.ok || !revalidated.snapshot || revalidated.snapshot.fingerprint !== plan.candidate.snapshot.fingerprint) {
-        return stale(
-          plan,
-          'Cached Git tree no longer hashes to the Update Candidate fingerprint (source drift); run a fresh Marketplace Refresh and rebuild the plan',
-        );
-      }
+    if (!hit) {
+      return stale(
+        plan,
+        'No cached tree verifies the Update Candidate fingerprint (evicted or never retained); run a fresh Marketplace Refresh and rebuild the plan',
+      );
+    }
+    const revalidated = buildGitSnapshot(hit.path, plan.candidate.snapshot.sourceKey, plan.scope, {
+      canonicalLocator: plan.candidate.canonicalLocator ?? plan.candidate.snapshot.canonicalLocator ?? '',
+      resolvedRevision: plan.candidate.resolvedRevision ?? plan.candidate.snapshot.resolvedRevision ?? '',
+      selectorCanonical: plan.candidate.selectorCanonical ?? plan.candidate.snapshot.selectorCanonical ?? '',
+    });
+    if (!revalidated.ok || !revalidated.snapshot || revalidated.snapshot.fingerprint !== plan.candidate.snapshot.fingerprint) {
+      return stale(
+        plan,
+        'Cached Git tree no longer hashes to the Update Candidate fingerprint (source drift); run a fresh Marketplace Refresh and rebuild the plan',
+      );
     }
   }
 

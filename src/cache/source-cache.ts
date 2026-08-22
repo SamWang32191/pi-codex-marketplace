@@ -276,12 +276,6 @@ export class SourceCache {
   /**
    * Offline reuse seam: only an exact fingerprint hit counts. Returns the cached tree only when
    * the index records exactly `expectedFingerprint` for this locator+selector AND that exact
-   * entry is present in the cache. Callers must still verify by re-hashing the tree; any
-   * mismatch is a Blocking Finding and never success.
-   */
-  /**
-   * Offline reuse seam: only an exact fingerprint hit counts. Returns the cached tree only when
-   * the index records exactly `expectedFingerprint` for this locator+selector AND that exact
    * entry is present in the cache. The hit refreshes LRU recency. Callers must still verify by
    * re-hashing the tree; any mismatch is a Blocking Finding and never success.
    */
