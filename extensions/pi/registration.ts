@@ -19,6 +19,7 @@ import {
 } from '../../src/registration/flow.js';
 import type { ValidationFinding } from '../../src/registration/findings.js';
 import type { RegistrationOutcome } from '../../src/registration/flow.js';
+import { formatThreeOrthogonalReport, type AttemptReceipt } from '../../src/registration/receipt.js';
 
 export function formatFindings(findings: ValidationFinding[]): string[] {
   return findings.map((f) => {
@@ -117,42 +118,15 @@ export async function runLocalRegistrationFlow(ctx: ExtensionCommandContext): Pr
 /** Render the three-orthogonal outcome (persistence / findings / runtime) as an Attempt Summary + Recovery Action. */
 export function reportOutcome(
   ctx: { ui: { notify(message: string, type?: 'info' | 'warning' | 'error'): void } },
-  outcome: RegistrationOutcome,
+  outcome: { receipt: AttemptReceipt },
 ): void {
-  if (outcome.status === 'completed') {
-    const rc = outcome.receipt;
-    ctx.ui.notify(
-      `Attempt Summary: ${rc.summary} · new State Revision ${outcome.newRevision} · Registration ${outcome.registration.alias ?? outcome.registration.id.slice(0, 8)}…\nReceipt ${rc.id} — immutable, non-authoritative. Recovery: none required.`,
-      'info',
-    );
-    return;
-  }
-  if (outcome.status === 'declined') {
-    ctx.ui.notify(
-      `Attempt Summary: Declined — state unchanged. Receipt ${outcome.receipt.id}（redacted, immutable）`,
-      'info',
-    );
-    return;
-  }
-  if (outcome.status === 'rejected-as-stale') {
-    ctx.ui.notify(
-      `Attempt Summary: Rejected as Stale — State Revision or Validation Snapshot changed since disclosure. Recovery: 重新 preflight + confirmation（不會自動合併）`,
-      'warning',
-    );
-    return;
-  }
-  if (outcome.status === 'persistence-failed') {
-    ctx.ui.notify(
-      `Attempt Summary: ${outcome.isIndeterminate ? 'Persistence Indeterminate' : 'Persistence Failed'} — ${outcome.receipt.findings[0]?.outcome ?? ''}. Recovery: Persistence Indeterminate 需先 Repair State 使 state 可讀且精確（fail-closed，不自動回滾）`,
-      'error',
-    );
-    return;
-  }
-  // blocked
-  const blocked = outcome.findings[0];
-  const existing = outcome.existing ? ` 已存在 Registration: ${outcome.existing.alias ?? outcome.existing.id.slice(0, 8)}… — 導向既有 Registration` : '';
-  ctx.ui.notify(
-    `Attempt Summary: Blocked — ${blocked?.code ?? '?'} (${blocked?.rule ?? '?'}): ${blocked?.outcome ?? ''}${existing}\nRecovery: 修復來源後重新 preflight（Blocking Findings 不可 waive）`,
-    'error',
-  );
+  const rc = outcome.receipt;
+  const report = formatThreeOrthogonalReport(rc);
+  const notifyType =
+    rc.summary === 'Completed' || rc.summary === 'Completed with diagnostics'
+      ? 'info'
+      : rc.summary === 'Declined' || rc.summary === 'Rejected as Stale'
+        ? 'warning'
+        : 'error';
+  ctx.ui.notify(report, notifyType);
 }

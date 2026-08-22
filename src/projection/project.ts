@@ -29,6 +29,7 @@ import {
 import { inspectMarketplaceEntries, type MarketplaceInspection } from '../installation/inspection.js';
 import { CODE, RULE, blocking, sortFindings, type ValidationFinding } from '../registration/findings.js';
 import { createReceipt, type AttemptReceipt } from '../registration/receipt.js';
+import { appendReceipt } from '../journal/journal.js';
 
 export interface ProjectionOptions {
   cwd?: string;
@@ -286,16 +287,26 @@ function dirnamePath(filePath: string): string {
   return index > 0 ? filePath.slice(0, index) : filePath;
 }
 
+export interface RuntimeApplicationInput {
+  /** Exact State Revision the runtime is expected to re-enter at. */
+  stateRevision?: string;
+  scope?: Scope;
+  cwd?: string;
+  agentDir?: string;
+  recoversReceiptId?: string;
+  /** Whole-Plugin Blocking Findings from projection; any one of them denies Applied. */
+  wholePluginFindings?: ValidationFinding[];
+}
+
 export interface RuntimeApplicationOutcome {
   outcome: 'applied' | 'pending-application';
   receipt: AttemptReceipt;
 }
 
 /**
- * Thin Runtime Application seam: participation in Pi becomes Applied only through
+ * Runtime Application seam: participation in Pi becomes Applied only through
  * host-verifiable Bridge re-entry at the expected State Revision with no whole-Plugin
- * Blocking Finding; anything less leaves Pending Application or stays Blocked. Full
- * receipt-journal reconciliation arrives with the recovery tickets.
+ * Blocking Finding; anything less leaves Pending Application or stays Blocked.
  */
 export async function requestRuntimeApplication(
   verifyReload: () => Promise<boolean> | boolean,
@@ -303,28 +314,46 @@ export async function requestRuntimeApplication(
 ): Promise<RuntimeApplicationOutcome> {
   const scope: Scope = input.scope ?? 'project';
   const stateRevision = input.stateRevision ?? '-';
+  const opts = { cwd: input.cwd, agentDir: input.agentDir };
+
   if (input.wholePluginFindings?.some((finding) => finding.classification === 'blocking')) {
-    return {
-      outcome: 'pending-application',
-      receipt: createReceipt({
-        operation: 'Runtime Application',
-        scope,
-        trigger: 'reload projected Effective State',
-        expectedStateRevision: stateRevision,
-        summary: 'Pending Application',
-        findings: input.wholePluginFindings,
-      }),
-    };
-  }
-  const applied = await verifyReload();
-  return {
-    outcome: applied ? 'applied' : 'pending-application',
-    receipt: createReceipt({
+    const receipt = createReceipt({
+      kind: 'Runtime Application',
       operation: 'Runtime Application',
       scope,
       trigger: 'reload projected Effective State',
       expectedStateRevision: stateRevision,
-      summary: applied ? 'Completed' : 'Pending Application',
-    }),
+      durableOutcome: 'unchanged',
+      runtimeOutcome: 'pending-application',
+      summary: 'Pending Application',
+      findings: input.wholePluginFindings,
+      recoversReceiptId: input.recoversReceiptId,
+    });
+    await appendReceipt(scope, receipt, opts);
+    return {
+      outcome: 'pending-application',
+      receipt,
+    };
+  }
+
+  const applied = await verifyReload();
+  const receipt = createReceipt({
+    kind: 'Runtime Application',
+    operation: 'Runtime Application',
+    scope,
+    trigger: 'reload projected Effective State',
+    expectedStateRevision: stateRevision,
+    observedStateRevision: applied ? stateRevision : undefined,
+    durableOutcome: 'unchanged',
+    runtimeOutcome: applied ? 'applied' : 'pending-application',
+    summary: applied ? 'Completed' : 'Pending Application',
+    recoversReceiptId: input.recoversReceiptId,
+  });
+  await appendReceipt(scope, receipt, opts);
+
+  return {
+    outcome: applied ? 'applied' : 'pending-application',
+    receipt,
   };
 }
+

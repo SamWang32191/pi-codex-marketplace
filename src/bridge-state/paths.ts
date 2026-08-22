@@ -13,8 +13,10 @@ import { join } from 'node:path';
 export const CONFIG_DIR_NAME = '.pi';
 export const BRIDGE_SUBDIR = 'codex-marketplace';
 export const STATE_FILENAME = 'state.json';
+export const RECEIPTS_FILENAME = 'receipts.jsonl';
 export const LOCK_SUFFIX = '.lock';
 export const WAL_SUFFIX = '.wal';
+export const FENCE_SUFFIX = '.fence';
 
 /** Mirrors pi's getAgentDir() — env PI_CODING_AGENT_DIR wins, else ~/.pi/agent */
 export function getAgentDir(): string {
@@ -51,6 +53,14 @@ export function getStatePath(
   return getProjectStatePath(opts.cwd);
 }
 
+export function getReceiptsJournalPath(
+  scope: 'global' | 'project',
+  opts: { cwd?: string; agentDir?: string } = {},
+): string {
+  const stateDir = scope === 'global' ? getGlobalStateDir(opts.agentDir) : getProjectStateDir(opts.cwd);
+  return join(stateDir, RECEIPTS_FILENAME);
+}
+
 export function getLockPath(statePath: string): string {
   return `${statePath}${LOCK_SUFFIX}`;
 }
@@ -58,3 +68,8 @@ export function getLockPath(statePath: string): string {
 export function getWalPath(statePath: string): string {
   return `${statePath}${WAL_SUFFIX}`;
 }
+
+export function getFencePath(statePath: string): string {
+  return `${statePath}${FENCE_SUFFIX}`;
+}
+
