@@ -125,7 +125,7 @@ export function projectEffectiveState(
   const findings: ValidationFinding[] = [];
 
   const inspections = new Map<string, MarketplaceInspection>();
-  const inspect = opts.inspectRegistration ?? ((registration: EffectiveRegistration) => inspectMarketplaceEntries(registration, registration.sourceScope));
+  const inspect = opts.inspectRegistration ?? ((registration: EffectiveRegistration) => inspectMarketplaceEntries(registration, registration.sourceScope, { agentDir: opts.agentDir }));
   const inspectionFor = (registration: EffectiveRegistration): MarketplaceInspection => {
     const key = `${registration.sourceScope}:${registration.id}`;
     let value = inspections.get(key);

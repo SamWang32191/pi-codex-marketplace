@@ -27,7 +27,7 @@ import {
 import { cpSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { acquireLock, releaseLock, atomicWriteFile } from '../bridge-state/atomic.js';
+import { acquireLock, acquireLockSync, releaseLock, atomicWriteFile } from '../bridge-state/atomic.js';
 import { readBridgeState } from '../bridge-state/store.js';
 import type { BridgeState } from '../bridge-state/types.js';
 import type { Scope } from '../bridge-state/types.js';
@@ -123,6 +123,19 @@ export class SourceCache {
     }
   }
 
+  /**
+   * Synchronous per-fingerprint mutual exclusion around store/prune/touch for that entry.
+   */
+  withFingerprintLockSync<T>(fingerprint: string, fn: () => T, timeoutMs = 5000): T {
+    const lockPath = this.lockPath(fingerprint);
+    const fd = acquireLockSync(lockPath, timeoutMs);
+    try {
+      return fn();
+    } finally {
+      releaseLock(fd, lockPath);
+    }
+  }
+
   /** Register an in-flight pin (reference-counted); returns its release function. In-flight entries are never evicted. */
   pinInFlight(fingerprint: string): () => void {
     this.inFlight.set(fingerprint, (this.inFlight.get(fingerprint) ?? 0) + 1);
@@ -143,6 +156,18 @@ export class SourceCache {
     const meta = this.readMeta(fingerprint);
     if (!existsSync(dir) || !meta || meta.fingerprint !== fingerprint) return null;
     await this.withFingerprintLock(fingerprint, () => {
+      this.touchMeta(fingerprint);
+    });
+    return { path: dir, fingerprint };
+  }
+
+  /** Synchronous exact fingerprint hit: entry directory + matching meta must exist. Touches lastAccess. */
+  hitExactSync(fingerprint: string): CacheHit | null {
+    if (!isSafeFingerprint(fingerprint)) return null;
+    const dir = this.entryPath(fingerprint);
+    const meta = this.readMeta(fingerprint);
+    if (!existsSync(dir) || !meta || meta.fingerprint !== fingerprint) return null;
+    this.withFingerprintLockSync(fingerprint, () => {
       this.touchMeta(fingerprint);
     });
     return { path: dir, fingerprint };

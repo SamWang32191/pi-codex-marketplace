@@ -6,7 +6,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { lstatSync, readFileSync } from 'node:fs';
+import { lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { classifyPlugin, type CompatiblePlugin } from '../compatibility/profile.js';
@@ -15,8 +15,9 @@ import type { MarketplaceEntry } from '../registration/catalog.js';
 import { parseCatalog } from '../registration/catalog.js';
 import { resolveContained } from '../registration/contained.js';
 import { CODE, RULE, blocking, hasBlocking, sortFindings, type ValidationFinding } from '../registration/findings.js';
-import { localSourceKey } from '../registration/source-key.js';
-import { bindCapturedMaterial, buildLocalSnapshot, type ValidationSnapshot } from '../registration/snapshot.js';
+import { SourceCache } from '../cache/source-cache.js';
+import { localSourceKey, type SourceKey } from '../registration/source-key.js';
+import { bindCapturedMaterial, buildGitSnapshot, buildLocalSnapshot, type ValidationSnapshot } from '../registration/snapshot.js';
 import { BUDGET } from '../registration/budget.js';
 
 export interface InspectedMarketplaceEntry {
@@ -43,6 +44,8 @@ export interface InspectionOptions {
   baseSnapshot?: ValidationSnapshot;
   /** Suppress the recorded-snapshot drift Blocking Finding — Refresh compares fingerprints explicitly instead. */
   ignoreRecordedDrift?: boolean;
+  agentDir?: string;
+  cache?: SourceCache;
 }
 
 function inspectionFinding(scope: Scope, code: string, rule: string, target: ValidationFinding['target'], outcome: string): ValidationFinding {
@@ -55,11 +58,60 @@ export function inspectMarketplaceEntries(registration: Registration, scope: Sco
   let root: string;
   let snapshotResult: { ok: boolean; snapshot?: ValidationSnapshot; findings: ValidationFinding[] };
   if (override) {
-    root = opts.root!;
+    try {
+      root = realpathSync.native(opts.root!);
+    } catch {
+      root = opts.root!;
+    }
     snapshotResult = { ok: true, snapshot: opts.baseSnapshot, findings: [] };
-  } else {
-    if (registration.sourceKind !== 'local' || !registration.source) {
-      return { entries: [], findings: [inspectionFinding(scope, CODE.SOURCE_REACQUISITION_REQUIRED, RULE.SOURCE_REACQUISITION_REQUIRED, 'registration', 'Git Source Cache lifecycle is not available yet')] };
+  } else if (registration.sourceKind === 'git') {
+    if (!registration.validationSnapshot) {
+      return {
+        entries: [],
+        findings: [inspectionFinding(scope, CODE.SOURCE_REACQUISITION_REQUIRED, RULE.SOURCE_REACQUISITION_REQUIRED, 'registration', 'Git Registration has no retained Validation Snapshot; re-registration or Marketplace Refresh is required')],
+      };
+    }
+    const cache = opts.cache ?? new SourceCache({ agentDir: opts.agentDir });
+    const hit = cache.hitExactSync(registration.validationSnapshot);
+    if (!hit) {
+      return {
+        entries: [],
+        findings: [inspectionFinding(scope, CODE.SOURCE_REACQUISITION_REQUIRED, RULE.SOURCE_REACQUISITION_REQUIRED, 'registration', `Git Source Cache miss: Validation Snapshot '${registration.validationSnapshot.slice(0, 16)}…' is not retained in Source Cache; Marketplace Refresh or re-acquisition is required`)],
+      };
+    }
+    try {
+      root = realpathSync.native(hit.path);
+    } catch {
+      root = hit.path;
+    }
+    const canonicalLocator = registration.canonicalLocator ?? registration.source ?? '';
+    const selectorCanonical = registration.gitSelector?.canonical ?? '';
+    const resolvedRevision = registration.resolvedRevision ?? '';
+    const sourceKey: SourceKey = registration.sourceKey ?? {
+      kind: 'git',
+      key: `git:${canonicalLocator}#${selectorCanonical}`,
+      canonicalUrl: canonicalLocator,
+      selector: selectorCanonical,
+      resolvedRevision,
+    };
+    const snapResult = buildGitSnapshot(root, sourceKey, scope, {
+      canonicalLocator,
+      resolvedRevision,
+      selectorCanonical,
+    });
+    if (!snapResult.ok || !snapResult.snapshot) {
+      return { entries: [], findings: snapResult.findings };
+    }
+    if (snapResult.snapshot.fingerprint !== registration.validationSnapshot) {
+      return {
+        entries: [],
+        findings: [inspectionFinding(scope, CODE.SOURCE_DRIFT, RULE.SOURCE_DRIFT, 'registration', `Source Drift: cached tree at fingerprint ${registration.validationSnapshot.slice(0, 16)}… no longer hashes to the recorded Validation Snapshot; Marketplace Refresh is required`)],
+      };
+    }
+    snapshotResult = snapResult;
+  } else if (registration.sourceKind === 'local' || (!registration.sourceKind && registration.source && !registration.canonicalLocator)) {
+    if (!registration.source) {
+      return { entries: [], findings: [inspectionFinding(scope, CODE.SOURCE_REACQUISITION_REQUIRED, RULE.SOURCE_REACQUISITION_REQUIRED, 'registration', 'Local Registration has no source path')] };
     }
     const key = localSourceKey(registration.source);
     if (!key.ok) return { entries: [], findings: [inspectionFinding(scope, CODE.SOURCE_REACQUISITION_REQUIRED, RULE.SOURCE_REACQUISITION_REQUIRED, 'registration', key.error ?? 'Marketplace Root cannot be revalidated')] };
@@ -74,6 +126,11 @@ export function inspectMarketplaceEntries(registration: Registration, scope: Sco
     }
     snapshotResult = buildLocalSnapshot(root, key.sourceKey!, scope);
     if (!snapshotResult.ok) return { entries: [], findings: snapshotResult.findings };
+  } else {
+    return {
+      entries: [],
+      findings: [inspectionFinding(scope, CODE.SOURCE_REACQUISITION_REQUIRED, RULE.SOURCE_REACQUISITION_REQUIRED, 'registration', `Unknown or unsupported sourceKind '${registration.sourceKind}'`)],
+    };
   }
 
   const catalogPath = join(root, '.agents', 'plugins', 'marketplace.json');

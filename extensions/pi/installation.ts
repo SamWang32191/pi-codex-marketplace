@@ -13,6 +13,7 @@ import {
   type InstallationOutcome,
 } from '../../src/installation/flow.js';
 import { inspectMarketplaceEntries } from '../../src/installation/inspection.js';
+import type { SourceCache } from '../../src/cache/source-cache.js';
 import type { Registration, Scope } from '../../src/bridge-state/types.js';
 import { reportOutcome } from './registration.js';
 
@@ -23,9 +24,9 @@ function labelText(value: string): string { return JSON.stringify(value); }
 export async function entryChoices(
   registration: Registration,
   scope: Scope,
-  _opts: { cwd?: string; projectTrusted?: boolean },
+  opts: { cwd?: string; agentDir?: string; projectTrusted?: boolean; cache?: SourceCache } = {},
 ): Promise<EntryChoice[]> {
-  const inspection = inspectMarketplaceEntries(registration, scope);
+  const inspection = inspectMarketplaceEntries(registration, scope, { agentDir: opts.agentDir, cache: opts.cache });
   if (!inspection.marketplaceId) return [{ label: `${labelText(registration.alias ?? registration.id)} — Unavailable (${labelText(inspection.findings[0]?.outcome ?? 'Marketplace Catalog cannot be read')})` }];
   return inspection.entries.map((item) => {
     const status = item.unavailableReason ? `Unavailable (${item.unavailableReason})` : '可安裝';
