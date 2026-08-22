@@ -19,7 +19,7 @@ import {
 } from '../registration/fence.js';
 import { CODE, RULE, blocking, sortFindings, type ValidationFinding } from '../registration/findings.js';
 import { createReceipt, type AttemptReceipt } from '../registration/receipt.js';
-import { buildLocalSnapshot } from '../registration/snapshot.js';
+import { buildGitSnapshot, buildLocalSnapshot } from '../registration/snapshot.js';
 import { commitBridgeState, readBridgeState } from '../bridge-state/store.js';
 import type { BridgeState } from '../bridge-state/types.js';
 import type { LifecycleFlowOptions, UpdateCandidate } from './refresh.js';
@@ -192,8 +192,7 @@ export async function applyUpdate(plan: UpdatePlan, opts: ApplyUpdateOptions = {
   }
 
   // Fingerprint must still match before durable state mutation. Local sources are re-walked;
-  // Git candidates were validated at an immutable Resolved Revision and deep verification
-  // lands with the Source Cache lifecycle (#22).
+  // Git candidates are verified against the fingerprint-addressed Source Cache entry (#22).
   if (plan.candidate.snapshot.sourceKey.kind === 'local') {
     const revalidated = buildLocalSnapshot(plan.candidate.snapshot.sourceKey.canonicalPath!, plan.candidate.snapshot.sourceKey, plan.scope);
     if (!revalidated.ok || !revalidated.snapshot || revalidated.snapshot.fingerprint !== plan.candidate.snapshot.fingerprint) {
@@ -201,6 +200,21 @@ export async function applyUpdate(plan: UpdatePlan, opts: ApplyUpdateOptions = {
         plan,
         'Validation Snapshot fingerprint changed since the Update Candidate was produced (source drifted); run a fresh Marketplace Refresh and rebuild the plan',
       );
+    }
+  } else if (opts.cache) {
+    const hit = await opts.cache.hitExact(plan.candidate.snapshot.fingerprint);
+    if (hit) {
+      const revalidated = buildGitSnapshot(hit.path, plan.candidate.snapshot.sourceKey, plan.scope, {
+        canonicalLocator: plan.candidate.canonicalLocator ?? plan.candidate.snapshot.canonicalLocator ?? '',
+        resolvedRevision: plan.candidate.resolvedRevision ?? plan.candidate.snapshot.resolvedRevision ?? '',
+        selectorCanonical: plan.candidate.selectorCanonical ?? plan.candidate.snapshot.selectorCanonical ?? '',
+      });
+      if (!revalidated.ok || !revalidated.snapshot || revalidated.snapshot.fingerprint !== plan.candidate.snapshot.fingerprint) {
+        return stale(
+          plan,
+          'Cached Git tree no longer hashes to the Update Candidate fingerprint (source drift); run a fresh Marketplace Refresh and rebuild the plan',
+        );
+      }
     }
   }
 
@@ -254,6 +268,9 @@ export async function applyUpdate(plan: UpdatePlan, opts: ApplyUpdateOptions = {
     }
 
     const newRevision = write.newRevision!;
+    // The Update Candidate has been applied: its pending-cache pin is no longer needed
+    // (the new Registration/Installation snapshots now pin the fingerprint via Bridge State).
+    opts.cache?.clearPendingUpdate(plan.scope, plan.registrationId);
     const diagnostics = plan.entries.some((entry) => entry.choice === 'remove' || entry.currentState === 'disabled');
     return {
       status: 'completed',

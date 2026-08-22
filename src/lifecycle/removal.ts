@@ -275,6 +275,8 @@ export async function confirmRegistrationRemoval(
   if (!write.success) return persistenceFailure(OPERATION, preflight.scope, trigger, preflight.stateRevision, write);
 
   const newRevision = write.newRevision!;
+  // A removed Registration's pending Update Candidate pin is no longer meaningful (#22).
+  if (preflight.registrationId) opts.cache?.clearPendingUpdate(preflight.scope, preflight.registrationId);
   return {
     status: 'completed',
     newRevision,
@@ -432,6 +434,8 @@ export async function confirmInstallationRemoval(
   if (!write.success) return persistenceFailure(OPERATION, preflight.scope, trigger, preflight.stateRevision, write);
 
   const newRevision = write.newRevision!;
+  // A removed Registration's pending Update Candidate pin is no longer meaningful (#22).
+  if (preflight.registrationId) opts.cache?.clearPendingUpdate(preflight.scope, preflight.registrationId);
   return {
     status: 'completed',
     newRevision,
