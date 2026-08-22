@@ -17,6 +17,7 @@ import type { BridgeState, ReadResult } from '../../src/bridge-state/types.js';
 import { runLocalRegistrationFlow } from './registration.js';
 import { runGitRegistrationFlow } from './git-registration.js';
 import { runPluginInstallationFlow, runPluginStateFlow } from './installation.js';
+import { runRefreshFlow, runRebindFlow, runRemovalFlow } from './lifecycle.js';
 import {
   runEffectiveStateView,
   runRemoveScopeOverrideFlow,
@@ -186,6 +187,9 @@ export default function (pi: ExtensionAPI) {
         '建立 Scope Override（抑制繼承全域紀錄）…',
         '移除 Scope Override（還原繼承）…',
         '檢視 Effective State 與 Projected Skills…',
+        'Refresh / 更新 Registration…',
+        'Rebind Registration（更換來源）…',
+        '移除 Registration / Installation…',
       ]);
       if (!choice) return;
 
@@ -215,6 +219,18 @@ export default function (pi: ExtensionAPI) {
       }
       if (choice === '檢視 Effective State 與 Projected Skills…') {
         await runEffectiveStateView(ctx);
+        return;
+      }
+      if (choice === 'Refresh / 更新 Registration…') {
+        await runRefreshFlow(ctx);
+        return;
+      }
+      if (choice === 'Rebind Registration（更換來源）…') {
+        await runRebindFlow(ctx);
+        return;
+      }
+      if (choice === '移除 Registration / Installation…') {
+        await runRemovalFlow(ctx);
         return;
       }
 
