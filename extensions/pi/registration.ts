@@ -22,8 +22,19 @@ import type { RegistrationOutcome } from '../../src/registration/flow.js';
 import { formatThreeOrthogonalReport, type AttemptReceipt } from '../../src/registration/receipt.js';
 
 export function formatFindings(findings: ValidationFinding[]): string[] {
-  return findings.map((f) => {
-    const cls = f.classification === 'blocking' ? 'BLOCKING' : f.classification === 'warning' ? 'warning' : 'notice';
+  const sorted = [...findings].sort((a, b) => {
+    const rank: Record<string, number> = { blocking: 0, warning: 1, notice: 2 };
+    const phaseRank: Record<string, number> = { admission: 0, identity: 1, validation: 2, persistence: 3, 'post-commit': 4 };
+    return (
+      (rank[a.classification] ?? 9) - (rank[b.classification] ?? 9) ||
+      (phaseRank[a.phase] ?? 9) - (phaseRank[b.phase] ?? 9) ||
+      a.target.localeCompare(b.target) ||
+      a.pointer.localeCompare(b.pointer) ||
+      a.rule.localeCompare(b.rule)
+    );
+  });
+  return sorted.map((f) => {
+    const cls = f.classification === 'blocking' ? 'BLOCKING' : f.classification === 'warning' ? 'WARNING' : 'NOTICE';
     const ptr = f.pointer ? ` @${f.pointer}` : '';
     return `  [${cls}] ${f.code} (${f.rule}) · ${f.target}${ptr} — ${f.outcome}`;
   });

@@ -19,6 +19,7 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 import { atomicWriteFile, acquireLock, releaseLock } from './atomic.js';
+import { commitMigratedState, migrateForward, recoverWalIfNeeded } from './migrate.js';
 import { getLockPath, getStatePath } from './paths.js';
 import { parseJson, validateSchema } from './schema.js';
 import {
@@ -40,11 +41,16 @@ export interface StoreOptions {
   expectedStateRevision?: string;
 }
 
-/** Read a scope's Bridge State with closed handling of missing/corrupted/incompatible. */
+/** Read a scope's Bridge State with closed handling of missing/corrupted/incompatible + WAL forward migration. */
 export async function readBridgeState(scope: Scope, opts: StoreOptions = {}): Promise<ReadResult> {
   const statePath = getStatePath(scope, opts);
 
   if (!existsSync(statePath)) {
+    // WAL recovery may have materialized a file after a prior crash
+    const recovered = recoverWalIfNeeded(statePath, null);
+    if (recovered.recovered && recovered.state) {
+      return { status: 'ok', state: recovered.state };
+    }
     return { status: 'missing', state: createEmptyState(), isEmptyInit: true };
   }
 
@@ -65,6 +71,16 @@ export async function readBridgeState(scope: Scope, opts: StoreOptions = {}): Pr
     return { status: 'corrupted', error: parsed.error, raw: content };
   }
 
+  // Attempt WAL recovery before schema validation (handles crash between WAL write and rename)
+  const preState = parsed.value as BridgeState;
+  const hasVersion = typeof (preState as unknown as Record<string, unknown>).schemaVersion === 'number';
+  if (hasVersion) {
+    const walRecovered = recoverWalIfNeeded(statePath, preState);
+    if (walRecovered.recovered && walRecovered.state) {
+      return { status: 'ok', state: walRecovered.state };
+    }
+  }
+
   const validation = validateSchema(parsed.value);
   if (!validation.ok) {
     if (validation.code === 'INCOMPATIBLE_SCHEMA_VERSION') {
@@ -77,14 +93,66 @@ export async function readBridgeState(scope: Scope, opts: StoreOptions = {}): Pr
     return { status: 'corrupted', error: validation.error, raw: parsed.value };
   }
 
-  const state = parsed.value as BridgeState;
-  // Ensure scopeOverrides empty for global? Not enforced — just return as is.
-  // Project Trust is not persisted here; store is agnostic.
+  let state = parsed.value as BridgeState;
+
+  // WAL forward migration: if schemaVersion < CURRENT, attempt known forward chain atomically.
+  if (state.schemaVersion !== CURRENT_SCHEMA_VERSION) {
+    const migration = migrateForward(state);
+    if (!migration.ok) {
+      // Unknown older version (no path) => incompatible; newer => incompatible. Never auto-mutate.
+      return {
+        status: migration.code === 'INCOMPATIBLE_NEWER' ? 'incompatible' : 'corrupted',
+        error: migration.error,
+        raw: parsed.value,
+      };
+    }
+    if (migration.migrated && migration.state) {
+      // Acquire lock to commit migrated state atomically with WAL; if lock unavailable, surface as incompatible/corrupted per fail-closed.
+      try {
+        const lockPath = getLockPath(statePath);
+        const fd = await acquireLock(lockPath, 1000);
+        try {
+          // Re-read under lock to avoid racing with a concurrent writer
+          let fresh: BridgeState | null = null;
+          try {
+            const freshContent = readFileSync(statePath, 'utf-8');
+            const freshParsed = parseJson(freshContent);
+            if (freshParsed.ok) {
+              const v = validateSchema(freshParsed.value);
+              // If fresh already migrated by another process, use it
+              if (v.ok) fresh = freshParsed.value as BridgeState;
+              // If fresh is now at CURRENT, no need to migrate
+              if (fresh && fresh.schemaVersion === CURRENT_SCHEMA_VERSION) {
+                state = fresh;
+              } else {
+                const ok = commitMigratedState(statePath, migration.state, state.schemaVersion, state.stateRevision);
+                if (ok) state = migration.state;
+                else return { status: 'corrupted', error: 'Migration WAL commit failed — treated as Persistence Indeterminate', raw: parsed.value };
+              }
+            } else {
+              const ok = commitMigratedState(statePath, migration.state, state.schemaVersion, state.stateRevision);
+              if (ok) state = migration.state;
+              else return { status: 'corrupted', error: 'Migration WAL commit failed — treated as Persistence Indeterminate', raw: parsed.value };
+            }
+          } catch {
+            const ok = commitMigratedState(statePath, migration.state, state.schemaVersion, state.stateRevision);
+            if (ok) state = migration.state;
+          }
+        } finally {
+          releaseLock(fd, lockPath);
+        }
+      } catch {
+        // Lock contention: surface original state as ok but note migration pending — fail-closed is to keep old version visible rather than block read?
+        // For correctness we return incompatible-like status so callers retry after lock clears.
+        return { status: 'corrupted', error: migration.error ?? 'Migration pending — lock contention', raw: parsed.value };
+      }
+    }
+  }
 
   return { status: 'ok', state };
 }
 
-/** Synchronously read (for extension startup / tests). Same closed semantics. */
+/** Synchronously read (for extension startup / tests). Same closed semantics; WAL migration is async, so sync path never auto-migrates — it surfaces incompatible/corrupted to the caller who must use the async read for migration. Downgrade never writes back. */
 export function readBridgeStateSync(scope: Scope, opts: StoreOptions = {}): ReadResult {
   const statePath = getStatePath(scope, opts);
   if (!existsSync(statePath)) {
@@ -108,7 +176,27 @@ export function readBridgeStateSync(scope: Scope, opts: StoreOptions = {}): Read
       return { status: 'incompatible', error: validation.error, raw: parsed.value };
     return { status: 'corrupted', error: validation.error, raw: parsed.value };
   }
-  return { status: 'ok', state: parsed.value as BridgeState };
+  const state = parsed.value as BridgeState;
+  // Sync path: if WAL exists but not yet applied, do not mutate; async read will handle WAL. Enforce downgrade guard via message only.
+  if (state.schemaVersion !== CURRENT_SCHEMA_VERSION) {
+    const mig = migrateForward(state);
+    if (!mig.ok) {
+      return {
+        status: mig.code === 'INCOMPATIBLE_NEWER' ? 'incompatible' : 'corrupted',
+        error: mig.error,
+        raw: parsed.value,
+      };
+    }
+    if (mig.migrated) {
+      // Sync path cannot take the migration lock; surface as requires async migration.
+      return {
+        status: 'corrupted',
+        error: `Schema migration required: ${state.schemaVersion} → ${CURRENT_SCHEMA_VERSION} — async read will WAL-migrate (no implicit activation)`,
+        raw: parsed.value,
+      };
+    }
+  }
+  return { status: 'ok', state };
 }
 
 /**
@@ -310,6 +398,7 @@ export async function writeBridgeState(
 
   try {
     // Closed handling: if existing file is corrupted/incompatible, fail-closed as Indeterminate/incompatible
+    // Also enforce downgrade guard: never overwrite a newer schemaVersion with an older one (no write-back).
     if (existsSync(statePath)) {
       try {
         const curContent = readFileSync(statePath, 'utf-8');
@@ -335,8 +424,23 @@ export async function writeBridgeState(
             isIndeterminate: true,
           };
         }
+        const curState = curParsed.value as BridgeState;
+        // Downgrade guard: target schemaVersion must not be older than durable
+        if (state.schemaVersion < curState.schemaVersion) {
+          releaseLock(lockFd, lockPath);
+          return {
+            success: false,
+            error: `Downgrade blocked: durable schemaVersion ${curState.schemaVersion} > target ${state.schemaVersion} — update Bridge Package instead (never write back to older version)`,
+            isIndeterminate: false,
+          };
+        }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
+        // If we already handled downgrade case, propagate; otherwise generic indeterminate
+        if (msg.includes('Downgrade blocked')) {
+          releaseLock(lockFd, lockPath);
+          return { success: false, error: msg, isIndeterminate: false };
+        }
         releaseLock(lockFd, lockPath);
         return { success: false, error: `Persistence Indeterminate: ${msg}`, isIndeterminate: true };
       }
