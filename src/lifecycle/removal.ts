@@ -16,6 +16,7 @@
 
 import { commitBridgeState, readBridgeState } from '../bridge-state/store.js';
 import type { Installation, Scope } from '../bridge-state/types.js';
+import { SourceCache } from '../cache/source-cache.js';
 import { acquireAttemptFence, type AttemptFenceHandle } from '../registration/fence.js';
 import { CODE, RULE, blocking, sortFindings, type ValidationFinding } from '../registration/findings.js';
 import { createReceipt, type AttemptReceipt } from '../registration/receipt.js';
@@ -275,6 +276,11 @@ export async function confirmRegistrationRemoval(
   if (!write.success) return persistenceFailure(OPERATION, preflight.scope, trigger, preflight.stateRevision, write);
 
   const newRevision = write.newRevision!;
+  // A removed Registration's pending Update Candidate pin is no longer meaningful (#22).
+  if (preflight.registrationId) {
+    const cache = opts.cache ?? new SourceCache({ agentDir: opts.agentDir });
+    cache.clearPendingUpdate(preflight.scope, preflight.registrationId);
+  }
   return {
     status: 'completed',
     newRevision,
@@ -432,6 +438,8 @@ export async function confirmInstallationRemoval(
   if (!write.success) return persistenceFailure(OPERATION, preflight.scope, trigger, preflight.stateRevision, write);
 
   const newRevision = write.newRevision!;
+  // Installation Removal does not invalidate the pending Update Candidate: the Registration and
+  // its candidate survive, so the pin must remain (fail-closed, #22).
   return {
     status: 'completed',
     newRevision,
