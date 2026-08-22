@@ -17,6 +17,11 @@ import type { BridgeState, ReadResult } from '../../src/bridge-state/types.js';
 import { runLocalRegistrationFlow } from './registration.js';
 import { runGitRegistrationFlow } from './git-registration.js';
 import { runPluginInstallationFlow, runPluginStateFlow } from './installation.js';
+import {
+  runEffectiveStateView,
+  runRemoveScopeOverrideFlow,
+  runScopeOverrideFlow,
+} from './scope-overrides.js';
 
 // Closed helper to format state summary for disclosure
 function formatStateSummary(result: ReadResult, scopeLabel: string): string {
@@ -135,7 +140,7 @@ class MarketplaceComponent {
     lines.push(truncateToWidth(hr, width));
     lines.push(truncateToWidth(`  ${th.fg('dim', 'Bridge State holds only registrations / installations (with Installation State) / scopeOverrides / schemaVersion / stateRevision. Effective State, catalogs, compatibility, diagnostics are recomputed.')}`, width));
     lines.push(truncateToWidth(`  ${th.fg('dim', 'State Revision is opaque monotonic per scope; writes are atomic (temp→fsync→rename) under file lock with read-after-verify. Corrupted/unknown schema ⇒ Indeterminate/incompatible, never auto-rollback.')}`, width));
-    lines.push(truncateToWidth(`  ${th.fg('dim', 'Future flows will add Git sources, Plugin installation, Effective State projection, and three-orthogonal receipts. Local Marketplace Registration is available now (Validation Snapshot + State Revision bound, Default No).')}`, width));
+    lines.push(truncateToWidth(`  ${th.fg('dim', 'Scope Override / Effective State / Runtime Skill Collision flows are available: 建立或移除 Override、檢視投影與碰撞診斷。Available 僅由宿主獨立證據確立。')}`, width));
     lines.push('');
     lines.push(truncateToWidth(`  ${th.fg('dim', 'Press Esc / q to close · 「註冊本地 Marketplace…」執行驗證 + 綁定確認（預設 No）的端到端本地註冊流。')}`, width));
     lines.push('');
@@ -178,6 +183,9 @@ export default function (pi: ExtensionAPI) {
         '註冊 Git Marketplace…',
         '安裝 Compatible Plugin…',
         '管理已安裝 Plugin（Enable / Disable）…',
+        '建立 Scope Override（覆蓋全域）…',
+        '移除 Scope Override（還原繼承）…',
+        '檢視 Effective State 與 Projected Skills…',
       ]);
       if (!choice) return;
 
@@ -195,6 +203,18 @@ export default function (pi: ExtensionAPI) {
       }
       if (choice === '管理已安裝 Plugin（Enable / Disable）…') {
         await runPluginStateFlow(ctx);
+        return;
+      }
+      if (choice === '建立 Scope Override（覆蓋全域）…') {
+        await runScopeOverrideFlow(ctx);
+        return;
+      }
+      if (choice === '移除 Scope Override（還原繼承）…') {
+        await runRemoveScopeOverrideFlow(ctx);
+        return;
+      }
+      if (choice === '檢視 Effective State 與 Projected Skills…') {
+        await runEffectiveStateView(ctx);
         return;
       }
 
