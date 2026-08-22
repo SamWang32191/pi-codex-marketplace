@@ -5,6 +5,8 @@
  * Provides:
  * - /codex-marketplace command: partitioned Global Scope / Project Scope empty state
  * - Bridge State reading via dual-document store (global + project)
+ * - Startup Reconciliation on session_start
+ * - Receipt Journal inspection & State Repair flows
  *
  * Domain vocabulary follows CONTEXT.md (Bridge Package, Bridge Extension, Bridge State, State Revision, etc.)
  */
@@ -14,6 +16,8 @@ import { truncateToWidth } from '@earendil-works/pi-tui';
 
 import { readBridgeStateSync } from '../../src/bridge-state/store.js';
 import type { BridgeState, ReadResult } from '../../src/bridge-state/types.js';
+import { runStartupReconciliation } from '../../src/reconciliation/startup.js';
+import { formatThreeOrthogonalReport } from '../../src/registration/receipt.js';
 import { runLocalRegistrationFlow } from './registration.js';
 import { runGitRegistrationFlow } from './git-registration.js';
 import { runPluginInstallationFlow, runPluginStateFlow } from './installation.js';
@@ -23,6 +27,7 @@ import {
   runRemoveScopeOverrideFlow,
   runScopeOverrideFlow,
 } from './scope-overrides.js';
+import { runReceiptJournalView, runRepairStateFlow } from './journal.js';
 
 // Closed helper to format state summary for disclosure
 function formatStateSummary(result: ReadResult, scopeLabel: string): string {
@@ -69,7 +74,6 @@ class MarketplaceComponent {
   }
 
   handleInput(data: string): void {
-    // Close on Escape, q, or Ctrl+C
     if (data === '\x1b' || data === 'q' || data === '\x03') {
       this.onClose();
     }
@@ -96,7 +100,6 @@ class MarketplaceComponent {
         lines.push(truncateToWidth(`    ${th.fg('dim', 'Empty registration list — use the Registration flow (「註冊本地 Marketplace…」menu) to add a local Marketplace Source. Each Registration gets an immutable Registration ID (UUIDv4) before preflight.')}`, width));
         lines.push(truncateToWidth(`    ${th.fg('dim', 'Projected Plugins will appear here once installations are created. Collision is per-skill; whole-Plugin classification is atomic.')}`, width));
       } else {
-        // Future tickets will render registrations/installations incrementally
         for (const r of s.registrations) {
           lines.push(truncateToWidth(`    ${th.fg('text', `• ${r.alias ?? r.marketplaceName ?? r.id.slice(0, 8)}`)} ${th.fg('dim', `(${r.sourceKind ?? 'unknown'} · ${r.id.slice(0, 8)}…)`)}`, width));
         }
@@ -143,7 +146,7 @@ class MarketplaceComponent {
     lines.push(truncateToWidth(`  ${th.fg('dim', 'State Revision is opaque monotonic per scope; writes are atomic (temp→fsync→rename) under file lock with read-after-verify. Corrupted/unknown schema ⇒ Indeterminate/incompatible, never auto-rollback.')}`, width));
     lines.push(truncateToWidth(`  ${th.fg('dim', 'Scope Override / Effective State / Runtime Skill Collision flows are available: 建立或移除 Override、檢視投影與碰撞診斷。Available 僅由宿主獨立證據確立。')}`, width));
     lines.push('');
-    lines.push(truncateToWidth(`  ${th.fg('dim', 'Press Esc / q to close · 「註冊本地 Marketplace…」執行驗證 + 綁定確認（預設 No）的端到端本地註冊流。')}`, width));
+    lines.push(truncateToWidth(`  ${th.fg('dim', 'Press Esc / q to close · 選擇相應選單以執行完整驗證、Attempt Summary 與 Recovery Action 的操作流程。')}`, width));
     lines.push('');
 
     this.width = width;
@@ -159,8 +162,21 @@ class MarketplaceComponent {
 
 export default function (pi: ExtensionAPI) {
   pi.on('session_start', async (_event, ctx) => {
-    // No startup reconciliation yet (future tickets: Pending Application etc.)
-    // Scaffold just ensures extension loads cleanly.
+    // Startup reconciliation: Global-first pass
+    try {
+      const recon = await runStartupReconciliation({
+        cwd: ctx.cwd,
+        projectTrusted: ctx.isProjectTrusted(),
+      });
+      if (recon.globalReconciled && recon.globalReceipt) {
+        ctx.ui.notify(formatThreeOrthogonalReport(recon.globalReceipt), recon.globalReceipt.summary === 'Completed' ? 'info' : 'warning');
+      }
+      if (recon.projectReconciled && recon.projectReceipt) {
+        ctx.ui.notify(formatThreeOrthogonalReport(recon.projectReceipt), recon.projectReceipt.summary === 'Completed' ? 'info' : 'warning');
+      }
+    } catch {
+      // Non-blocking in extension bootstrap
+    }
   });
 
   pi.registerCommand('codex-marketplace', {
@@ -174,7 +190,7 @@ export default function (pi: ExtensionAPI) {
         const project = readBridgeStateSync('project', { cwd });
         const g = formatStateSummary(global, 'Global Scope');
         const p = formatStateSummary(project, 'Project Scope');
-        ctx.ui.notify(`${g}\n${p}\n互動 Registration 需 TUI 模式（/codex-marketplace 於 TUI 內）`, 'info');
+        ctx.ui.notify(`${g}\n${p}\n互動流程需 TUI 模式（/codex-marketplace 於 TUI 內）`, 'info');
         return;
       }
 
@@ -190,6 +206,8 @@ export default function (pi: ExtensionAPI) {
         'Refresh / 更新 Registration…',
         'Rebind Registration（更換來源）…',
         '移除 Registration / Installation…',
+        '檢視 Receipt Journal（Active Chains 與歷史）…',
+        '執行 State Repair（修復與驗證 Bridge State）…',
       ]);
       if (!choice) return;
 
@@ -231,6 +249,14 @@ export default function (pi: ExtensionAPI) {
       }
       if (choice === '移除 Registration / Installation…') {
         await runRemovalFlow(ctx);
+        return;
+      }
+      if (choice === '檢視 Receipt Journal（Active Chains 與歷史）…') {
+        await runReceiptJournalView(ctx);
+        return;
+      }
+      if (choice === '執行 State Repair（修復與驗證 Bridge State）…') {
+        await runRepairStateFlow(ctx);
         return;
       }
 

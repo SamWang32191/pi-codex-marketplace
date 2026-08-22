@@ -14,25 +14,11 @@ import {
 } from '../../src/installation/flow.js';
 import { inspectMarketplaceEntries } from '../../src/installation/inspection.js';
 import type { Registration, Scope } from '../../src/bridge-state/types.js';
+import { reportOutcome } from './registration.js';
 
 interface EntryChoice { label: string; pointer?: string }
 
 function labelText(value: string): string { return JSON.stringify(value); }
-
-function report(ctx: ExtensionCommandContext, outcome: InstallationOutcome): void {
-  if (outcome.status === 'completed') {
-    ctx.ui.notify(`Attempt Summary: ${outcome.receipt.summary} · ${outcome.installation.manifestName ?? outcome.installation.pluginId} is ${outcome.installation.installationState} · State Revision ${outcome.newRevision}\nReceipt ${outcome.receipt.id} — immutable, non-authoritative.`, 'info');
-  } else if (outcome.status === 'declined') {
-    ctx.ui.notify(`Attempt Summary: Declined — state unchanged. Receipt ${outcome.receipt.id}`, 'info');
-  } else if (outcome.status === 'rejected-as-stale') {
-    ctx.ui.notify('Attempt Summary: Rejected as Stale — re-run validation disclosure and confirmation; no automatic merge.', 'warning');
-  } else if (outcome.status === 'persistence-failed') {
-    ctx.ui.notify(`Attempt Summary: ${outcome.isIndeterminate ? 'Persistence Indeterminate' : 'Persistence Failed'} — Bridge State was not changed automatically.`, 'error');
-  } else {
-    const first = outcome.findings[0];
-    ctx.ui.notify(`Attempt Summary: Blocked — ${first?.code ?? '?'}: ${first?.outcome ?? ''}`, 'error');
-  }
-}
 
 export async function entryChoices(
   registration: Registration,
@@ -67,7 +53,7 @@ export async function runPluginInstallationFlow(ctx: ExtensionCommandContext): P
   const selected = choices.find((item) => item.label === entryLabel);
   if (!selected?.pointer) return void ui.notify('此 Marketplace Entry 為 Unavailable，無法安裝。', 'warning');
   const preflight = await preflightPluginInstallation(scope, registration.id, selected.pointer, opts);
-  if (!preflight.ok) return report(ctx, preflight.outcome);
+  if (!preflight.ok) return reportOutcome(ctx, preflight.outcome);
   const path = await ui.select('Installation path', ['Install Disabled', 'Install and Enable']);
   if (!path) {
     preflight.preflight.fence.release();
@@ -76,10 +62,10 @@ export async function runPluginInstallationFlow(ctx: ExtensionCommandContext): P
   const disclosure = installationDisclosure(preflight.preflight);
   if (path === 'Install Disabled') {
     ui.notify(`Validation Disclosure:\n${disclosure}\n\nInstall Disabled does not request Activation Confirmation.`, 'info');
-    return report(ctx, await confirmPluginInstallation(preflight.preflight, 'disabled', opts));
+    return reportOutcome(ctx, await confirmPluginInstallation(preflight.preflight, 'disabled', opts));
   }
   const activate = await ui.confirm('Activation Confirmation — 預設 No（獨立於 Registration Confirmation）', `Validation Disclosure:\n${disclosure}\n\n確認安裝並啟用 ${preflight.preflight.plugin.manifestName}？`);
-  report(ctx, await confirmPluginInstallation(preflight.preflight, 'enabled', activate, opts));
+  reportOutcome(ctx, await confirmPluginInstallation(preflight.preflight, 'enabled', activate, opts));
 }
 
 export async function runPluginStateFlow(ctx: ExtensionCommandContext): Promise<void> {
@@ -96,9 +82,9 @@ export async function runPluginStateFlow(ctx: ExtensionCommandContext): Promise<
   const chosen = await ui.select('選擇 Installed Plugin', labels);
   if (!chosen) return;
   const installation = installations[labels.indexOf(chosen)]!;
-  if (installation.installationState === 'enabled') return report(ctx, await disablePluginInstallation(scope, installation.id, opts));
+  if (installation.installationState === 'enabled') return reportOutcome(ctx, await disablePluginInstallation(scope, installation.id, opts));
   const preflight = await preflightPluginEnable(scope, installation.id, opts);
-  if (!preflight.ok) return report(ctx, preflight.outcome);
+  if (!preflight.ok) return reportOutcome(ctx, preflight.outcome);
   const confirmed = await ui.confirm('Activation Confirmation — 預設 No（重新驗證後才可 re-enable）', installationDisclosure(preflight.preflight));
-  report(ctx, await confirmPluginEnable(preflight.preflight, confirmed, opts));
+  reportOutcome(ctx, await confirmPluginEnable(preflight.preflight, confirmed, opts));
 }

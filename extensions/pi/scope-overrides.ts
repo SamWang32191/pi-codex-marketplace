@@ -15,6 +15,7 @@ import type { BridgeState } from '../../src/bridge-state/types.js';
 import { computeEffectiveState, type EffectiveState } from '../../src/projection/effective-state.js';
 import { createScopeOverride, removeScopeOverride, type OverrideKind, type OverrideOutcome } from '../../src/projection/overrides.js';
 import { projectEffectiveState } from '../../src/projection/project.js';
+import { reportOutcome } from './registration.js';
 
 function quote(value: string): string {
   return JSON.stringify(value);
@@ -94,19 +95,6 @@ export function formatProjectionSummary(state: EffectiveState, plugins: ReturnTy
   return lines.join('\n');
 }
 
-/** One shared Attempt Summary report for both override lifecycle flows. */
-function reportOverrideOutcome(ui: ExtensionUIContext, outcome: OverrideOutcome, completedMessage: string): void {
-  if (outcome.status === 'completed') {
-    ui.notify(`${completedMessage} · Project State Revision ${outcome.newRevision}\nReceipt ${outcome.receipt.id} — immutable, non-authoritative.`, 'info');
-  } else if (outcome.status === 'rejected-as-stale') {
-    ui.notify('Attempt Summary: Rejected as Stale — 請重新執行此操作；不自動合併。', 'warning');
-  } else if (outcome.status === 'persistence-failed') {
-    ui.notify(`Attempt Summary: ${outcome.isIndeterminate ? 'Persistence Indeterminate' : 'Persistence Failed'} — Bridge State 未變更。`, 'error');
-  } else {
-    ui.notify(`Attempt Summary: Blocked — ${outcome.findings[0]?.code}: ${outcome.findings[0]?.outcome ?? ''}`, 'error');
-  }
-}
-
 async function readBoth(ctx: { cwd?: string; agentDir?: string }): Promise<{ ok: boolean; global?: BridgeState; project?: BridgeState; error?: string }> {
   const opts = { cwd: ctx.cwd, agentDir: ctx.agentDir };
   const [globalRead, projectRead] = await Promise.all([readBridgeState('global', opts), readBridgeState('project', opts)]);
@@ -142,7 +130,7 @@ export async function runScopeOverrideFlow(ctx: ExtensionCommandContext): Promis
   if (!confirmed) return void ui.notify('Attempt Summary: Declined — state unchanged.', 'info');
 
   const outcome = await createScopeOverride(row.kind, row.targetId, opts);
-  reportOverrideOutcome(ui, outcome, `Attempt Summary: Completed · ${row.kind} Scope Override 已建立`);
+  reportOutcome(ctx, outcome);
 }
 
 /** Remove existing Scope Overrides; inheritance restores immediately via recomputation. */
@@ -163,7 +151,7 @@ export async function runRemoveScopeOverrideFlow(ctx: ExtensionCommandContext): 
   if (!confirmed) return void ui.notify('Attempt Summary: Declined — state unchanged.', 'info');
 
   const outcome = await removeScopeOverride(target.kind, target.targetId, opts);
-  reportOverrideOutcome(ui, outcome, 'Attempt Summary: Completed · 繼承已還原');
+  reportOutcome(ctx, outcome);
 }
 
 /** Read-only Effective State + Projected Skills / collision diagnostics view. */

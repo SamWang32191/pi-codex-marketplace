@@ -6,8 +6,6 @@
  * Flow: preflight (fence → locator/selector normalization → Source Key → duplicate → acquisition
  * → snapshot + catalog/validation → disclosure) → Registration Confirmation
  * (snapshot + State Revision bound, Default No) → scope-atomic commit → Attempt Receipt.
- *
- * Reuses Validation Snapshot / catalog / budget pipeline from 02 after acquisition.
  */
 
 import { readFileSync, statSync, realpathSync } from 'node:fs';
@@ -21,6 +19,7 @@ import { parseCatalog, type Catalog } from './catalog.js';
 import { resolveContained } from './contained.js';
 import { acquireAttemptFence, type AttemptFenceHandle } from './fence.js';
 import { createReceipt, type AttemptReceipt } from './receipt.js';
+import { appendReceipt } from '../journal/journal.js';
 import { allocateRegistrationId, deriveInitialAlias, findDuplicateRegistration } from './registration.js';
 import { buildGitSnapshot, type ValidationSnapshot } from './snapshot.js';
 import { gitSourceKey, type SourceKey } from './source-key.js';
@@ -84,15 +83,16 @@ function triggerFor(locator: string, selector: string): string {
   return `register git ${locator}#${selector}`;
 }
 
-function blockedResult(
+async function blockedResult(
   scope: Scope,
   locatorInput: string,
   selectorInput: string,
   expectedRevision: string,
   findings: ValidationFinding[],
   handle: AttemptFenceHandle | null,
+  opts: GitRegistrationFlowOptions = {},
   existing?: Registration,
-): { ok: false; outcome: GitRegistrationOutcome } {
+): Promise<{ ok: false; outcome: GitRegistrationOutcome }> {
   if (handle) handle.release();
   const receipt = createReceipt({
     operation: OPERATION,
@@ -102,6 +102,7 @@ function blockedResult(
     summary: 'Blocked',
     findings,
   });
+  await appendReceipt(scope, receipt, opts);
   return { ok: false, outcome: { status: 'blocked', findings, receipt, existing } };
 }
 
@@ -116,9 +117,6 @@ function selectorToString(input: GitSelectorInput | string): string {
 
 /**
  * Run preflight for a Git Marketplace Source registration.
- * Acquires the per-scope Attempt Fence, allocates Registration ID before validation,
- * normalizes locator/selector, resolves revision, acquires source non-executingly,
- * builds Validation Snapshot, validates catalog/containment/budget, and produces disclosure.
  */
 export async function preflightGitRegistration(
   scope: Scope,
@@ -153,6 +151,7 @@ export async function preflightGitRegistration(
         }),
       ],
     });
+    await appendReceipt(scope, receipt, opts);
     return { ok: false, outcome: { status: 'persistence-failed', receipt, isIndeterminate: true } };
   }
 
@@ -168,17 +167,18 @@ export async function preflightGitRegistration(
         'Project Trust is not granted by the Pi host; project records remain stored but excluded from Effective State, and no Project Scope Lifecycle Operation may mutate them',
     });
     const selStr = selectorToString(selectorInput);
-    return blockedResult(scope, locatorInput, selStr, expectedRevision, [finding], null);
+    return blockedResult(scope, locatorInput, selStr, expectedRevision, [finding], null, opts);
   }
 
   const fence = await acquireAttemptFence(scope, {
     cwd: opts.cwd,
     agentDir: opts.agentDir,
     fenceTimeoutMs: opts.fenceTimeoutMs,
+    projectTrusted: opts.projectTrusted,
   });
   if (!fence.ok) {
     const selStr = selectorToString(selectorInput);
-    return blockedResult(scope, locatorInput, selStr, expectedRevision, [fence.finding!], null);
+    return blockedResult(scope, locatorInput, selStr, expectedRevision, [fence.finding!], null, opts);
   }
   const handle = fence.handle!;
 
@@ -192,7 +192,7 @@ export async function preflightGitRegistration(
     const locRes = normalizeGitLocator(locatorInput, scope);
     if (!locRes.ok) {
       const selStr = selectorToString(selectorInput);
-      return blockedResult(scope, locatorInput, selStr, expectedRevision, locRes.findings, handle);
+      return blockedResult(scope, locatorInput, selStr, expectedRevision, locRes.findings, handle, opts);
     }
     const locator = locRes.locator!;
 
@@ -211,6 +211,7 @@ export async function preflightGitRegistration(
         expectedRevision,
         selRes.findings,
         handle,
+        opts,
       );
     }
     const selector = selRes.selector!;
@@ -222,7 +223,7 @@ export async function preflightGitRegistration(
     // Duplicate check (same scope, same kind+key)
     const dup = findDuplicateRegistration(scope, sourceKey, registrations);
     if (dup.duplicate) {
-      return blockedResult(scope, locatorInput, selCanonical, expectedRevision, [dup.finding!], handle, dup.existing);
+      return blockedResult(scope, locatorInput, selCanonical, expectedRevision, [dup.finding!], handle, opts, dup.existing);
     }
 
     // Non-executing Source Acquisition (clone --no-checkout, no hooks/filters/submodules)
@@ -235,18 +236,18 @@ export async function preflightGitRegistration(
       destDir: opts.destDir,
     });
     if (!acq.ok) {
-      return blockedResult(scope, locatorInput, selCanonical, expectedRevision, acq.findings, handle);
+      return blockedResult(scope, locatorInput, selCanonical, expectedRevision, acq.findings, handle, opts);
     }
     acquiredPath = realpathSync.native(acq.acquiredPath!);
     createdTemp = acq.createdTemp ?? false;
     const resolvedRevision = acq.resolvedRevision!;
 
-    // Attach resolved to sourceKey for provenance (not part of key identity, but stored)
+    // Attach resolved to sourceKey for provenance
     (sourceKey as SourceKey).resolvedRevision = resolvedRevision;
     (sourceKey as SourceKey).canonicalUrl = locator.canonicalUrl;
     (sourceKey as SourceKey).selector = selCanonical;
 
-    // Catalog / containment / budget — reuse local pipeline but over acquiredPath
+    // Catalog / containment / budget
     const findings: ValidationFinding[] = [];
     const catalogPath = join(acquiredPath, MARKETPLACE_CATALOG_RELPATH);
     let catalogBytes = 0;
@@ -263,7 +264,7 @@ export async function preflightGitRegistration(
         outcome: `Marketplace Catalog not found at ${MARKETPLACE_CATALOG_RELPATH}; legacy marketplace shapes do not participate in Bridge ingestion`,
       });
       cleanupAcquisition(acquiredPath);
-      return blockedResult(scope, locatorInput, selCanonical, expectedRevision, [finding], handle);
+      return blockedResult(scope, locatorInput, selCanonical, expectedRevision, [finding], handle, opts);
     }
     if (catalogBytes > BUDGET.maxCatalogBytes) {
       const finding = blocking({
@@ -276,7 +277,7 @@ export async function preflightGitRegistration(
         outcome: `Validation Budget exceeded: catalog ${catalogBytes} bytes > ${BUDGET.maxCatalogBytes}`,
       });
       cleanupAcquisition(acquiredPath);
-      return blockedResult(scope, locatorInput, selCanonical, expectedRevision, [finding], handle);
+      return blockedResult(scope, locatorInput, selCanonical, expectedRevision, [finding], handle, opts);
     }
 
     let parsed: unknown;
@@ -294,14 +295,14 @@ export async function preflightGitRegistration(
         outcome: `unable to parse marketplace.json: ${msg}`,
       });
       cleanupAcquisition(acquiredPath);
-      return blockedResult(scope, locatorInput, selCanonical, expectedRevision, [finding], handle);
+      return blockedResult(scope, locatorInput, selCanonical, expectedRevision, [finding], handle, opts);
     }
 
     const catalogResult = parseCatalog(parsed, { scope });
     findings.push(...catalogResult.findings);
     if (!catalogResult.ok) {
       cleanupAcquisition(acquiredPath);
-      return blockedResult(scope, locatorInput, selCanonical, expectedRevision, sortFindings(findings), handle);
+      return blockedResult(scope, locatorInput, selCanonical, expectedRevision, sortFindings(findings), handle, opts);
     }
     const catalog = catalogResult.catalog!;
 
@@ -367,7 +368,7 @@ export async function preflightGitRegistration(
     const sorted = sortFindings(findings);
     if (hasBlocking(sorted)) {
       cleanupAcquisition(acquiredPath);
-      return blockedResult(scope, locatorInput, selCanonical, expectedRevision, sorted, handle);
+      return blockedResult(scope, locatorInput, selCanonical, expectedRevision, sorted, handle, opts);
     }
 
     const alias = deriveInitialAlias(
@@ -410,8 +411,6 @@ export async function preflightGitRegistration(
       acquiredPath,
       createdTemp,
     };
-    // For #18, we keep the temp for potential audit but it's not required after snapshot; however we clean on terminal.
-    // We do NOT delete yet — confirm/cancel will clean.
     return { ok: true, preflight };
   } catch (e) {
     if (acquiredPath) cleanupAcquisition(acquiredPath);
@@ -427,7 +426,7 @@ export async function preflightGitRegistration(
       outcome: `preflight failed: ${msg}`,
     });
     const selStr = selectorToString(selectorInput);
-    return blockedResult(scope, locatorInput, selStr, expectedRevision, [finding], null);
+    return blockedResult(scope, locatorInput, selStr, expectedRevision, [finding], null, opts);
   }
 }
 
@@ -460,6 +459,7 @@ export async function confirmGitRegistration(
         }),
       ],
     });
+    await appendReceipt(preflight.scope, receipt, opts);
     return { status: 'blocked', findings: [], receipt };
   }
   preflight.terminal = true;
@@ -480,6 +480,7 @@ export async function confirmGitRegistration(
       findings: preflight.findings,
       stateChanged: false,
     });
+    await appendReceipt(scope, receipt, opts);
     release();
     return { status: 'declined', receipt };
   }
@@ -505,6 +506,7 @@ export async function confirmGitRegistration(
         }),
       ],
     });
+    await appendReceipt(scope, receipt, opts);
     release();
     return { status: 'persistence-failed', receipt, isIndeterminate: true };
   }
@@ -531,6 +533,7 @@ export async function confirmGitRegistration(
       ],
       stateChanged: false,
     });
+    await appendReceipt(scope, receipt, opts);
     release();
     return { status: 'rejected-as-stale', receipt };
   }
@@ -546,6 +549,7 @@ export async function confirmGitRegistration(
       summary: 'Blocked',
       findings: [dup.finding!],
     });
+    await appendReceipt(scope, receipt, opts);
     release();
     return { status: 'blocked', findings: [dup.finding!], receipt, existing: dup.existing };
   }
@@ -594,6 +598,7 @@ export async function confirmGitRegistration(
       ],
       stateChanged: false,
     });
+    await appendReceipt(scope, receipt, opts);
     release();
     return { status: 'persistence-failed', receipt, isIndeterminate: write.isIndeterminate ?? false };
   }
@@ -612,6 +617,7 @@ export async function confirmGitRegistration(
     findings: preflight.findings,
     stateChanged: true,
   });
+  await appendReceipt(scope, receipt, opts);
   release();
   return { status: 'completed', registration, receipt, newRevision: targetRevision };
 }

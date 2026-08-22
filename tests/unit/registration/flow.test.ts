@@ -218,14 +218,25 @@ describe('Local Marketplace Registration flow', () => {
     cancelLocalRegistration(c.preflight);
   });
 
-  it('does not block concurrent attempts on different scopes', async () => {
+  it('Global Attempt Fence blocks Project attempt (Global Pending Barrier), but Project fence does not block Global', async () => {
+    // 1. While global fence is held, project attempt is blocked by Global Pending Barrier
     const g = await preflightLocalRegistration('global', root, opts(env));
     expect(g.ok).toBe(true);
     if (!g.ok) return;
+    const pBlocked = await preflightLocalRegistration('project', root, opts(env, { projectTrusted: true }));
+    expect(pBlocked.ok).toBe(false);
+    if (!pBlocked.ok && pBlocked.outcome.status === 'blocked') {
+      expect(pBlocked.outcome.findings[0].code).toBe('GLOBAL_PENDING_BARRIER');
+    }
+    cancelLocalRegistration(g.preflight);
+
+    // 2. While project fence is held, global attempt is NOT blocked
     const p = await preflightLocalRegistration('project', root, opts(env, { projectTrusted: true }));
     expect(p.ok).toBe(true);
     if (!p.ok) return;
-    cancelLocalRegistration(g.preflight);
+    const gAllowed = await preflightLocalRegistration('global', root, opts(env));
+    expect(gAllowed.ok).toBe(true);
+    if (gAllowed.ok) cancelLocalRegistration(gAllowed.preflight);
     cancelLocalRegistration(p.preflight);
   });
 

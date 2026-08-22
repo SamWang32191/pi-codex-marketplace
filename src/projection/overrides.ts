@@ -16,6 +16,7 @@ import type { BridgeState, ScopeOverride } from '../bridge-state/types.js';
 import { acquireAttemptFence } from '../registration/fence.js';
 import { CODE, RULE, blocking, type ValidationFinding } from '../registration/findings.js';
 import { createReceipt, type AttemptReceipt } from '../registration/receipt.js';
+import { appendReceipt } from '../journal/journal.js';
 
 export type OverrideKind = ScopeOverride['kind'];
 
@@ -50,35 +51,39 @@ function admissionFinding(code: string, rule: string, outcome: string, target: V
   return blocking({ code, rule, target, pointer: '', outcome, scope: 'project', phase: 'admission' });
 }
 
-function blocked(operation: string, targetId: string, revision: string, findings: ValidationFinding[]): OverrideOutcome {
+async function blocked(operation: string, targetId: string, revision: string, findings: ValidationFinding[], opts: ScopeOverrideFlowOptions = {}): Promise<OverrideOutcome> {
+  const receipt = createReceipt({
+    operation,
+    scope: 'project',
+    trigger: `${operation.toLowerCase()} ${targetId}`,
+    expectedStateRevision: revision,
+    summary: 'Blocked',
+    findings,
+  });
+  await appendReceipt('project', receipt, opts);
   return {
     status: 'blocked',
     findings,
-    receipt: createReceipt({
-      operation,
-      scope: 'project',
-      trigger: `${operation.toLowerCase()} ${targetId}`,
-      expectedStateRevision: revision,
-      summary: 'Blocked',
-      findings,
-    }),
+    receipt,
   };
 }
 
-function persistenceFailed(operation: string, targetId: string, isIndeterminate: boolean, error?: string): OverrideOutcome {
+async function persistenceFailed(operation: string, targetId: string, isIndeterminate: boolean, error?: string, opts: ScopeOverrideFlowOptions = {}): Promise<OverrideOutcome> {
+  const receipt = createReceipt({
+    operation,
+    scope: 'project',
+    trigger: `${operation.toLowerCase()} ${targetId}`,
+    expectedStateRevision: '?',
+    summary: isIndeterminate ? 'Persistence Indeterminate' : 'Persistence Failed',
+    findings: isIndeterminate
+      ? [admissionFinding(CODE.PERSISTENCE_INDETERMINATE, 'PERSIST-01', error ?? 'Bridge State is not readable', 'attempt')]
+      : [],
+  });
+  await appendReceipt('project', receipt, opts);
   return {
     status: 'persistence-failed',
     isIndeterminate,
-    receipt: createReceipt({
-      operation,
-      scope: 'project',
-      trigger: `${operation.toLowerCase()} ${targetId}`,
-      expectedStateRevision: '?',
-      summary: isIndeterminate ? 'Persistence Indeterminate' : 'Persistence Failed',
-      findings: isIndeterminate
-        ? [admissionFinding(CODE.PERSISTENCE_INDETERMINATE, 'PERSIST-01', error ?? 'Bridge State is not readable', 'attempt')]
-        : [],
-    }),
+    receipt,
   };
 }
 
@@ -94,26 +99,26 @@ async function runOverrideOperation(
   if (opts.projectTrusted !== true) {
     return blocked(operation, targetId, '?', [
       admissionFinding(CODE.PROJECT_TRUST_DENIED, RULE.PROJECT_TRUST_DENIED, 'Project Trust is not granted by the Pi host; no Project Scope Lifecycle Operation may mutate Bridge State', kind === 'registration' ? 'registration' : 'installation'),
-    ]);
+    ], opts);
   }
 
   const storeOpts = { cwd: opts.cwd, agentDir: opts.agentDir };
-  const fence = await acquireAttemptFence('project', { ...storeOpts, fenceTimeoutMs: opts.fenceTimeoutMs });
-  if (!fence.ok) return blocked(operation, targetId, '?', [fence.finding!]);
+  const fence = await acquireAttemptFence('project', { ...storeOpts, fenceTimeoutMs: opts.fenceTimeoutMs, projectTrusted: opts.projectTrusted });
+  if (!fence.ok) return blocked(operation, targetId, '?', [fence.finding!], opts);
 
   try {
     const projectRead = await readBridgeState('project', storeOpts);
     const globalRead = await readBridgeState('global', storeOpts);
     if (projectRead.status !== 'ok' && projectRead.status !== 'missing') {
-      return persistenceFailed(operation, targetId, true, projectRead.error);
+      return persistenceFailed(operation, targetId, true, projectRead.error, opts);
     }
     if (globalRead.status !== 'ok' && globalRead.status !== 'missing') {
-      return persistenceFailed(operation, targetId, true, globalRead.error);
+      return persistenceFailed(operation, targetId, true, globalRead.error, opts);
     }
 
     const projectState = projectRead.state!;
     const denial = validate(projectState, globalRead.state!);
-    if (denial) return blocked(operation, targetId, projectState.stateRevision, [denial]);
+    if (denial) return blocked(operation, targetId, projectState.stateRevision, [denial], opts);
 
     await opts.beforeCommit?.();
 
@@ -130,34 +135,39 @@ async function runOverrideOperation(
     );
 
     if (write.isStale) {
-      return {
-        status: 'rejected-as-stale',
-        receipt: createReceipt({
-          operation,
-          scope: 'project',
-          trigger: `${operation.toLowerCase()} ${targetId}`,
-          expectedStateRevision: projectState.stateRevision,
-          observedStateRevision: write.observedRevision,
-          summary: 'Rejected as Stale',
-          findings: [blocking({ code: CODE.REJECTED_AS_STALE, rule: RULE.REJECTED_AS_STALE, target: kind === 'registration' ? 'registration' : 'installation', pointer: '', outcome: `State Revision changed after ${operation} admission; re-run the lifecycle operation`, scope: 'project', phase: 'persistence' })],
-        }),
-      };
-    }
-    if (!write.success) return persistenceFailed(operation, targetId, write.isIndeterminate ?? false, write.error);
-
-    return {
-      status: 'completed',
-      newRevision: write.newRevision!,
-      receipt: createReceipt({
+      const receipt = createReceipt({
         operation,
         scope: 'project',
         trigger: `${operation.toLowerCase()} ${targetId}`,
         expectedStateRevision: projectState.stateRevision,
-        targetStateRevision: write.newRevision,
-        observedStateRevision: write.newRevision,
-        summary: 'Completed',
-        stateChanged: true,
-      }),
+        observedStateRevision: write.observedRevision,
+        summary: 'Rejected as Stale',
+        findings: [blocking({ code: CODE.REJECTED_AS_STALE, rule: RULE.REJECTED_AS_STALE, target: kind === 'registration' ? 'registration' : 'installation', pointer: '', outcome: `State Revision changed after ${operation} admission; re-run the lifecycle operation`, scope: 'project', phase: 'persistence' })],
+      });
+      await appendReceipt('project', receipt, opts);
+      return {
+        status: 'rejected-as-stale',
+        receipt,
+      };
+    }
+    if (!write.success) return persistenceFailed(operation, targetId, write.isIndeterminate ?? false, write.error, opts);
+
+    const receipt = createReceipt({
+      operation,
+      scope: 'project',
+      trigger: `${operation.toLowerCase()} ${targetId}`,
+      expectedStateRevision: projectState.stateRevision,
+      targetStateRevision: write.newRevision,
+      observedStateRevision: write.newRevision,
+      summary: 'Completed',
+      stateChanged: true,
+    });
+    await appendReceipt('project', receipt, opts);
+
+    return {
+      status: 'completed',
+      newRevision: write.newRevision!,
+      receipt,
     };
   } finally {
     fence.handle!.release();

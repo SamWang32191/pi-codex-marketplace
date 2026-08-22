@@ -28,6 +28,7 @@ import { parseCatalog, type Catalog } from './catalog.js';
 import { resolveContained } from './contained.js';
 import { acquireAttemptFence, type AttemptFenceHandle } from './fence.js';
 import { createReceipt, type AttemptReceipt } from './receipt.js';
+import { appendReceipt } from '../journal/journal.js';
 import {
   allocateRegistrationId,
   deriveInitialAlias,
@@ -90,15 +91,16 @@ function triggerFor(rootPath: string): string {
   return `register local ${rootPath}`;
 }
 
-/** Build a Blocked preflight result: immutable redacted receipt + released fence (if held). */
-function blockedResult(
+/** Build a Blocked preflight result: immutable redacted receipt + journal append + released fence (if held). */
+async function blockedResult(
   scope: Scope,
   rootPath: string,
   expectedRevision: string,
   findings: ValidationFinding[],
   handle: AttemptFenceHandle | null,
+  opts: RegistrationFlowOptions = {},
   existing?: Registration,
-): { ok: false; outcome: RegistrationOutcome } {
+): Promise<{ ok: false; outcome: RegistrationOutcome }> {
   if (handle) handle.release();
   const receipt = createReceipt({
     operation: OPERATION,
@@ -108,6 +110,7 @@ function blockedResult(
     summary: 'Blocked',
     findings,
   });
+  await appendReceipt(scope, receipt, opts);
   return { ok: false, outcome: { status: 'blocked', findings, receipt, existing } };
 }
 
@@ -154,6 +157,7 @@ export async function preflightLocalRegistration(
         }),
       ],
     });
+    await appendReceipt(scope, receipt, opts);
     return {
       ok: false,
       outcome: { status: 'persistence-failed', receipt, isIndeterminate: true },
@@ -162,7 +166,7 @@ export async function preflightLocalRegistration(
 
   // Project Trust: host-owned. Fail-closed: an omitted trust flag is NOT a grant. Untrusted
   // project scope blocks the operation; stored records stay durable and are only excluded from
-  // derived Effective State (that read-time projection is #20).
+  // derived Effective State.
   if (scope === 'project' && opts.projectTrusted !== true) {
     const finding = blocking({
       code: CODE.PROJECT_TRUST_DENIED,
@@ -174,17 +178,18 @@ export async function preflightLocalRegistration(
       outcome:
         'Project Trust is not granted by the Pi host; project records remain stored but excluded from Effective State, and no Project Scope Lifecycle Operation may mutate them',
     });
-    return blockedResult(scope, rootPath, expectedRevision, [finding], null);
+    return blockedResult(scope, rootPath, expectedRevision, [finding], null, opts);
   }
 
-  // Attempt Fence (same-scope exclusivity)
+  // Attempt Fence (same-scope exclusivity + global barrier on project)
   const fence = await acquireAttemptFence(scope, {
     cwd: opts.cwd,
     agentDir: opts.agentDir,
     fenceTimeoutMs: opts.fenceTimeoutMs,
+    projectTrusted: opts.projectTrusted,
   });
   if (!fence.ok) {
-    return blockedResult(scope, rootPath, expectedRevision, [fence.finding!], null);
+    return blockedResult(scope, rootPath, expectedRevision, [fence.finding!], null, opts);
   }
   const handle = fence.handle!;
 
@@ -195,7 +200,7 @@ export async function preflightLocalRegistration(
     // Source Key (canonical real path)
     const sourceKeyRes = sourceKeyForLocalRoot(rootPath, scope);
     if (!sourceKeyRes.ok) {
-      return blockedResult(scope, rootPath, expectedRevision, sourceKeyRes.findings, handle);
+      return blockedResult(scope, rootPath, expectedRevision, sourceKeyRes.findings, handle, opts);
     }
     const sourceKey = sourceKeyRes.sourceKey;
     const canonicalPath = sourceKey.canonicalPath!;
@@ -216,7 +221,7 @@ export async function preflightLocalRegistration(
         rule: RULE.CATALOG_MISSING,
         outcome: `Marketplace Catalog not found at ${MARKETPLACE_CATALOG_RELPATH}; legacy marketplace shapes do not participate in Bridge ingestion`,
       });
-      return blockedResult(scope, rootPath, expectedRevision, [finding], handle);
+      return blockedResult(scope, rootPath, expectedRevision, [finding], handle, opts);
     }
     if (catalogBytes > BUDGET.maxCatalogBytes) {
       const finding = blocking({
@@ -228,7 +233,7 @@ export async function preflightLocalRegistration(
         rule: RULE.BUDGET_EXCEEDED,
         outcome: `Validation Budget exceeded: catalog ${catalogBytes} bytes > ${BUDGET.maxCatalogBytes}`,
       });
-      return blockedResult(scope, rootPath, expectedRevision, [finding], handle);
+      return blockedResult(scope, rootPath, expectedRevision, [finding], handle, opts);
     }
 
     let parsed: unknown;
@@ -245,17 +250,15 @@ export async function preflightLocalRegistration(
         rule: RULE.CATALOG_MALFORMED,
         outcome: `unable to parse marketplace.json: ${msg}`,
       });
-      return blockedResult(scope, rootPath, expectedRevision, [finding], handle);
+      return blockedResult(scope, rootPath, expectedRevision, [finding], handle, opts);
     }
 
     const catalogResult = parseCatalog(parsed, { scope });
     findings.push(...catalogResult.findings);
     if (!catalogResult.ok) {
-      // Structurally malformed catalog (non-object JSON, or plugins not an array): surface the
-      // structured CATALOG_MALFORMED finding instead of dereferencing a missing catalog.
-      return blockedResult(scope, rootPath, expectedRevision, sortFindings(findings), handle);
+      return blockedResult(scope, rootPath, expectedRevision, sortFindings(findings), handle, opts);
     }
-    const catalog = catalogResult.catalog!; // guarded by catalogResult.ok above
+    const catalog = catalogResult.catalog!;
 
     if (catalog.name.length > BUDGET.maxNameLength) {
       findings.push(
@@ -316,13 +319,13 @@ export async function preflightLocalRegistration(
 
     const sorted = sortFindings(findings);
     if (hasBlocking(sorted)) {
-      return blockedResult(scope, rootPath, expectedRevision, sorted, handle);
+      return blockedResult(scope, rootPath, expectedRevision, sorted, handle, opts);
     }
 
     // Duplicate detection (same kind + identical Source Key); directs to the existing Registration.
     const dup = findDuplicateRegistration(scope, sourceKey, registrations);
     if (dup.duplicate) {
-      return blockedResult(scope, rootPath, expectedRevision, [dup.finding!], handle, dup.existing);
+      return blockedResult(scope, rootPath, expectedRevision, [dup.finding!], handle, opts, dup.existing);
     }
 
     const alias = deriveInitialAlias(
@@ -358,7 +361,7 @@ export async function preflightLocalRegistration(
       rule: 'PREFLIGHT-01',
       outcome: `preflight failed: ${msg}`,
     });
-    return blockedResult(scope, rootPath, expectedRevision, [finding], null);
+    return blockedResult(scope, rootPath, expectedRevision, [finding], null, opts);
   }
 }
 
@@ -368,9 +371,7 @@ function snapshotBinds(snapshot: ValidationSnapshot) {
 
 /**
  * Registration Confirmation — bound to the preflight's Validation Snapshot + State Revision,
- * Default No, never remembered or applied in bulk. Passing yes=false declines with a Declined
- * receipt (state unchanged). Passing yes=true re-verifies the State Revision (stale ⇒ Rejected as
- * Stale) and duplicates, then commits atomically and returns a Completed Attempt Receipt.
+ * Default No, never remembered or applied in bulk.
  */
 export async function confirmLocalRegistration(
   preflight: LocalRegistrationPreflight,
@@ -378,7 +379,6 @@ export async function confirmLocalRegistration(
   opts: RegistrationFlowOptions = {},
 ): Promise<RegistrationOutcome> {
   if (preflight.terminal) {
-    // a second confirm/cancel on the same preflight is a programming error — treat as blocked
     const receipt = createReceipt({
       operation: OPERATION,
       scope: preflight.scope,
@@ -398,6 +398,7 @@ export async function confirmLocalRegistration(
         }),
       ],
     });
+    await appendReceipt(preflight.scope, receipt, opts);
     return { status: 'blocked', findings: [], receipt };
   }
   preflight.terminal = true;
@@ -415,6 +416,7 @@ export async function confirmLocalRegistration(
       findings: preflight.findings,
       stateChanged: false,
     });
+    await appendReceipt(scope, receipt, opts);
     release();
     return { status: 'declined', receipt };
   }
@@ -441,6 +443,7 @@ export async function confirmLocalRegistration(
         }),
       ],
     });
+    await appendReceipt(scope, receipt, opts);
     release();
     return { status: 'persistence-failed', receipt, isIndeterminate: true };
   }
@@ -467,6 +470,7 @@ export async function confirmLocalRegistration(
       ],
       stateChanged: false,
     });
+    await appendReceipt(scope, receipt, opts);
     release();
     return { status: 'rejected-as-stale', receipt };
   }
@@ -483,14 +487,12 @@ export async function confirmLocalRegistration(
       summary: 'Blocked',
       findings: [dup.finding!],
     });
+    await appendReceipt(scope, receipt, opts);
     release();
     return { status: 'blocked', findings: [dup.finding!], receipt, existing: dup.existing };
   }
 
-  // Re-verify the Validation Snapshot fingerprint against the live tree. A fingerprint mismatch
-  // (source drift between preflight and confirmation) is a Blocking Finding and the confirmation
-  // is Rejected as Stale — new validation, disclosure, and confirmation are required (CONTEXT: the
-  // fingerprint must still match before durable state mutation).
+  // Re-verify the Validation Snapshot fingerprint against the live tree.
   const revalidated = buildLocalSnapshot(preflight.canonicalPath, preflight.sourceKey, scope);
   if (!revalidated.ok || revalidated.snapshot!.fingerprint !== preflight.snapshot.fingerprint) {
     const receipt = createReceipt({
@@ -514,6 +516,7 @@ export async function confirmLocalRegistration(
       ],
       stateChanged: false,
     });
+    await appendReceipt(scope, receipt, opts);
     release();
     return { status: 'rejected-as-stale', receipt };
   }
@@ -559,6 +562,7 @@ export async function confirmLocalRegistration(
       ],
       stateChanged: false,
     });
+    await appendReceipt(scope, receipt, opts);
     release();
     return { status: 'persistence-failed', receipt, isIndeterminate: write.isIndeterminate ?? false };
   }
@@ -577,6 +581,7 @@ export async function confirmLocalRegistration(
     findings: preflight.findings,
     stateChanged: true,
   });
+  await appendReceipt(scope, receipt, opts);
   release();
   return { status: 'completed', registration, receipt, newRevision: targetRevision };
 }
@@ -589,8 +594,7 @@ export function cancelLocalRegistration(preflight: LocalRegistrationPreflight): 
 }
 
 /**
- * Validation Disclosure material for the confirmation surface: source, scope, marketplace name,
- * State Revision, Validation Snapshot fingerprint, entry outcomes, findings summary.
+ * Validation Disclosure material for the confirmation surface.
  */
 export function disclosureSummary(preflight: LocalRegistrationPreflight): string {
   const entries = preflight.catalog.entries;
