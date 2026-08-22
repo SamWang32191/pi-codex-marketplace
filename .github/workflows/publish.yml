@@ -21,7 +21,6 @@ jobs:
     name: publish ${{ github.ref_name }} → npm (provenance)
     runs-on: ubuntu-latest
     needs: gate
-    environment: npm
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

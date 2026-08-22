@@ -14,7 +14,7 @@
   "author": "Sam Wang",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/SamWang32191/pi-codex-marketplace.git"
+    "url": "https://github.com/SamWang32191/pi-codex-marketplace"
   },
   "engines": {
     "node": ">=22.19.0"
