@@ -25,10 +25,7 @@ import type { BridgeState } from '../bridge-state/types.js';
 import type { LifecycleFlowOptions, UpdateCandidate } from './refresh.js';
 import type { UpdatePlan } from './update-plan.js';
 
-export interface ApplyUpdateOptions extends LifecycleFlowOptions {
-  /** Integration synchronization seam; production callers leave this undefined. */
-  beforeApplyCommit?: () => void | Promise<void>;
-}
+export type ApplyUpdateOptions = LifecycleFlowOptions;
 
 export type ApplyUpdateOutcome =
   | { status: 'completed'; receipt: AttemptReceipt; newRevision: string }
@@ -215,7 +212,6 @@ export async function applyUpdate(plan: UpdatePlan, opts: ApplyUpdateOptions = {
   if (!fence.ok) return blocked(plan, [fence.finding!], plan.stateRevision);
 
   try {
-    await opts.beforeApplyCommit?.();
     const write = await commitBridgeState(
       plan.scope,
       (current) => draftNextState(current, plan),

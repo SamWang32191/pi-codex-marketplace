@@ -18,13 +18,13 @@ function plugin(id: string): CompatiblePlugin {
 }
 
 function candidate(opts: {
-  stateRevision?: string;
   plugins?: CompatiblePlugin[];
 }): UpdateCandidate {
   const plugins = opts.plugins ?? [plugin(`${REG_ID}/acme-marketplace/release-helper`)];
   return {
     scope: SCOPE,
     registrationId: REG_ID,
+    stateRevision: '0',
     recordedFingerprint: 'old',
     snapshot: {
       fingerprint: 'new-snapshot-fingerprint',

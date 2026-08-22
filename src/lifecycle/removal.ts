@@ -19,13 +19,11 @@ import type { Installation, Scope } from '../bridge-state/types.js';
 import { acquireAttemptFence, type AttemptFenceHandle } from '../registration/fence.js';
 import { CODE, RULE, blocking, sortFindings, type ValidationFinding } from '../registration/findings.js';
 import { createReceipt, type AttemptReceipt } from '../registration/receipt.js';
+import type { LifecycleFlowOptions } from './refresh.js';
 
-export interface RemovalFlowOptions {
-  cwd?: string;
-  agentDir?: string;
+export interface RemovalFlowOptions extends LifecycleFlowOptions {
   /** Host-owned Project Trust decision; omitted means NOT granted (fail-closed). */
   projectTrusted?: boolean;
-  fenceTimeoutMs?: number;
 }
 
 export interface RegistrationRemovalPreflight {
@@ -141,16 +139,15 @@ export async function preflightRegistrationRemoval(
   if (read.status !== 'ok' && read.status !== 'missing') return persistenceBlocked(scope, OPERATION, trigger, read.error);
   const state = read.state!;
 
-  const trust = trustFinding(scope) && opts.projectTrusted !== true ? trustFinding(scope)! : undefined;
-  if (trust) {
-    const fence = await acquireAttemptFence(scope, { cwd: opts.cwd, agentDir: opts.agentDir, fenceTimeoutMs: opts.fenceTimeoutMs });
-    if (fence.ok) fence.handle!.release();
+  const trust = trustFinding(scope);
+  if (trust && opts.projectTrusted !== true) {
+    const findings: ValidationFinding[] = [trust];
     return {
       ok: false,
       outcome: {
         status: 'blocked',
-        findings: [trust],
-        receipt: createReceipt({ operation: OPERATION, scope, trigger, expectedStateRevision: state.stateRevision, summary: 'Blocked', findings: [trust] }),
+        findings,
+        receipt: createReceipt({ operation: OPERATION, scope, trigger, expectedStateRevision: state.stateRevision, summary: 'Blocked', findings }),
       },
     };
   }
@@ -253,7 +250,10 @@ export async function confirmRegistrationRemoval(
   const fresh = await readBridgeState(preflight.scope, { cwd: opts.cwd, agentDir: opts.agentDir });
   if (fresh.status !== 'ok' && fresh.status !== 'missing') {
     preflight.fence.release();
-    return { status: 'persistence-failed', isIndeterminate: true, receipt: createReceipt({ operation: OPERATION, scope: preflight.scope, trigger, expectedStateRevision: preflight.stateRevision, summary: 'Persistence Indeterminate', stateChanged: false }) };
+    const findings: ValidationFinding[] = [
+      blocking({ code: CODE.PERSISTENCE_INDETERMINATE, rule: 'PERSIST-01', target: 'attempt', pointer: '', outcome: fresh.error ?? 'Bridge State is not readable; neither previous nor target verifiable', scope: preflight.scope, phase: 'persistence' }),
+    ];
+    return { status: 'persistence-failed', isIndeterminate: true, receipt: createReceipt({ operation: OPERATION, scope: preflight.scope, trigger, expectedStateRevision: preflight.stateRevision, summary: 'Persistence Indeterminate', findings, stateChanged: false }) };
   }
   if (fresh.state!.stateRevision !== preflight.stateRevision) {
     const outcome = staleReceipt(OPERATION, preflight.scope, trigger, preflight.stateRevision, fresh.state!.stateRevision);
@@ -408,7 +408,10 @@ export async function confirmInstallationRemoval(
   const fresh = await readBridgeState(preflight.scope, { cwd: opts.cwd, agentDir: opts.agentDir });
   if (fresh.status !== 'ok' && fresh.status !== 'missing') {
     preflight.fence.release();
-    return { status: 'persistence-failed', isIndeterminate: true, receipt: createReceipt({ operation: OPERATION, scope: preflight.scope, trigger, expectedStateRevision: preflight.stateRevision, summary: 'Persistence Indeterminate', stateChanged: false }) };
+    const findings: ValidationFinding[] = [
+      blocking({ code: CODE.PERSISTENCE_INDETERMINATE, rule: 'PERSIST-01', target: 'attempt', pointer: '', outcome: fresh.error ?? 'Bridge State is not readable; neither previous nor target verifiable', scope: preflight.scope, phase: 'persistence' }),
+    ];
+    return { status: 'persistence-failed', isIndeterminate: true, receipt: createReceipt({ operation: OPERATION, scope: preflight.scope, trigger, expectedStateRevision: preflight.stateRevision, summary: 'Persistence Indeterminate', findings, stateChanged: false }) };
   }
   if (fresh.state!.stateRevision !== preflight.stateRevision || !fresh.state!.installations.some((i) => i.id === preflight.installation.id)) {
     const outcome = staleReceipt(OPERATION, preflight.scope, trigger, preflight.stateRevision, fresh.state!.stateRevision);

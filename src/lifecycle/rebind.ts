@@ -35,7 +35,7 @@ import { buildGitSnapshot, buildLocalSnapshot } from '../registration/snapshot.j
 import { gitSourceKey, type SourceKey } from '../registration/source-key.js';
 import type { GitSelectorInput as StoredSelectorInput } from '../registration/git-selector.js';
 import type { LifecycleFlowOptions, UpdateCandidate } from './refresh.js';
-import { selectorInputFromStored } from './refresh.js';
+import { marketplaceNameOf, selectorInputFromStored } from './refresh.js';
 import type { RebindSourceAttributes } from './update-plan.js';
 
 export type RebindTarget =
@@ -60,7 +60,7 @@ export type RebindPreflightResult =
 
 const OPERATION = 'Registration Rebind';
 
-function blocked(scope: Scope, trigger: string, revision: string, findings: ValidationFinding[]): RebindPreflightResult {
+function blocked(scope: Scope, trigger: string, revision: string, findings: ValidationFinding[], validationSnapshot?: string): RebindPreflightResult {
   return {
     ok: false,
     outcome: {
@@ -71,6 +71,7 @@ function blocked(scope: Scope, trigger: string, revision: string, findings: Vali
         scope,
         trigger,
         expectedStateRevision: revision,
+        validationSnapshot,
         summary: 'Blocked',
         findings,
       }),
@@ -78,15 +79,12 @@ function blocked(scope: Scope, trigger: string, revision: string, findings: Vali
   };
 }
 
-/** Inspection only reads the Registration's identity when an explicit root + snapshot are given. */
+/**
+ * Inspection only reads the Registration's identity (id) when an explicit root + base snapshot
+ * are given, so a minimal record suffices without any cast.
+ */
 function identityProbe(registrationId: string): Registration {
-  return { id: registrationId } as Registration;
-}
-
-function marketplaceNameOf(registrationId: string, marketplaceId: string | undefined): string {
-  return marketplaceId && marketplaceId.startsWith(`${registrationId}/`)
-    ? marketplaceId.slice(registrationId.length + 1)
-    : '';
+  return { id: registrationId };
 }
 
 /**
@@ -134,9 +132,9 @@ export async function preflightRebind(
   // Duplicate detection runs against every OTHER Registration — the rebound one keeps its identity.
   const others = state.registrations.filter((item) => item.id !== registrationId);
   if (target.kind === 'local') {
-    return rebindToLocal(scope, registrationId, target.rootPath, others, revision);
+    return rebindToLocal(scope, registrationId, target.rootPath, others, revision, registration.validationSnapshot);
   }
-  return rebindToGit(scope, registrationId, target.locator, target.selector, others, revision, opts);
+  return rebindToGit(scope, registrationId, target.locator, target.selector, others, revision, registration.validationSnapshot, opts);
 }
 
 function rebindToLocal(
@@ -145,17 +143,18 @@ function rebindToLocal(
   rootPath: string,
   others: Registration[],
   revision: string,
+  recordedSnapshot?: string,
 ): RebindPreflightResult {
   const trigger = `rebind ${registrationId}`;
   const keyRes = sourceKeyForLocalRoot(rootPath, scope);
-  if (!keyRes.ok) return blocked(scope, trigger, revision, keyRes.findings);
+  if (!keyRes.ok) return blocked(scope, trigger, revision, keyRes.findings, recordedSnapshot);
   const sourceKey = keyRes.sourceKey!;
 
   const dup = findDuplicateRegistration(scope, sourceKey, others);
-  if (dup.duplicate) return blocked(scope, trigger, revision, [dup.finding!]);
+  if (dup.duplicate) return blocked(scope, trigger, revision, [dup.finding!], recordedSnapshot);
 
   const snap = buildLocalSnapshot(sourceKey.canonicalPath!, sourceKey, scope);
-  if (!snap.ok || !snap.snapshot) return blocked(scope, trigger, revision, snap.findings);
+  if (!snap.ok || !snap.snapshot) return blocked(scope, trigger, revision, snap.findings, recordedSnapshot);
 
   const inspection = inspectMarketplaceEntries(identityProbe(registrationId), scope, {
     root: sourceKey.canonicalPath!,
@@ -166,12 +165,13 @@ function rebindToLocal(
   if (!inspection.marketplaceId || inspection.findings.some((f) => f.classification === 'blocking')) {
     return blocked(scope, trigger, revision, inspection.findings.length > 0 ? inspection.findings : [
       blocking({ code: CODE.CATALOG_MISSING, rule: RULE.CATALOG_MISSING, target: 'catalog', pointer: '', outcome: 'replacement source has no readable Marketplace Catalog', scope, phase: 'validation' }),
-    ]);
+    ], snap.snapshot.fingerprint);
   }
 
   const candidate: UpdateCandidate = {
     scope,
     registrationId,
+    stateRevision: revision,
     recordedFingerprint: undefined,
     snapshot: snap.snapshot,
     marketplaceName: name,
@@ -197,11 +197,12 @@ async function rebindToGit(
   selectorInput: GitSelectorInput | string,
   others: Registration[],
   revision: string,
+  recordedSnapshot: string | undefined,
   opts: LifecycleFlowOptions,
 ): Promise<RebindPreflightResult> {
   const trigger = `rebind ${registrationId}`;
   const locRes = normalizeGitLocator(locatorInput, scope);
-  if (!locRes.ok) return blocked(scope, trigger, revision, locRes.findings);
+  if (!locRes.ok) return blocked(scope, trigger, revision, locRes.findings, recordedSnapshot);
 
   let selRes;
   if (typeof selectorInput === 'string') {
@@ -209,7 +210,7 @@ async function rebindToGit(
   } else {
     selRes = normalizeGitSelector(selectorInput as StoredSelectorInput, scope);
   }
-  if (!selRes.ok) return blocked(scope, trigger, revision, selRes.findings);
+  if (!selRes.ok) return blocked(scope, trigger, revision, selRes.findings, recordedSnapshot);
   const selector = selRes.selector!;
 
   const sourceKey = gitSourceKey(locRes.locator!, selector);
@@ -223,7 +224,7 @@ async function rebindToGit(
     selector,
     executor: opts.executor,
   });
-  if (!acq.ok) return blocked(scope, trigger, revision, acq.findings);
+  if (!acq.ok) return blocked(scope, trigger, revision, acq.findings, recordedSnapshot);
 
   try {
     const resolvedRevision = acq.resolvedRevision!;
@@ -238,7 +239,7 @@ async function rebindToGit(
       resolvedRevision,
       selectorCanonical: selector.canonical,
     });
-    if (!snap.ok || !snap.snapshot) return blocked(scope, trigger, revision, snap.findings);
+    if (!snap.ok || !snap.snapshot) return blocked(scope, trigger, revision, snap.findings, recordedSnapshot);
 
     const inspection = inspectMarketplaceEntries(identityProbe(registrationId), scope, {
       root: acq.acquiredPath!,
@@ -247,12 +248,13 @@ async function rebindToGit(
     });
     const name = marketplaceNameOf(registrationId, inspection.marketplaceId);
     if (!inspection.marketplaceId || inspection.findings.some((f) => f.classification === 'blocking')) {
-      return blocked(scope, trigger, revision, inspection.findings);
+      return blocked(scope, trigger, revision, inspection.findings, snap.snapshot.fingerprint);
     }
 
     const candidate: UpdateCandidate = {
       scope,
       registrationId,
+      stateRevision: revision,
       recordedFingerprint: undefined,
       snapshot: snap.snapshot,
       marketplaceName: name,

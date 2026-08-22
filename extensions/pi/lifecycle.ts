@@ -25,7 +25,7 @@ import {
   type RebindTarget,
   type UpdateCandidate,
 } from '../../src/lifecycle/index.js';
-import { buildUpdatePlan, type InstallationChoice } from '../../src/lifecycle/update-plan.js';
+import { buildUpdatePlan, compatibleCandidateIds, type InstallationChoice } from '../../src/lifecycle/update-plan.js';
 
 function quote(value: string): string {
   return JSON.stringify(value);
@@ -36,11 +36,7 @@ export function planChoicesFor(
   installations: Installation[],
   candidate: UpdateCandidate,
 ): { installation: Installation; options: { label: string; value: InstallationChoice; enabled: boolean }[] }[] {
-  const compatible = new Set(
-    candidate.inspection.entries
-      .filter((item) => item.plugin && !item.unavailableReason && !item.findings.some((f) => f.classification === 'blocking'))
-      .map((item) => item.plugin!.id),
-  );
+  const compatible = compatibleCandidateIds(candidate);
   return installations.map((installation) => ({
     installation,
     options: [
@@ -131,12 +127,9 @@ export async function runUpdatePlanChecklist(
   const state = await readBridgeState(scope, opts);
   if (state.status !== 'ok' && state.status !== 'missing') return void ui.notify(`Bridge State 不可讀：${state.error ?? 'Persistence Indeterminate'}`, 'error');
 
-  const installations = (state.state?.installations ?? []).filter((i) =>
-    // Same-scope installations of this registration (project installs may reference inherited registrations).
-    i.registrationId === candidate.registrationId || i.pluginId.startsWith(`${candidate.registrationId}/`) ||
-    // Installations whose Plugin ID survives under the same marketplace identity keep their choice surface.
-    candidate.inspection.entries.some((e) => e.plugin?.id === i.pluginId),
-  );
+  // Strictly this Registration's own scope-local Installations — independent Registrations and
+  // Installations are never combined into a batch (CONTEXT.md: Lifecycle Operation).
+  const installations = (state.state?.installations ?? []).filter((i) => i.registrationId === candidate.registrationId);
 
   ui.notify(`Validation Disclosure（新快照）：\n${candidateSummary(candidate)}`, 'info');
 
@@ -213,8 +206,8 @@ export async function runRefreshFlow(ctx: ExtensionCommandContext): Promise<void
     return void ui.notify(`Attempt Summary: Blocked — ${first?.code}: ${first?.outcome}`, 'error');
   }
   ui.notify('Update Candidate 已產生（非變異檢查，Bridge State 未寫入）。', 'info');
-  const fresh = await readBridgeState(scope, picked.opts);
-  await runUpdatePlanChecklist(ctx, scope, outcome.candidate, fresh.state?.stateRevision ?? '?', 'apply-update');
+  // Bind the plan to the exact State Revision the candidate was validated against.
+  await runUpdatePlanChecklist(ctx, scope, outcome.candidate, outcome.candidate.stateRevision, 'apply-update');
 }
 
 /** Registration Rebind — replace locator/selector under the preserved Registration ID. */
@@ -254,8 +247,8 @@ export async function runRebindFlow(ctx: ExtensionCommandContext): Promise<void>
     return void ui.notify(`Attempt Summary: Blocked — ${first?.code ?? '?'}: ${first?.outcome ?? ''}`, 'error');
   }
   ui.notify('替代來源已完成完整重驗證；需重新收集全部確認（舊 Activation 同意不沿用）。', 'info');
-  const fresh = await readBridgeState(scope, picked.opts);
-  await runUpdatePlanChecklist(ctx, scope, pf.preflight.candidate, fresh.state?.stateRevision ?? pf.preflight.stateRevision, 'rebind', pf.preflight.rebindSource);
+  // Rebind binds to the revision observed while validating the replacement source.
+  await runUpdatePlanChecklist(ctx, scope, pf.preflight.candidate, pf.preflight.stateRevision, 'rebind', pf.preflight.rebindSource);
 }
 
 /** Removal flows with full cascade disclosure, Default No. */

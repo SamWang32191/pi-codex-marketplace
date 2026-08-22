@@ -79,16 +79,31 @@ function planProblem(scope: Scope, target: ValidationFinding['target'], pointer:
   return blocking({ code, rule: RULE.UPDATE_PLAN_INCOMPLETE, target, pointer, outcome, scope, phase: 'admission' });
 }
 
-/** Compatible candidates keyed by Plugin ID — the identity an Installation keeps across updates. */
-function compatibleById(candidate: UpdateCandidate): Map<string, { plugin: CompatiblePlugin; snapshot: ValidationSnapshot }> {
-  const map = new Map<string, { plugin: CompatiblePlugin; snapshot: ValidationSnapshot }>();
-  // Updated installations bind the same activation-bound snapshot (catalog captures folded in)
-  // a fresh installation under the candidate tree would receive.
-  const activationSnapshot = candidate.inspection.snapshot ?? candidate.snapshot;
+/**
+ * Plugin IDs with a Compatible candidate in the new Validation Snapshot — the identity an
+ * Installation keeps across updates. Shared by plan validation and the TUI checklist so the
+ * disclosure surface and the commit rules can never diverge.
+ */
+export function compatibleCandidateIds(candidate: UpdateCandidate): Set<string> {
+  const ids = new Set<string>();
   for (const item of candidate.inspection.entries) {
     if (!item.plugin || item.unavailableReason) continue;
     if (item.findings.some((f) => f.classification === 'blocking')) continue;
-    map.set(item.plugin.id, { plugin: item.plugin, snapshot: activationSnapshot });
+    ids.add(item.plugin.id);
+  }
+  return ids;
+}
+
+/** Compatible candidates keyed by Plugin ID. */
+function compatibleById(candidate: UpdateCandidate): Map<string, { plugin: CompatiblePlugin; snapshot: ValidationSnapshot }> {
+  const map = new Map<string, { plugin: CompatiblePlugin; snapshot: ValidationSnapshot }>();
+  // Every updated installation binds the same marketplace-wide activation-bound snapshot
+  // (catalog captures folded in by inspection) that a fresh installation under the candidate
+  // tree would receive — the same convention Plugin Installation has used since #19.
+  const activationSnapshot = candidate.inspection.snapshot ?? candidate.snapshot;
+  for (const item of candidate.inspection.entries) {
+    if (!compatibleCandidateIds(candidate).has(item.plugin?.id ?? '')) continue;
+    map.set(item.plugin!.id, { plugin: item.plugin!, snapshot: activationSnapshot });
   }
   return map;
 }

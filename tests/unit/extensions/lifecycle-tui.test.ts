@@ -17,6 +17,7 @@ function candidateWith(entries: { plugin?: CompatiblePlugin; unavailableReason?:
   return {
     scope: SCOPE,
     registrationId: REG_ID,
+    stateRevision: '7',
     recordedFingerprint: 'a'.repeat(64),
     snapshot: {
       fingerprint: 'b'.repeat(64),

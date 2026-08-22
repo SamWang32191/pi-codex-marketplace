@@ -57,6 +57,8 @@ export interface LifecycleFlowOptions {
 export interface UpdateCandidate {
   scope: Scope;
   registrationId: string;
+  /** State Revision observed while this candidate was validated; plans bind exactly this. */
+  stateRevision: string;
   /** Recorded Validation Snapshot fingerprint before the refresh. */
   recordedFingerprint?: string;
   recordedResolvedRevision?: string;
@@ -97,6 +99,13 @@ function blocked(scope: Scope, registrationId: string, revision: string, finding
       findings,
     }),
   };
+}
+
+/** Marketplace name embedded in an inspection Marketplace ID ('<registrationId>/<name>'). */
+export function marketplaceNameOf(registrationId: string, marketplaceId: string | undefined): string {
+  return marketplaceId && marketplaceId.startsWith(`${registrationId}/`)
+    ? marketplaceId.slice(registrationId.length + 1)
+    : '';
 }
 
 /** Reconstruct a selector input from a persisted canonical Git Selector. */
@@ -171,14 +180,16 @@ function refreshLocalRegistration(
 
   if (!registration.validationSnapshot || snap.snapshot.fingerprint !== registration.validationSnapshot) {
     const inspection = inspectMarketplaceEntries(registration, scope, { ignoreRecordedDrift: true });
+    const name = marketplaceNameOf(registration.id, inspection.marketplaceId) || registration.marketplaceName || '';
     const candidate: UpdateCandidate = {
       scope,
       registrationId: registration.id,
+      stateRevision: revision,
       recordedFingerprint: registration.validationSnapshot,
       recordedResolvedRevision: registration.resolvedRevision,
       snapshot: snap.snapshot,
-      marketplaceName: inspection.marketplaceId ? inspection.marketplaceId.slice(registration.id.length + 1) : registration.marketplaceName ?? '',
-      catalog: { name: inspection.marketplaceId ? inspection.marketplaceId.slice(registration.id.length + 1) : registration.marketplaceName ?? '', entries: inspection.entries.map((item) => item.entry) },
+      marketplaceName: name,
+      catalog: { name, entries: inspection.entries.map((item) => item.entry) },
       inspection,
       sourceKey: registration.sourceKey,
     };
@@ -272,10 +283,11 @@ async function refreshGitRegistration(
       baseSnapshot: snap.snapshot,
       ignoreRecordedDrift: true,
     });
-    const name = inspection.marketplaceId ? inspection.marketplaceId.slice(registration.id.length + 1) : registration.marketplaceName ?? '';
+    const name = marketplaceNameOf(registration.id, inspection.marketplaceId) || registration.marketplaceName || '';
     const candidate: UpdateCandidate = {
       scope,
       registrationId: registration.id,
+      stateRevision: revision,
       recordedFingerprint: registration.validationSnapshot,
       recordedResolvedRevision: registration.resolvedRevision,
       snapshot: snap.snapshot,
