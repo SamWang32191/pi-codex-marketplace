@@ -32,6 +32,10 @@ export interface MarketplaceInspection {
   findings: ValidationFinding[];
   marketplaceId?: string;
   snapshot?: ValidationSnapshot;
+  /** Fingerprint of the inspected source tree alone, before activation-material binding.
+   *  Registrations persist exactly this value at confirmation (their preflight snapshot is
+   *  the unbound tree fingerprint from buildLocalSnapshot); Source Drift compares against it. */
+  treeFingerprint?: string;
 }
 
 function inspectionFinding(scope: Scope, code: string, rule: string, target: ValidationFinding['target'], outcome: string): ValidationFinding {
@@ -104,5 +108,5 @@ export function inspectMarketplaceEntries(registration: Registration, scope: Sco
       ?? (hasBlocking(findings) || !item.plugin ? findings.find((finding) => finding.classification === 'blocking')?.outcome ?? 'incompatible' : undefined);
     return { entry: item.entry, plugin: item.plugin, findings, unavailableReason };
   });
-  return { entries, findings: sortFindings([...parsed.findings, ...drift, ...snapshotResult.findings]), marketplaceId, snapshot };
+  return { entries, findings: sortFindings([...parsed.findings, ...drift, ...snapshotResult.findings]), marketplaceId, snapshot, treeFingerprint: snapshotResult.snapshot!.fingerprint };
 }
