@@ -46,10 +46,17 @@ export async function readBridgeState(scope: Scope, opts: StoreOptions = {}): Pr
   const statePath = getStatePath(scope, opts);
 
   if (!existsSync(statePath)) {
-    // WAL recovery may have materialized a file after a prior crash
-    const recovered = recoverWalIfNeeded(statePath, null);
-    if (recovered.recovered && recovered.state) {
-      return { status: 'ok', state: recovered.state };
+    // WAL recovery may have materialized a file after a prior crash — attempt lock-protected replay
+    const lockPath = getLockPath(statePath);
+    if (!existsSync(lockPath)) {
+      const recovered = recoverWalIfNeeded(statePath, null);
+      if (recovered.recovered && recovered.state) {
+        return { status: 'ok', state: recovered.state };
+      }
+    } else {
+      // WAL replay is deferred while another process holds the migration lock; treat as missing and let holder commit
+      const walPath = statePath + '.wal';
+      if (!existsSync(walPath)) return { status: 'missing', state: createEmptyState(), isEmptyInit: true };
     }
     return { status: 'missing', state: createEmptyState(), isEmptyInit: true };
   }
@@ -71,13 +78,18 @@ export async function readBridgeState(scope: Scope, opts: StoreOptions = {}): Pr
     return { status: 'corrupted', error: parsed.error, raw: content };
   }
 
-  // Attempt WAL recovery before schema validation (handles crash between WAL write and rename)
+  // Attempt WAL recovery before schema validation — lock-protected to avoid racing a concurrent commitMigratedState
   const preState = parsed.value as BridgeState;
   const hasVersion = typeof (preState as unknown as Record<string, unknown>).schemaVersion === 'number';
   if (hasVersion) {
-    const walRecovered = recoverWalIfNeeded(statePath, preState);
-    if (walRecovered.recovered && walRecovered.state) {
-      return { status: 'ok', state: walRecovered.state };
+    const lockPath = getLockPath(statePath);
+    if (!existsSync(lockPath)) {
+      const walRecovered = recoverWalIfNeeded(statePath, preState);
+      if (walRecovered.recovered && walRecovered.state) {
+        return { status: 'ok', state: walRecovered.state };
+      }
+    } else {
+      // Migration lock held — skip WAL replay, let holder finish; orphan WAL will be cleaned after commit
     }
   }
 
@@ -142,8 +154,7 @@ export async function readBridgeState(scope: Scope, opts: StoreOptions = {}): Pr
           releaseLock(fd, lockPath);
         }
       } catch {
-        // Lock contention: surface original state as ok but note migration pending — fail-closed is to keep old version visible rather than block read?
-        // For correctness we return incompatible-like status so callers retry after lock clears.
+        // Lock contention — fail-closed as corrupted so callers retry after holder releases
         return { status: 'corrupted', error: migration.error ?? 'Migration pending — lock contention', raw: parsed.value };
       }
     }
@@ -276,6 +287,7 @@ export async function commitBridgeState(
 
     const current = currentResult.state!;
     if (opts.expectedStateRevision !== undefined && current.stateRevision !== opts.expectedStateRevision) {
+      releaseLock(lockFd, lockPath);
       return {
         success: false,
         isStale: true,

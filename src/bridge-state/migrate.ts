@@ -11,8 +11,7 @@
  * - Corruption during migration leaves the previous durable revision verifiable or the file treated as Indeterminate.
  */
 
-import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from 'node:fs';
-import { mkdirSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 import { atomicWriteFile } from './atomic.js';

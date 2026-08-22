@@ -258,4 +258,45 @@ describe('Bridge State store — dual documents, atomicity, corruption', () => {
     const r = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
     expect(r.state!.stateRevision).toBe('1');
   });
+
+  it('Stale State Revision rejection releases the lock — subsequent commit with correct revision succeeds and no *.lock remains (issue #24 fix)', async () => {
+    // Initial commit to establish revision 1
+    const r1 = await commitBridgeState('global', (cur) => ({ ...cur, registrations: [{ id: 'aaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', alias: 'a' }] }), {
+      agentDir: env.agentDir,
+      cwd: env.projectDir,
+    });
+    expect(r1.success).toBe(true);
+    expect(r1.newRevision).toBe('1');
+    const gPath = getGlobalStatePath(env.agentDir);
+    const lockPath = `${gPath}.lock`;
+
+    // Stale rejection: expected 0 but observed is 1 — must release lock
+    const stale = await commitBridgeState('global', (cur) => ({ ...cur }), {
+      agentDir: env.agentDir,
+      cwd: env.projectDir,
+      expectedStateRevision: '0',
+    });
+    expect(stale.success).toBe(false);
+    expect(stale.isStale).toBe(true);
+    expect(existsSync(lockPath)).toBe(false);
+
+    // Second stale attempt also must not leak
+    const stale2 = await commitBridgeState('global', (cur) => ({ ...cur }), {
+      agentDir: env.agentDir,
+      cwd: env.projectDir,
+      expectedStateRevision: '0',
+    });
+    expect(stale2.isStale).toBe(true);
+    expect(existsSync(lockPath)).toBe(false);
+
+    // Correct revision still succeeds
+    const ok = await commitBridgeState('global', (cur) => ({ ...cur, registrations: [...cur.registrations, { id: 'bbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', alias: 'b' }] }), {
+      agentDir: env.agentDir,
+      cwd: env.projectDir,
+      expectedStateRevision: '1',
+    });
+    expect(ok.success).toBe(true);
+    expect(ok.newRevision).toBe('2');
+    expect(existsSync(lockPath)).toBe(false);
+  });
 });
