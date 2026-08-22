@@ -27,7 +27,7 @@ import {
 import { cpSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { acquireLock, releaseLock } from '../bridge-state/atomic.js';
+import { acquireLock, releaseLock, atomicWriteFile } from '../bridge-state/atomic.js';
 import { readBridgeState } from '../bridge-state/store.js';
 import type { BridgeState } from '../bridge-state/types.js';
 import type { Scope } from '../bridge-state/types.js';
@@ -166,17 +166,11 @@ export class SourceCache {
         // Copy to a temp name first so readers never observe a partial tree.
         const tmp = `${dest}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
         cpSync(root, tmp, { recursive: true, verbatimSymlinks: true });
+        // Replace any pre-existing (possibly tampered) entry wholesale so a stored
+        // fingerprint always hashes true.
         rmSync(dest, { recursive: true, force: true });
-        existsSync(tmp) && renameOrCopy(tmp, dest);
-        writeFileSync(
-          this.metaPath(fingerprint),
-          JSON.stringify({
-            fingerprint,
-            bytes,
-            lastAccessMs: this.now(),
-            recordedAtMs: this.now(),
-          } satisfies CacheEntryMeta),
-        );
+        copyTree(tmp, dest);
+        this.writeMeta(fingerprint, bytes);
         await this.prune();
         return { stored: true, path: dest };
       });
@@ -202,7 +196,8 @@ export class SourceCache {
     if (!existsSync(entriesDir)) return;
     let total = 0;
     for (const name of readdirSync(entriesDir)) {
-      if (name.endsWith('.tmp-') || name.includes('.tmp-')) continue;
+      // Skip in-progress temp copies.
+      if (name.includes('.tmp-')) continue;
       const meta = this.readMeta(name);
       if (!meta || !isSafeFingerprint(name)) continue;
       total += meta.bytes;
@@ -240,12 +235,12 @@ export class SourceCache {
   recordPendingUpdate(rec: Omit<PendingUpdateRecord, 'recordedAtMs'>): void {
     const records = this.pendingUpdates().filter((r) => !(r.scope === rec.scope && r.registrationId === rec.registrationId));
     records.push({ ...rec, recordedAtMs: this.now() });
-    writeFileSync(getCachePendingPath(this.root), JSON.stringify(records));
+    atomicWriteFile(getCachePendingPath(this.root), JSON.stringify(records));
   }
 
   clearPendingUpdate(scope: Scope, registrationId: string): void {
     const records = this.pendingUpdates().filter((r) => !(r.scope === scope && r.registrationId === registrationId));
-    writeFileSync(getCachePendingPath(this.root), JSON.stringify(records));
+    atomicWriteFile(getCachePendingPath(this.root), JSON.stringify(records));
   }
 
   pendingUpdates(): PendingUpdateRecord[] {
@@ -263,8 +258,8 @@ export class SourceCache {
 
   recordIndex(rec: Omit<CacheIndexRecord, 'recordedAtMs'>): void {
     const index = this.readIndex();
-    index[`${rec.canonicalLocator}\u001f${rec.selectorCanonical}`] = { ...rec, recordedAtMs: this.now() };
-    writeFileSync(getCacheIndexPath(this.root), JSON.stringify(index));
+    index[indexKey(rec.canonicalLocator, rec.selectorCanonical)] = { ...rec, recordedAtMs: this.now() };
+    atomicWriteFile(getCacheIndexPath(this.root), JSON.stringify(index));
   }
 
   readIndex(): Record<string, CacheIndexRecord> {
@@ -284,13 +279,22 @@ export class SourceCache {
    * entry is present in the cache. Callers must still verify by re-hashing the tree; any
    * mismatch is a Blocking Finding and never success.
    */
-  offlineHit(canonicalLocator: string, selectorCanonical: string, expectedFingerprint: string): CacheHit | null {
+  /**
+   * Offline reuse seam: only an exact fingerprint hit counts. Returns the cached tree only when
+   * the index records exactly `expectedFingerprint` for this locator+selector AND that exact
+   * entry is present in the cache. The hit refreshes LRU recency. Callers must still verify by
+   * re-hashing the tree; any mismatch is a Blocking Finding and never success.
+   */
+  async offlineHit(canonicalLocator: string, selectorCanonical: string, expectedFingerprint: string): Promise<CacheHit | null> {
     if (!expectedFingerprint) return null;
-    const rec = this.readIndex()[`${canonicalLocator}\u001f${selectorCanonical}`];
+    const rec = this.readIndex()[indexKey(canonicalLocator, selectorCanonical)];
     if (!rec || rec.fingerprint !== expectedFingerprint) return null;
     const dir = this.entryPath(expectedFingerprint);
     const meta = this.readMeta(expectedFingerprint);
     if (!existsSync(dir) || !meta || meta.fingerprint !== expectedFingerprint) return null;
+    await this.withFingerprintLock(expectedFingerprint, () => {
+      this.touchMeta(expectedFingerprint);
+    });
     return { path: dir, fingerprint: expectedFingerprint };
   }
 
@@ -314,18 +318,30 @@ export class SourceCache {
     const meta = this.readMeta(fingerprint);
     if (!meta) return;
     meta.lastAccessMs = this.now();
-    writeFileSync(this.metaPath(fingerprint), JSON.stringify(meta));
+    this.writeMeta(fingerprint, meta.bytes, meta.recordedAtMs);
+  }
+
+  private writeMeta(fingerprint: string, bytes: number, recordedAtMs?: number): void {
+    const at = this.now();
+    atomicWriteFile(
+      this.metaPath(fingerprint),
+      JSON.stringify({ fingerprint, bytes, lastAccessMs: at, recordedAtMs: recordedAtMs ?? at } satisfies CacheEntryMeta),
+    );
   }
 }
 
-function renameOrCopy(from: string, to: string): void {
+/** Canonical index key for a locator+selector pair. */
+function indexKey(canonicalLocator: string, selectorCanonical: string): string {
+  return `${canonicalLocator}\u001f${selectorCanonical}`;
+}
+
+/** Move a fully-written temp copy into place; a vanished source is a no-op. */
+function copyTree(from: string, to: string): void {
   try {
     statSync(from);
     cpSync(from, to, { recursive: true, verbatimSymlinks: true });
     rmSync(from, { recursive: true, force: true });
-  } catch {
-    // source vanished concurrently — treat as no-op; caller re-checks existence
-  }
+  } catch {}
 }
 
 function collectPinned(state: BridgeState | undefined, pinned: Set<string>): void {

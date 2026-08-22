@@ -273,7 +273,7 @@ async function refreshGitRegistration(
     // tree is re-hashed and must equal the recorded Validation Snapshot exactly — any mismatch
     // is Source Drift (Blocking Finding); a Stale Snapshot is never converted into success.
     const offline = registration.validationSnapshot
-      ? cache.offlineHit(locator.canonicalUrl, selector.canonical, registration.validationSnapshot)
+      ? await cache.offlineHit(locator.canonicalUrl, selector.canonical, registration.validationSnapshot)
       : null;
     if (offline) {
       const verified = buildGitSnapshot(offline.path, sourceKeyAt(registration, registration.resolvedRevision!), scope, {

@@ -140,15 +140,15 @@ describe('SourceCache (Git-only, fingerprint-addressed)', () => {
       canonicalLocator: 'https://github.com/acme/plugins.git',
       selectorCanonical: 'refs/heads/main',
     });
-    const hit = cache.offlineHit('https://github.com/acme/plugins.git', 'refs/heads/main', FP_A);
+    const hit = await cache.offlineHit('https://github.com/acme/plugins.git', 'refs/heads/main', FP_A);
     expect(hit?.fingerprint).toBe(FP_A);
     // Different expected fingerprint → no hit (Stale Snapshot never becomes success).
-    expect(cache.offlineHit('https://github.com/acme/plugins.git', 'refs/heads/main', FP_B)).toBeNull();
+    expect(await cache.offlineHit('https://github.com/acme/plugins.git', 'refs/heads/main', FP_B)).toBeNull();
     // Unknown selector → no hit.
-    expect(cache.offlineHit('https://github.com/acme/plugins.git', 'refs/tags/v1', FP_A)).toBeNull();
+    expect(await cache.offlineHit('https://github.com/acme/plugins.git', 'refs/tags/v1', FP_A)).toBeNull();
     // Missing entry → no hit even with matching index.
     rmSync(cache.entryPath(FP_A), { recursive: true, force: true });
-    expect(cache.offlineHit('https://github.com/acme/plugins.git', 'refs/heads/main', FP_A)).toBeNull();
+    expect(await cache.offlineHit('https://github.com/acme/plugins.git', 'refs/heads/main', FP_A)).toBeNull();
   });
 
   it('collects pinned fingerprints from Bridge State documents without I/O', () => {
