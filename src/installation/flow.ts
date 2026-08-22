@@ -13,12 +13,14 @@ import { CODE, RULE, blocking, hasBlocking, sortFindings, type ValidationFinding
 import { acquireAttemptFence, type AttemptFenceHandle } from '../registration/fence.js';
 import { createReceipt, type AttemptReceipt } from '../registration/receipt.js';
 import { appendReceipt } from '../journal/journal.js';
+import type { SourceCache } from '../cache/source-cache.js';
 import type { ValidationSnapshot } from '../registration/snapshot.js';
 import { inspectMarketplaceEntries } from './inspection.js';
 
 export interface InstallationFlowOptions {
   cwd?: string;
   agentDir?: string;
+  cache?: SourceCache;
   projectTrusted?: boolean;
   fenceTimeoutMs?: number;
   /** Integration synchronization seam; production callers leave this undefined. */
@@ -148,18 +150,16 @@ async function makePreflight(
       operationFinding(scope, CODE.INSTALLATION_NOT_FOUND, RULE.INSTALLATION_NOT_FOUND, `Registration '${registrationId}' is not in ${scope} Bridge State`, 'registration'),
     ], null, opts);
   }
-  if (registration.sourceKind !== 'local' || !registration.source) {
-    return blocked(operation, scope, registrationId, entryPointer, state.stateRevision, [
-      operationFinding(scope, CODE.SOURCE_REACQUISITION_REQUIRED, RULE.SOURCE_REACQUISITION_REQUIRED, 'This Registration has no retained local Validation Snapshot tree; Git Installation waits for the Source Cache lifecycle', 'registration'),
-    ], null, opts);
-  }
 
   const fenceResult = await acquireAttemptFence(scope, { cwd: opts.cwd, agentDir: opts.agentDir, fenceTimeoutMs: opts.fenceTimeoutMs, projectTrusted: opts.projectTrusted });
   if (!fenceResult.ok) return blocked(operation, scope, registrationId, entryPointer, state.stateRevision, [fenceResult.finding!], null, opts);
   const fence = fenceResult.handle!;
 
   try {
-    const inspection = inspectMarketplaceEntries(registration, scope);
+    const inspection = inspectMarketplaceEntries(registration, scope, {
+      agentDir: opts.agentDir,
+      cache: opts.cache,
+    });
     const inspected = inspection.entries.find((item) => item.entry.entryId === entryPointer);
     const rejectedFindings = inspected?.findings ?? (inspection.findings.length > 0 ? inspection.findings : [
       operationFinding(scope, CODE.INSTALLATION_NOT_FOUND, RULE.INSTALLATION_NOT_FOUND, `Marketplace Entry '${entryPointer}' is Unavailable`, 'entry'),
@@ -315,7 +315,10 @@ export async function confirmPluginInstallation(
   if (current.state!.stateRevision !== preflight.stateRevision) {
     return rejectedAsStale(preflight, 'State Revision changed since Installation disclosure; re-run preflight and confirmation', opts);
   }
-  const fresh = inspectMarketplaceEntries(preflight.registration, preflight.scope);
+  const fresh = inspectMarketplaceEntries(preflight.registration, preflight.scope, {
+    agentDir: opts.agentDir,
+    cache: opts.cache,
+  });
   if (!fresh.snapshot || fresh.snapshot.fingerprint !== preflight.snapshot.fingerprint) {
     return rejectedAsStale(preflight, 'Validation Snapshot changed since Installation disclosure; re-run preflight and confirmation', opts);
   }

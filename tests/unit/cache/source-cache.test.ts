@@ -164,6 +164,29 @@ describe('SourceCache (Git-only, fingerprint-addressed)', () => {
     expect(pinned).toEqual(new Set([FP_A, FP_B, FP_C]));
   });
 
+  it('serves an exact-fingerprint hit synchronously with hitExactSync', async () => {
+    const src = makeTree(join(root, 'src'));
+    await cache.storeTree(src, FP_A);
+
+    const hit = cache.hitExactSync(FP_A);
+    expect(hit).not.toBeNull();
+    expect(hit!.fingerprint).toBe(FP_A);
+    expect(existsSync(join(hit!.path, 'file.txt'))).toBe(true);
+
+    expect(cache.hitExactSync(FP_B)).toBeNull();
+    expect(cache.hitExactSync('not-a-fingerprint')).toBeNull();
+  });
+
+  it('serializes synchronous operations with withFingerprintLockSync', () => {
+    let ran = false;
+    const res = cache.withFingerprintLockSync(FP_A, () => {
+      ran = true;
+      return 42;
+    });
+    expect(ran).toBe(true);
+    expect(res).toBe(42);
+  });
+
   it('exposes the production budget constant at 2 GiB', () => {
     expect(CACHE_TOTAL_BUDGET_BYTES).toBe(2 * 1024 * 1024 * 1024);
   });

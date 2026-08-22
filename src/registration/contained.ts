@@ -69,7 +69,12 @@ export function resolveContained(root: string, relPath: string, checkType: 'any'
     };
   }
 
-  const abs = root + sep + relPath.slice(2);
+  let canonicalRoot = root;
+  try {
+    canonicalRoot = realpathSync.native(root);
+  } catch {}
+
+  const abs = canonicalRoot + sep + relPath.slice(2);
   let canonical: string;
   try {
     canonical = realpathSync.native(abs);
@@ -80,7 +85,7 @@ export function resolveContained(root: string, relPath: string, checkType: 'any'
   }
 
   // containment check
-  if (!isWithin(root, canonical)) {
+  if (!isWithin(canonicalRoot, canonical)) {
     return {
       outcome: { kind: 'blocking', blockClass: 'path', reason: `canonical target '${canonical}' escapes owning root '${root}'` },
       type: 'special',
