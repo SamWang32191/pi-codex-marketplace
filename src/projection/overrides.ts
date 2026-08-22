@@ -46,8 +46,8 @@ function operationName(kind: OverrideKind, direction: 'create' | 'remove'): stri
   return direction === 'create' ? OPERATION_NAME.createInstallation : OPERATION_NAME.removeInstallation;
 }
 
-function admissionFinding(code: string, rule: string, outcome: string): ValidationFinding {
-  return blocking({ code, rule, target: 'installation', pointer: '', outcome, scope: 'project', phase: 'admission' });
+function admissionFinding(code: string, rule: string, outcome: string, target: ValidationFinding['target']): ValidationFinding {
+  return blocking({ code, rule, target, pointer: '', outcome, scope: 'project', phase: 'admission' });
 }
 
 function blocked(operation: string, targetId: string, revision: string, findings: ValidationFinding[]): OverrideOutcome {
@@ -76,7 +76,7 @@ function persistenceFailed(operation: string, targetId: string, isIndeterminate:
       expectedStateRevision: '?',
       summary: isIndeterminate ? 'Persistence Indeterminate' : 'Persistence Failed',
       findings: isIndeterminate
-        ? [admissionFinding(CODE.PERSISTENCE_INDETERMINATE, 'PERSIST-01', error ?? 'Bridge State is not readable')]
+        ? [admissionFinding(CODE.PERSISTENCE_INDETERMINATE, 'PERSIST-01', error ?? 'Bridge State is not readable', 'attempt')]
         : [],
     }),
   };
@@ -93,7 +93,7 @@ async function runOverrideOperation(
   const operation = operationName(kind, direction);
   if (opts.projectTrusted !== true) {
     return blocked(operation, targetId, '?', [
-      admissionFinding(CODE.PROJECT_TRUST_DENIED, RULE.PROJECT_TRUST_DENIED, 'Project Trust is not granted by the Pi host; no Project Scope Lifecycle Operation may mutate Bridge State'),
+      admissionFinding(CODE.PROJECT_TRUST_DENIED, RULE.PROJECT_TRUST_DENIED, 'Project Trust is not granted by the Pi host; no Project Scope Lifecycle Operation may mutate Bridge State', kind === 'registration' ? 'registration' : 'installation'),
     ]);
   }
 
@@ -139,7 +139,7 @@ async function runOverrideOperation(
           expectedStateRevision: projectState.stateRevision,
           observedStateRevision: write.observedRevision,
           summary: 'Rejected as Stale',
-          findings: [blocking({ code: CODE.REJECTED_AS_STALE, rule: RULE.REJECTED_AS_STALE, target: 'installation', pointer: '', outcome: `State Revision changed after ${operation} admission; re-run the lifecycle operation`, scope: 'project', phase: 'persistence' })],
+          findings: [blocking({ code: CODE.REJECTED_AS_STALE, rule: RULE.REJECTED_AS_STALE, target: kind === 'registration' ? 'registration' : 'installation', pointer: '', outcome: `State Revision changed after ${operation} admission; re-run the lifecycle operation`, scope: 'project', phase: 'persistence' })],
         }),
       };
     }
@@ -179,6 +179,7 @@ export async function createScopeOverride(
         CODE.SCOPE_OVERRIDE_ALREADY_PRESENT,
         RULE.SCOPE_OVERRIDE_ALREADY_PRESENT,
         `A ${kind} Scope Override for '${targetId}' already exists in Project Scope`,
+        kind === 'registration' ? 'registration' : 'installation',
       );
     }
     const exists = kind === 'registration'
@@ -189,6 +190,7 @@ export async function createScopeOverride(
         CODE.SCOPE_OVERRIDE_TARGET_NOT_FOUND,
         RULE.SCOPE_OVERRIDE_TARGET_NOT_FOUND,
         `Suppression target '${targetId}' does not exist in the inherited Global Scope; Scope Overrides suppress inherited records only`,
+        kind === 'registration' ? 'registration' : 'installation',
       );
     }
     return undefined;
@@ -210,6 +212,7 @@ export async function removeScopeOverride(
         CODE.SCOPE_OVERRIDE_TARGET_NOT_FOUND,
         RULE.SCOPE_OVERRIDE_TARGET_NOT_FOUND,
         `No ${kind} Scope Override for '${targetId}' exists in Project Scope`,
+        kind === 'registration' ? 'registration' : 'installation',
       );
     }
     return undefined;

@@ -80,7 +80,7 @@ export function resolveRuntimeSkillCollisions(candidates: SkillCandidate[]): Col
     }
 
     let denied: string[] = [];
-    let reservedByLowerLayer = false;
+    let projectNameUnreserved = false;
 
     const projectCandidates = dedupeBySkillId(group.filter((item) => item.layer === 'project'));
     const globalCandidates = dedupeBySkillId(group.filter((item) => item.layer === 'global'));
@@ -89,7 +89,7 @@ export function resolveRuntimeSkillCollisions(candidates: SkillCandidate[]): Col
       // All same-scope Bridge colliders are unavailable; nobody reserves the name,
       // so lower-layer candidates survive.
       denied.push(...projectCandidates.map((item) => item.skillId));
-      reservedByLowerLayer = true;
+      projectNameUnreserved = true;
     } else if (projectCandidates.length === 1) {
       survivors.push(projectCandidates[0]!);
       if (globalCandidates.length > 0) {
@@ -102,7 +102,7 @@ export function resolveRuntimeSkillCollisions(candidates: SkillCandidate[]): Col
       continue;
     }
 
-    if (reservedByLowerLayer || projectCandidates.length === 0) {
+    if (projectNameUnreserved || projectCandidates.length === 0) {
       const survivingGlobal = dedupeBySkillId(globalCandidates);
       if (survivingGlobal.length > 1) {
         denied.push(...survivingGlobal.map((item) => item.skillId));

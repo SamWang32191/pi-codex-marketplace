@@ -33,7 +33,8 @@ export interface MarketplaceInspection {
   marketplaceId?: string;
   snapshot?: ValidationSnapshot;
   /** Fingerprint of the inspected source tree alone, before activation-material binding.
-   *  Registrations persist this value; Source Drift compares against it. */
+   *  Registrations persist exactly this value at confirmation (their preflight snapshot is
+   *  the unbound tree fingerprint from buildLocalSnapshot); Source Drift compares against it. */
   treeFingerprint?: string;
 }
 

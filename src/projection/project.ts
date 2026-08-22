@@ -15,7 +15,7 @@
 
 import { loadSkillsFromDir } from '@earendil-works/pi-coding-agent';
 
-import type { BridgeState } from '../bridge-state/types.js';
+import type { BridgeState, Scope } from '../bridge-state/types.js';
 import {
   computeEffectiveState,
   type EffectiveInstallation,
@@ -40,6 +40,15 @@ export interface ProjectionOptions {
   inspectRegistration?: (registration: EffectiveRegistration) => MarketplaceInspection;
   /** Independent host evidence establishing Skill Availability as Available. */
   hostAvailabilityEvidence?: (skillName: string) => boolean;
+}
+
+/** A whole-Plugin blocking denial that must hold a Runtime Application short of Applied. */
+export interface RuntimeApplicationInput {
+  /** Exact State Revision the runtime is expected to re-enter at. */
+  stateRevision?: string;
+  scope?: Scope;
+  /** Whole-Plugin Blocking Findings from projection; any one of them denies Applied. */
+  wholePluginFindings?: ValidationFinding[];
 }
 
 export type SkillAvailability = 'available' | 'snapshot-eligible' | 'unverified' | 'unavailable';
@@ -79,8 +88,8 @@ export interface ProjectionResult {
 
 function driftFinding(scope: 'global' | 'project'): ValidationFinding {
   return blocking({
-    code: CODE.REJECTED_AS_STALE,
-    rule: RULE.REJECTED_AS_STALE_SNAPSHOT,
+    code: CODE.SOURCE_DRIFT,
+    rule: RULE.SOURCE_DRIFT,
     target: 'registration',
     pointer: '',
     outcome: 'Source Drift: the registered Validation Snapshot no longer matches the source tree; affected Installations cannot become Projected Plugins until Marketplace Refresh produces an Update Candidate',
@@ -156,10 +165,14 @@ export function projectEffectiveState(
       continue;
     }
     const inspection = inspectionFor(registration);
-    // Source Drift: recorded snapshot no longer matches the live tree — fail closed.
-    // Registrations persist the base tree fingerprint; prefer it when the inspector exposes it.
-    const currentTreeFingerprint = inspection.treeFingerprint ?? inspection.snapshot?.fingerprint;
-    if (registration.validationSnapshot && currentTreeFingerprint !== registration.validationSnapshot) {
+    // Source Drift: the registered snapshot no longer matches the live tree — fail closed.
+    // Registrations persist the base tree fingerprint from their preflight (buildLocalSnapshot);
+    // drift compares only against the same kind of fingerprint, never the activation-bound one.
+    if (
+      registration.validationSnapshot &&
+      inspection.treeFingerprint !== undefined &&
+      inspection.treeFingerprint !== registration.validationSnapshot
+    ) {
       deny(installation.pluginId, driftFinding(installation.sourceScope));
       continue;
     }
@@ -279,23 +292,38 @@ export interface RuntimeApplicationOutcome {
 }
 
 /**
- * Thin Runtime Application seam: reload participation in Pi is Applied only after
- * host-verifiable Bridge re-entry; anything less leaves Pending Application. Full
+ * Thin Runtime Application seam: participation in Pi becomes Applied only through
+ * host-verifiable Bridge re-entry at the expected State Revision with no whole-Plugin
+ * Blocking Finding; anything less leaves Pending Application or stays Blocked. Full
  * receipt-journal reconciliation arrives with the recovery tickets.
  */
 export async function requestRuntimeApplication(
   verifyReload: () => Promise<boolean> | boolean,
-  opts: { cwd?: string; agentDir?: string } = {},
+  input: RuntimeApplicationInput = {},
 ): Promise<RuntimeApplicationOutcome> {
-  void opts;
+  const scope: Scope = input.scope ?? 'project';
+  const stateRevision = input.stateRevision ?? '-';
+  if (input.wholePluginFindings?.some((finding) => finding.classification === 'blocking')) {
+    return {
+      outcome: 'pending-application',
+      receipt: createReceipt({
+        operation: 'Runtime Application',
+        scope,
+        trigger: 'reload projected Effective State',
+        expectedStateRevision: stateRevision,
+        summary: 'Pending Application',
+        findings: input.wholePluginFindings,
+      }),
+    };
+  }
   const applied = await verifyReload();
   return {
     outcome: applied ? 'applied' : 'pending-application',
     receipt: createReceipt({
       operation: 'Runtime Application',
-      scope: 'project',
+      scope,
       trigger: 'reload projected Effective State',
-      expectedStateRevision: '-',
+      expectedStateRevision: stateRevision,
       summary: applied ? 'Completed' : 'Pending Application',
     }),
   };

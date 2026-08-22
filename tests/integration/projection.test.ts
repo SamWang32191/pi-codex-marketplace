@@ -283,7 +283,8 @@ describe('Projection onto the Pi resource-discovery seam', () => {
 
     expect(projection.plugins).toHaveLength(0); // affected Installation cannot become a Projected Plugin
     expect(projection.denied).toHaveLength(1);
-    expect(projection.denied[0]?.reason.rule).toBe('STALE-02');
+    expect(projection.denied[0]?.reason.code).toBe('SOURCE_DRIFT');
+    expect(projection.denied[0]?.reason.rule).toBe('DRIFT-01');
     expect((await readBridgeState('global', opts)).state!.stateRevision).toBe(revisionBefore); // Bridge State unchanged
   });
 
@@ -319,13 +320,60 @@ describe('Projection onto the Pi resource-discovery seam', () => {
     expect(projection.findings[0]?.target).toBe('skill');
   });
 
-  it('reports Pending Application unless host-verifiable reload succeeds', async () => {
+  it('denies the whole Plugin when its entry is Unavailable while other Plugins still project', async () => {
     await installFirstEntry('global', GLOBAL_REG);
-    const pending = await requestRuntimeApplication(async () => false, { agentDir: env.agentDir, cwd: env.projectDir });
+    const opts = { agentDir: env.agentDir, cwd: env.projectDir, projectTrusted: true };
+
+    // Forge an enabled Installation whose Marketplace Entry points at a nonexistent entry of the
+    // same registration — the entry cannot be resolved to an activatable Plugin.
+    const global = (await readBridgeState('global', opts)).state!;
+    const registration = global.registrations.find((r) => r.id === GLOBAL_REG)!;
+    const { inspectMarketplaceEntries } = await import('../../src/installation/inspection.js');
+    const inspection = inspectMarketplaceEntries(registration, 'global');
+    const marketplaceId = inspection.marketplaceId!;
+    await commitBridgeState(
+      'global',
+      (current) => ({
+        ...current,
+        installations: [
+          ...current.installations,
+          { id: `${marketplaceId}/ghost`, pluginId: `${marketplaceId}/ghost`, installationState: 'enabled' as const, registrationId: GLOBAL_REG, marketplaceEntryId: `${marketplaceId}/plugins/99` },
+        ],
+      }),
+      opts,
+    );
+
+    const after = (await readBridgeState('global', opts)).state!;
+    const projection = projectEffectiveState(after, (await readBridgeState('project', opts)).state!, opts);
+    // Whole-Plugin Blocking Finding denies only that Plugin; the healthy one stays projected.
+    expect(projection.plugins.map((p) => p.pluginId)).toEqual([`${marketplaceId}/release-helper`]);
+    expect(projection.denied).toHaveLength(1);
+    expect(projection.denied[0]?.installationId).toContain('ghost');
+  });
+
+  it('reports Pending Application unless host-verifiable reload succeeds at the expected State Revision', async () => {
+    await installFirstEntry('global', GLOBAL_REG);
+    const input = { stateRevision: '7', scope: 'global' as const };
+    const pending = await requestRuntimeApplication(async () => false, input);
     expect(pending.outcome).toBe('pending-application');
-    const applied = await requestRuntimeApplication(async () => true, { agentDir: env.agentDir, cwd: env.projectDir });
+    expect(pending.receipt.expectedStateRevision).toBe('7');
+    const applied = await requestRuntimeApplication(async () => true, input);
     expect(applied.outcome).toBe('applied');
     expect(applied.receipt.summary).toBe('Completed');
     expect(pending.receipt.summary).toBe('Pending Application');
+  });
+
+  it('never reports Applied while a whole-Plugin Blocking Finding stands, even with successful reload', async () => {
+    const blockingFinding = {
+      code: 'SOURCE_DRIFT', classification: 'blocking' as const, phase: 'validation' as const,
+      target: 'registration' as const, scope: 'global' as const, pointer: '', rule: 'DRIFT-01', outcome: 'Source Drift denies whole-Plugin activation',
+    };
+    const result = await requestRuntimeApplication(async () => true, {
+      stateRevision: '9',
+      wholePluginFindings: [blockingFinding],
+    });
+    expect(result.outcome).toBe('pending-application'); // reload alone is insufficient
+    expect(result.receipt.summary).toBe('Pending Application');
+    expect(result.receipt.findings).toHaveLength(1);
   });
 });

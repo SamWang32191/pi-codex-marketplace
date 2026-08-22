@@ -183,7 +183,7 @@ export default function (pi: ExtensionAPI) {
         '註冊 Git Marketplace…',
         '安裝 Compatible Plugin…',
         '管理已安裝 Plugin（Enable / Disable）…',
-        '建立 Scope Override（覆蓋全域）…',
+        '建立 Scope Override（抑制繼承全域紀錄）…',
         '移除 Scope Override（還原繼承）…',
         '檢視 Effective State 與 Projected Skills…',
       ]);
@@ -205,7 +205,7 @@ export default function (pi: ExtensionAPI) {
         await runPluginStateFlow(ctx);
         return;
       }
-      if (choice === '建立 Scope Override（覆蓋全域）…') {
+      if (choice === '建立 Scope Override（抑制繼承全域紀錄）…') {
         await runScopeOverrideFlow(ctx);
         return;
       }
