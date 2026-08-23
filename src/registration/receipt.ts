@@ -88,6 +88,131 @@ export interface AttemptReceipt {
   createdAt: string;
 }
 
+const RECEIPT_KINDS = new Set<ReceiptKind>([
+  'Lifecycle Operation',
+  'Marketplace Refresh',
+  'Runtime Application',
+  'Reconciliation',
+  'State Repair',
+]);
+const DURABLE_OUTCOMES = new Set<DurableOutcome>([
+  'committed',
+  'unchanged',
+  'failed',
+  'indeterminate',
+]);
+const RUNTIME_OUTCOMES = new Set<RuntimeOutcome>([
+  'applied',
+  'pending-application',
+  'none',
+]);
+const ATTEMPT_SUMMARIES = new Set<AttemptSummary>([
+  'Completed',
+  'Completed with diagnostics',
+  'Declined',
+  'Blocked',
+  'Rejected as Stale',
+  'Persistence Failed',
+  'Persistence Indeterminate',
+  'Pending Application',
+]);
+const RECOVERY_ACTIONS = new Set<RecoveryAction>([
+  'Retry',
+  'Revalidate',
+  'Refresh',
+  'Rebind',
+  'Retry Application',
+  'Disable',
+  'Remove',
+  'Repair State',
+  'Inspect',
+]);
+const FINDING_CLASSES = new Set(['blocking', 'warning', 'notice']);
+const FINDING_PHASES = new Set([
+  'admission',
+  'identity',
+  'validation',
+  'persistence',
+  'post-commit',
+]);
+const FINDING_TARGETS = new Set([
+  'source',
+  'catalog',
+  'entry',
+  'plugin',
+  'skill',
+  'registration',
+  'installation',
+  'attempt',
+]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isOptionalString(value: unknown): value is string | undefined {
+  return value === undefined || typeof value === 'string';
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
+function isValidationFinding(value: unknown): value is ValidationFinding {
+  if (!isRecord(value)) return false;
+
+  return (
+    typeof value.code === 'string' &&
+    typeof value.classification === 'string' &&
+    FINDING_CLASSES.has(value.classification) &&
+    typeof value.phase === 'string' &&
+    FINDING_PHASES.has(value.phase) &&
+    typeof value.target === 'string' &&
+    FINDING_TARGETS.has(value.target) &&
+    (value.scope === 'global' || value.scope === 'project') &&
+    typeof value.pointer === 'string' &&
+    typeof value.rule === 'string' &&
+    typeof value.outcome === 'string'
+  );
+}
+
+/** Runtime boundary guard for untrusted JSONL entries in the Receipt Journal. */
+export function isAttemptReceipt(value: unknown): value is AttemptReceipt {
+  if (!isRecord(value)) return false;
+
+  return (
+    typeof value.id === 'string' &&
+    typeof value.kind === 'string' &&
+    RECEIPT_KINDS.has(value.kind as ReceiptKind) &&
+    typeof value.operation === 'string' &&
+    (value.scope === 'global' || value.scope === 'project') &&
+    typeof value.trigger === 'string' &&
+    typeof value.startedAt === 'string' &&
+    typeof value.completedAt === 'string' &&
+    typeof value.expectedStateRevision === 'string' &&
+    isOptionalString(value.targetStateRevision) &&
+    isOptionalString(value.observedStateRevision) &&
+    isOptionalString(value.validationSnapshot) &&
+    (value.snapshotFingerprints === undefined || isStringArray(value.snapshotFingerprints)) &&
+    typeof value.durableOutcome === 'string' &&
+    DURABLE_OUTCOMES.has(value.durableOutcome as DurableOutcome) &&
+    Array.isArray(value.findings) &&
+    value.findings.every(isValidationFinding) &&
+    typeof value.runtimeOutcome === 'string' &&
+    RUNTIME_OUTCOMES.has(value.runtimeOutcome as RuntimeOutcome) &&
+    typeof value.summary === 'string' &&
+    ATTEMPT_SUMMARIES.has(value.summary as AttemptSummary) &&
+    Array.isArray(value.recoveryActions) &&
+    value.recoveryActions.every(
+      (action) => typeof action === 'string' && RECOVERY_ACTIONS.has(action as RecoveryAction),
+    ) &&
+    typeof value.stateChanged === 'boolean' &&
+    isOptionalString(value.recoversReceiptId) &&
+    isOptionalString(value.supersedesReceiptId) &&
+    typeof value.createdAt === 'string'
+  );
+}
+
 export interface ReceiptOptions {
   id?: string;
   kind?: ReceiptKind;

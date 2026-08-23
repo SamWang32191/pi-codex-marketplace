@@ -353,13 +353,19 @@ describe('Projection onto the Pi resource-discovery seam', () => {
 
   it('reports Pending Application unless host-verifiable reload succeeds at the expected State Revision', async () => {
     await installFirstEntry('global', GLOBAL_REG);
-    const input = { stateRevision: '7', scope: 'global' as const };
+    const input = {
+      stateRevision: '7',
+      validationSnapshot: 'snapshot-runtime-7',
+      scope: 'global' as const,
+    };
     const pending = await requestRuntimeApplication(async () => false, input);
     expect(pending.outcome).toBe('pending-application');
     expect(pending.receipt.expectedStateRevision).toBe('7');
+    expect(pending.receipt.validationSnapshot).toBe('snapshot-runtime-7');
     const applied = await requestRuntimeApplication(async () => true, input);
     expect(applied.outcome).toBe('applied');
     expect(applied.receipt.summary).toBe('Completed');
+    expect(applied.receipt.validationSnapshot).toBe('snapshot-runtime-7');
     expect(pending.receipt.summary).toBe('Pending Application');
   });
 

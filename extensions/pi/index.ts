@@ -3,7 +3,7 @@
  * Single extension "pi" package, Pi 0.84.2 compatible.
  *
  * Provides:
- * - /codex-marketplace command: partitioned Global Scope / Project Scope empty state
+ * - /codex-marketplace command: persistent Bridge Ledger workspace
  * - Bridge State reading via dual-document store (global + project)
  * - Startup Reconciliation on session_start
  * - Receipt Journal inspection & State Repair flows
@@ -11,13 +11,13 @@
  * Domain vocabulary follows CONTEXT.md (Bridge Package, Bridge Extension, Bridge State, State Revision, etc.)
  */
 
-import type { ExtensionAPI, Theme } from '@earendil-works/pi-coding-agent';
-import { truncateToWidth } from '@earendil-works/pi-tui';
+import type { ExtensionAPI, ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
+import { stripTerminalSequences } from '@earendil-works/pi-tui';
 
 import { readBridgeStateSync } from '../../src/bridge-state/store.js';
-import type { BridgeState, ReadResult } from '../../src/bridge-state/types.js';
+import type { ReadResult } from '../../src/bridge-state/types.js';
 import { runStartupReconciliation } from '../../src/reconciliation/startup.js';
-import { formatThreeOrthogonalReport } from '../../src/registration/receipt.js';
+import type { AttemptReceipt } from '../../src/registration/receipt.js';
 import { checkGlobalPendingBarrier } from '../../src/barrier/global-barrier.js';
 import { runLocalRegistrationFlow } from './registration.js';
 import { runGitRegistrationFlow } from './git-registration.js';
@@ -28,7 +28,182 @@ import {
   runRemoveScopeOverrideFlow,
   runScopeOverrideFlow,
 } from './scope-overrides.js';
-import { runReceiptJournalView, runRepairStateFlow } from './journal.js';
+import {
+  runReceiptJournalView,
+  runRepairStateFlow,
+  runRetryApplicationFlow,
+} from './journal.js';
+import {
+  BridgeLedgerComponent,
+  buildBridgeLedgerModel,
+  loadBridgeLedgerSnapshot,
+  type LedgerActionIntent,
+} from './bridge-ledger.js';
+import { quoteTerminalText } from './terminal-presentation.js';
+import { renderTransactionSheet } from './transaction-sheet.js';
+
+const STARTUP_RECEIPT_THEME = {
+  fg: (_color: string, text: string) => text,
+  bold: (text: string) => text,
+};
+
+export function formatStartupReceipt(receipt: AttemptReceipt): string {
+  return renderTransactionSheet({
+    step: 'Receipt',
+    actionLabel: receipt.operation,
+    authority: receipt.scope,
+    target: receipt.trigger,
+    stateRevision: receipt.observedStateRevision ?? receipt.expectedStateRevision,
+    validationSnapshot: receipt.validationSnapshot,
+    receipt,
+  }, STARTUP_RECEIPT_THEME, 80).map(stripTerminalSequences).join('\n');
+}
+
+function requiredScope(intent: LedgerActionIntent): 'global' | 'project' {
+  if (intent.scope) return intent.scope;
+  throw new Error(`Ledger action ${intent.actionId} requires an explicit scope`);
+}
+
+function requiredTarget(intent: LedgerActionIntent): string {
+  if (intent.targetId) return intent.targetId;
+  throw new Error(`Ledger action ${intent.actionId} requires a stable target identity`);
+}
+
+function requiredMarketplaceEntryTarget(intent: LedgerActionIntent): {
+  registrationId: string;
+  entryPointer: string;
+} {
+  if (
+    intent.targetKind === 'marketplace-entry'
+    && intent.registrationId
+    && intent.entryPointer
+    && intent.targetId
+  ) {
+    return {
+      registrationId: intent.registrationId,
+      entryPointer: intent.entryPointer,
+    };
+  }
+  throw new Error(`Ledger action ${intent.actionId} requires a stable Marketplace Entry identity`);
+}
+
+function overrideTarget(intent: LedgerActionIntent): {
+  targetKind: 'registration' | 'installation';
+  targetId: string;
+} {
+  const target = requiredTarget(intent);
+  if (intent.targetKind === 'registration' || intent.targetKind === 'installation') {
+    return { targetKind: intent.targetKind, targetId: target };
+  }
+  const separator = target.indexOf('/');
+  const kind = target.slice(0, separator);
+  const targetId = target.slice(separator + 1);
+  if ((kind !== 'registration' && kind !== 'installation') || separator < 1 || !targetId) {
+    throw new Error(`Ledger action ${intent.actionId} has an invalid Scope Override target`);
+  }
+  return { targetKind: kind, targetId };
+}
+
+/** Dispatches only by stable semantic identity; display labels never select behavior. */
+export async function dispatchLedgerAction(
+  ctx: ExtensionCommandContext,
+  intent: LedgerActionIntent,
+): Promise<void> {
+  switch (intent.actionId) {
+    case 'observe-partitions': {
+      const global = readBridgeStateSync('global', { cwd: ctx.cwd });
+      const project = readBridgeStateSync('project', { cwd: ctx.cwd });
+      ctx.ui.notify(
+        `${formatStateSummary(global, 'Global Scope')}\n${formatStateSummary(project, 'Project Scope')}`,
+        'info',
+      );
+      return;
+    }
+    case 'observe-effective-state':
+      await runEffectiveStateView(ctx);
+      return;
+    case 'register-local':
+      await runLocalRegistrationFlow(ctx, { scope: requiredScope(intent) });
+      return;
+    case 'register-git':
+      await runGitRegistrationFlow(ctx, { scope: requiredScope(intent) });
+      return;
+    case 'refresh-registration':
+      await runRefreshFlow(ctx, {
+        scope: requiredScope(intent),
+        registrationId: requiredTarget(intent),
+      });
+      return;
+    case 'rebind-registration':
+      await runRebindFlow(ctx, {
+        scope: requiredScope(intent),
+        registrationId: requiredTarget(intent),
+      });
+      return;
+    case 'remove-registration':
+      await runRemovalFlow(ctx, {
+        scope: requiredScope(intent),
+        targetKind: 'registration',
+        targetId: requiredTarget(intent),
+      });
+      return;
+    case 'install-disabled':
+    case 'install-and-enable': {
+      const entry = requiredMarketplaceEntryTarget(intent);
+      await runPluginInstallationFlow(ctx, {
+        scope: requiredScope(intent),
+        registrationId: entry.registrationId,
+        entryPointer: entry.entryPointer,
+        targetState: intent.actionId === 'install-and-enable' ? 'enabled' : 'disabled',
+      });
+      return;
+    }
+    case 'enable-installation':
+    case 'disable-installation':
+      await runPluginStateFlow(ctx, {
+        scope: requiredScope(intent),
+        installationId: requiredTarget(intent),
+        desiredState: intent.actionId === 'enable-installation' ? 'enabled' : 'disabled',
+        expectedStateRevision: intent.stateRevision,
+      });
+      return;
+    case 'remove-installation':
+      await runRemovalFlow(ctx, {
+        scope: requiredScope(intent),
+        targetKind: 'installation',
+        targetId: requiredTarget(intent),
+      });
+      return;
+    case 'create-scope-override': {
+      const target = overrideTarget(intent);
+      await runScopeOverrideFlow(ctx, target);
+      return;
+    }
+    case 'remove-scope-override': {
+      const target = overrideTarget(intent);
+      await runRemoveScopeOverrideFlow(ctx, target);
+      return;
+    }
+    case 'view-receipt-journal':
+      await runReceiptJournalView(ctx, { scope: requiredScope(intent) });
+      return;
+    case 'inspect-receipt':
+      await runReceiptJournalView(ctx, {
+        scope: requiredScope(intent),
+        receiptId: requiredTarget(intent),
+      });
+      return;
+    case 'repair-state':
+      await runRepairStateFlow(ctx, { scope: requiredScope(intent) });
+      return;
+    case 'retry-application':
+      await runRetryApplicationFlow(ctx, {
+        scope: requiredScope(intent),
+        receiptId: requiredTarget(intent),
+      });
+      return;
+  }
+}
 
 // Closed helper to format state summary for disclosure
 function formatStateSummary(result: ReadResult, scopeLabel: string): string {
@@ -46,119 +221,9 @@ function formatStateSummary(result: ReadResult, scopeLabel: string): string {
     return `${scopeLabel}: revision ${s.stateRevision} · ${regCount} registrations · ${instEnabled} enabled / ${instDisabled} disabled${ovPart}`;
   }
   if (result.status === 'incompatible') {
-    return `${scopeLabel}: incompatible — ${result.error} (requires newer Bridge Package)`;
+    return `${scopeLabel}: incompatible — ${quoteTerminalText(result.error ?? 'unknown schema')} (requires newer Bridge Package)`;
   }
-  return `${scopeLabel}: corrupted — ${result.error} (Persistence Indeterminate, no auto-rollback)`;
-}
-
-class MarketplaceComponent {
-  private theme: Theme;
-  private onClose: () => void;
-  private global: ReadResult;
-  private project: ReadResult;
-  private cwd: string;
-  private width?: number;
-  private cached?: string[];
-
-  constructor(
-    global: ReadResult,
-    project: ReadResult,
-    cwd: string,
-    theme: Theme,
-    onClose: () => void,
-  ) {
-    this.global = global;
-    this.project = project;
-    this.cwd = cwd;
-    this.theme = theme;
-    this.onClose = onClose;
-  }
-
-  handleInput(data: string): void {
-    if (data === '\x1b' || data === 'q' || data === '\x03') {
-      this.onClose();
-    }
-  }
-
-  render(width: number): string[] {
-    if (this.cached && this.width === width) return this.cached;
-    const th = this.theme;
-    const lines: string[] = [];
-    const hr = th.fg('borderMuted', '─'.repeat(Math.max(0, width - 2)));
-
-    lines.push('');
-    lines.push(truncateToWidth(th.fg('accent', th.bold(' Codex Marketplace ')) + th.fg('borderMuted', '─'.repeat(Math.max(0, width - 22))), width));
-    lines.push(truncateToWidth(`  ${th.fg('dim', 'Bridge State · partitioned by Global Scope / Project Scope · State Revision per scope · Effective State derived at read time')}`, width));
-    lines.push('');
-
-    // Global Section
-    lines.push(truncateToWidth(`  ${th.fg('accent', '▸ Global Scope')}  ${th.fg('dim', formatStateSummary(this.global, 'Global Scope'))}`, width));
-    lines.push(truncateToWidth(`    ${th.fg('dim', 'Global document: {getAgentDir()}/codex-marketplace/state.json — authoritative fields only: schemaVersion / stateRevision / registrations / installations / scopeOverrides')}`, width));
-    if (this.global.status === 'ok' || this.global.status === 'missing') {
-      const s: BridgeState = this.global.state!;
-      if (s.registrations.length === 0 && s.installations.length === 0) {
-        lines.push(truncateToWidth(`    ${th.fg('muted', '— No marketplace registrations —')}`, width));
-        lines.push(truncateToWidth(`    ${th.fg('dim', 'Empty registration list — use the Registration flow (「註冊本地 Marketplace…」menu) to add a local Marketplace Source. Each Registration gets an immutable Registration ID (UUIDv4) before preflight.')}`, width));
-        lines.push(truncateToWidth(`    ${th.fg('dim', 'Projected Plugins will appear here once installations are created. Collision is per-skill; whole-Plugin classification is atomic.')}`, width));
-      } else {
-        for (const r of s.registrations) {
-          lines.push(truncateToWidth(`    ${th.fg('text', `• ${r.alias ?? r.marketplaceName ?? r.id.slice(0, 8)}`)} ${th.fg('dim', `(${r.sourceKind ?? 'unknown'} · ${r.id.slice(0, 8)}…)`)}`, width));
-        }
-        for (const inst of s.installations) {
-          const badge = inst.installationState === 'enabled' ? th.fg('success', 'enabled') : th.fg('dim', 'disabled');
-          lines.push(truncateToWidth(`      ${th.fg('muted', inst.pluginId)} — ${badge}`, width));
-        }
-      }
-    } else {
-      lines.push(truncateToWidth(`    ${th.fg('error', this.global.status === 'incompatible' ? 'Incompatible schema — update Bridge Package' : 'Persistence Indeterminate — file corrupted, no auto-rollback')}`, width));
-      if (this.global.error) lines.push(truncateToWidth(`    ${th.fg('dim', this.global.error)}`, width));
-    }
-    lines.push('');
-
-    // Project Section
-    lines.push(truncateToWidth(`  ${th.fg('accent', '▸ Project Scope')}  ${th.fg('dim', formatStateSummary(this.project, 'Project Scope'))}`, width));
-    lines.push(truncateToWidth(`    ${th.fg('dim', `Project document: ${this.cwd}/.pi/codex-marketplace/state.json — Project Trust gates mutation/effective participation; overrides suppress Global without mutating it`)}`, width));
-    if (this.project.status === 'ok' || this.project.status === 'missing') {
-      const s: BridgeState = this.project.state!;
-      if (s.registrations.length === 0 && s.installations.length === 0 && s.scopeOverrides.length === 0) {
-        lines.push(truncateToWidth(`    ${th.fg('muted', '— No project registrations —')}`, width));
-        lines.push(truncateToWidth(`    ${th.fg('dim', 'Project Scope inherits Global registrations via Effective State; add project-local registrations or Scope Overrides to diverge.')}`, width));
-        lines.push(truncateToWidth(`    ${th.fg('dim', 'Overrides are sparse, keyed by Registration ID / Installation ID; removing an override reveals the inherited Global record.')}`, width));
-      } else {
-        for (const r of s.registrations) {
-          lines.push(truncateToWidth(`    ${th.fg('text', `• ${r.alias ?? r.marketplaceName ?? r.id.slice(0, 8)}`)} ${th.fg('dim', `(${r.sourceKind ?? 'unknown'} · ${r.id.slice(0, 8)}…)`)}`, width));
-        }
-        for (const inst of s.installations) {
-          const badge = inst.installationState === 'enabled' ? th.fg('success', 'enabled') : th.fg('dim', 'disabled');
-          lines.push(truncateToWidth(`      ${th.fg('muted', inst.pluginId)} — ${badge}`, width));
-        }
-        for (const ov of s.scopeOverrides) {
-          lines.push(truncateToWidth(`    ${th.fg('warning', `⊘ override ${ov.kind} ${ov.targetId.slice(0, 8)}…`)}`, width));
-        }
-      }
-    } else {
-      lines.push(truncateToWidth(`    ${th.fg('error', this.project.status === 'incompatible' ? 'Incompatible schema — update Bridge Package' : 'Persistence Indeterminate — file corrupted, no auto-rollback')}`, width));
-      if (this.project.error) lines.push(truncateToWidth(`    ${th.fg('dim', this.project.error)}`, width));
-    }
-
-    lines.push('');
-    lines.push(truncateToWidth(hr, width));
-    lines.push(truncateToWidth(`  ${th.fg('dim', 'Bridge State holds only registrations / installations (with Installation State) / scopeOverrides / schemaVersion / stateRevision. Effective State, catalogs, compatibility, diagnostics are recomputed.')}`, width));
-    lines.push(truncateToWidth(`  ${th.fg('dim', 'State Revision is opaque monotonic per scope; writes are atomic (temp→fsync→rename) under file lock with read-after-verify. Corrupted/unknown schema ⇒ Indeterminate/incompatible, never auto-rollback.')}`, width));
-    lines.push(truncateToWidth(`  ${th.fg('dim', 'Scope Override / Effective State / Runtime Skill Collision flows are available: 建立或移除 Override、檢視投影與碰撞診斷。Available 僅由宿主獨立證據確立。')}`, width));
-    lines.push('');
-    lines.push(truncateToWidth(`  ${th.fg('dim', 'Press Esc / q to close · 選擇相應選單以執行完整驗證、Attempt Summary 與 Recovery Action 的操作流程。')}`, width));
-    lines.push('');
-
-    this.width = width;
-    this.cached = lines;
-    return lines;
-  }
-
-  invalidate(): void {
-    this.cached = undefined;
-    this.width = undefined;
-  }
+  return `${scopeLabel}: corrupted — ${quoteTerminalText(result.error ?? 'unreadable Bridge State')} (Persistence Indeterminate, no auto-rollback)`;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -170,10 +235,10 @@ export default function (pi: ExtensionAPI) {
         projectTrusted: ctx.isProjectTrusted(),
       });
       if (recon.globalReconciled && recon.globalReceipt) {
-        ctx.ui.notify(formatThreeOrthogonalReport(recon.globalReceipt), recon.globalReceipt.summary === 'Completed' ? 'info' : 'warning');
+        ctx.ui.notify(formatStartupReceipt(recon.globalReceipt), recon.globalReceipt.summary === 'Completed' ? 'info' : 'warning');
       }
       if (recon.projectReconciled && recon.projectReceipt) {
-        ctx.ui.notify(formatThreeOrthogonalReport(recon.projectReceipt), recon.projectReceipt.summary === 'Completed' ? 'info' : 'warning');
+        ctx.ui.notify(formatStartupReceipt(recon.projectReceipt), recon.projectReceipt.summary === 'Completed' ? 'info' : 'warning');
       }
     } catch {
       // Non-blocking in extension bootstrap
@@ -181,7 +246,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand('codex-marketplace', {
-    description: 'Manage Codex Marketplaces — partitioned Global / Project Bridge State + lifecycle controls (prototype tui-management-flow@c9107d2)',
+    description: 'Manage Codex Marketplaces in the Global / Project Bridge Ledger workspace',
     handler: async (args, ctx) => {
       const cwd = ctx.cwd;
 
@@ -193,7 +258,7 @@ export default function (pi: ExtensionAPI) {
         const g = formatStateSummary(global, 'Global Scope');
         const p = formatStateSummary(project, 'Project Scope');
         const barrier = await checkGlobalPendingBarrier({ cwd });
-        const banner = barrier.active ? `\n⚠ Global Pending Barrier 活躍：${barrier.reason}（專案變異已阻擋，僅檢查/Refresh 可用）` : '';
+        const banner = barrier.active ? `\n⚠ Global Pending Barrier 活躍：${quoteTerminalText(barrier.reason ?? 'global recovery is required')}（專案變異已阻擋，僅檢查/Refresh 可用）` : '';
         ctx.ui.notify(`${g}\n${p}${banner}\n(完整導向流請於 TUI 內執行 /codex-marketplace)` , barrier.active ? 'warning' : 'info');
         return;
       }
@@ -205,89 +270,26 @@ export default function (pi: ExtensionAPI) {
         const g = formatStateSummary(global, 'Global Scope');
         const p = formatStateSummary(project, 'Project Scope');
         const barrier = await checkGlobalPendingBarrier({ cwd });
-        const banner = barrier.active ? `\n⚠ Global Pending Barrier：${barrier.reason}` : '';
+        const banner = barrier.active ? `\n⚠ Global Pending Barrier：${quoteTerminalText(barrier.reason ?? 'global recovery is required')}` : '';
         ctx.ui.notify(`${g}\n${p}${banner}\n互動流程需 TUI 模式（/codex-marketplace 於 TUI 內）`, barrier.active ? 'warning' : 'info');
         return;
       }
 
-      // TUI mode: surface Pending/Global Barrier hint before menu (closed, per prototype Variant C banner)
-      const barrier = await checkGlobalPendingBarrier({ cwd });
-      if (barrier.active) {
-        ctx.ui.notify(`⚠ Global Pending Barrier 已阻擋所有 Project Scope 變異/套用（Reserve Global-first 復原）：${barrier.reason}。仍可執行 檢查 / Refresh。`, 'warning');
+      // The workspace is deliberately reopened from a fresh snapshot after every action.
+      // Neither cached revisions nor presentation-derived eligibility become authority.
+      while (true) {
+        const snapshot = await loadBridgeLedgerSnapshot({
+          cwd,
+          projectTrusted: ctx.isProjectTrusted(),
+        });
+        const model = buildBridgeLedgerModel(snapshot);
+        const intent = await ctx.ui.custom<LedgerActionIntent | undefined>(
+          (tui, theme, _keybindings, done) =>
+            new BridgeLedgerComponent(model, theme, tui, done),
+        );
+        if (!intent) return;
+        await dispatchLedgerAction(ctx, intent);
       }
-
-      const choice = await ctx.ui.select('Codex Marketplace — Bridge State', [
-        '檢視 Global / Project 分區',
-        '註冊本地 Marketplace…',
-        '註冊 Git Marketplace…',
-        '安裝 Compatible Plugin…',
-        '管理已安裝 Plugin（Enable / Disable）…',
-        '建立 Scope Override（抑制繼承全域紀錄）…',
-        '移除 Scope Override（還原繼承）…',
-        '檢視 Effective State 與 Projected Skills…',
-        'Refresh / 更新 Registration…',
-        'Rebind Registration（更換來源）…',
-        '移除 Registration / Installation…',
-        '檢視 Receipt Journal（Active Chains 與歷史）…',
-        '執行 State Repair（修復與驗證 Bridge State）…',
-      ]);
-      if (!choice) return;
-
-      if (choice === '註冊本地 Marketplace…') {
-        await runLocalRegistrationFlow(ctx);
-        return;
-      }
-      if (choice === '註冊 Git Marketplace…') {
-        await runGitRegistrationFlow(ctx);
-        return;
-      }
-      if (choice === '安裝 Compatible Plugin…') {
-        await runPluginInstallationFlow(ctx);
-        return;
-      }
-      if (choice === '管理已安裝 Plugin（Enable / Disable）…') {
-        await runPluginStateFlow(ctx);
-        return;
-      }
-      if (choice === '建立 Scope Override（抑制繼承全域紀錄）…') {
-        await runScopeOverrideFlow(ctx);
-        return;
-      }
-      if (choice === '移除 Scope Override（還原繼承）…') {
-        await runRemoveScopeOverrideFlow(ctx);
-        return;
-      }
-      if (choice === '檢視 Effective State 與 Projected Skills…') {
-        await runEffectiveStateView(ctx);
-        return;
-      }
-      if (choice === 'Refresh / 更新 Registration…') {
-        await runRefreshFlow(ctx);
-        return;
-      }
-      if (choice === 'Rebind Registration（更換來源）…') {
-        await runRebindFlow(ctx);
-        return;
-      }
-      if (choice === '移除 Registration / Installation…') {
-        await runRemovalFlow(ctx);
-        return;
-      }
-      if (choice === '檢視 Receipt Journal（Active Chains 與歷史）…') {
-        await runReceiptJournalView(ctx);
-        return;
-      }
-      if (choice === '執行 State Repair（修復與驗證 Bridge State）…') {
-        await runRepairStateFlow(ctx);
-        return;
-      }
-
-      const global = readBridgeStateSync('global', { cwd });
-      const project = readBridgeStateSync('project', { cwd });
-
-      await ctx.ui.custom<void>((_tui, theme, _kb, done) => {
-        return new MarketplaceComponent(global, project, cwd, theme, () => done());
-      });
     },
   });
 }

@@ -14,7 +14,7 @@ import { atomicWriteFile } from '../bridge-state/atomic.js';
 import { getReceiptsJournalPath } from '../bridge-state/paths.js';
 import type { Scope } from '../bridge-state/types.js';
 import { CODE, notice, RULE, type ValidationFinding } from '../registration/findings.js';
-import type { AttemptReceipt } from '../registration/receipt.js';
+import { isAttemptReceipt, type AttemptReceipt } from '../registration/receipt.js';
 import { findActiveRecoveryChains } from './active-chains.js';
 import type {
   JournalAppendResult,
@@ -120,8 +120,8 @@ export async function readReceiptJournal(
 
     try {
       const parsed = JSON.parse(line);
-      if (typeof parsed === 'object' && parsed !== null && typeof parsed.id === 'string' && typeof parsed.summary === 'string') {
-        receipts.push(parsed as AttemptReceipt);
+      if (isAttemptReceipt(parsed)) {
+        receipts.push(parsed);
       } else {
         corruptedLineCount++;
         findings.push(

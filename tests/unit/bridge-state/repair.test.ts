@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { repairBridgeState } from '../../../src/bridge-state/repair.js';
-import { getStatePath } from '../../../src/bridge-state/paths.js';
+import { checkGlobalPendingBarrier } from '../../../src/barrier/global-barrier.js';
+import { getReceiptsJournalPath, getStatePath } from '../../../src/bridge-state/paths.js';
 import { appendReceipt, readReceiptJournal } from '../../../src/journal/journal.js';
 import { createReceipt } from '../../../src/registration/receipt.js';
 
@@ -76,5 +77,60 @@ describe('Repair State', () => {
 
     const journal = await readReceiptJournal('global', { agentDir, cwd: projectDir });
     expect(journal.activeChains).toHaveLength(0);
+  });
+
+  it('atomically removes corrupted journal lines after state verification and clears the Global Pending Barrier', async () => {
+    const opts = { agentDir, cwd: projectDir };
+    const valid = createReceipt({
+      id: 'rcpt_valid_before_journal_repair',
+      operation: 'Inspect',
+      scope: 'global',
+      trigger: 'inspect',
+      expectedStateRevision: '0',
+      summary: 'Completed',
+    });
+    await appendReceipt('global', valid, opts);
+    appendFileSync(getReceiptsJournalPath('global', opts), '{ malformed journal line\n', 'utf-8');
+
+    expect((await checkGlobalPendingBarrier(opts)).active).toBe(true);
+
+    const repaired = await repairBridgeState('global', opts);
+
+    expect(repaired.success).toBe(true);
+    const journal = await readReceiptJournal('global', opts);
+    expect(journal.isDegraded).toBe(false);
+    expect(journal.receipts.some((receipt) => receipt.id === valid.id)).toBe(true);
+    expect(journal.receipts.at(-1)).toEqual(expect.objectContaining({
+      kind: 'State Repair',
+      summary: 'Completed with diagnostics',
+    }));
+    expect(journal.receipts.at(-1)?.findings).toEqual([
+      expect.objectContaining({ code: 'RECEIPT_CORRUPT', rule: 'JOURNAL-02' }),
+    ]);
+    expect((await checkGlobalPendingBarrier(opts)).active).toBe(false);
+  });
+
+  it('preserves active recovery chains while repairing corrupted journal lines', async () => {
+    const opts = { agentDir, cwd: projectDir };
+    const pending = createReceipt({
+      id: 'rcpt_pending_preserved_by_journal_repair',
+      operation: 'Runtime Application',
+      scope: 'global',
+      trigger: 'reload',
+      expectedStateRevision: '0',
+      runtimeOutcome: 'pending-application',
+      summary: 'Pending Application',
+    });
+    await appendReceipt('global', pending, opts);
+    appendFileSync(getReceiptsJournalPath('global', opts), '{ malformed journal line\n', 'utf-8');
+
+    const repaired = await repairBridgeState('global', opts);
+
+    expect(repaired.success).toBe(true);
+    const journal = await readReceiptJournal('global', opts);
+    expect(journal.isDegraded).toBe(false);
+    expect(journal.activeChains).toHaveLength(1);
+    expect(journal.activeChains[0]?.rootReceiptId).toBe(pending.id);
+    expect((await checkGlobalPendingBarrier(opts)).active).toBe(true);
   });
 });

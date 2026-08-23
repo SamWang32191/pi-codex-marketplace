@@ -263,6 +263,56 @@ async function rejectedAsStale(preflight: PluginInstallationPreflight, outcome: 
   };
 }
 
+/**
+ * Finalize a disclosed Installation/Enablement preflight after presentation cancellation.
+ * Esc declines the transaction itself, including Install Disabled, and must never commit.
+ */
+export async function declinePluginInstallation(
+  preflight: PluginInstallationPreflight,
+  opts: InstallationFlowOptions = {},
+): Promise<InstallationOutcome> {
+  if (preflight.terminal) {
+    const result = await blocked(
+      preflight.operation,
+      preflight.scope,
+      preflight.registration.id,
+      preflight.plugin.marketplaceEntryId,
+      preflight.stateRevision,
+      [operationFinding(
+        preflight.scope,
+        CODE.ATTEMPT_IN_PROGRESS,
+        RULE.ATTEMPT_IN_PROGRESS,
+        'attempt already reached a terminal outcome',
+        'attempt',
+        'admission',
+      )],
+      null,
+      opts,
+    );
+    if (!result.ok) return result.outcome;
+    throw new Error('unreachable blocked Installation cancellation result');
+  }
+
+  preflight.terminal = true;
+  preflight.fence.release();
+  const receipt = createReceipt({
+    operation: receiptOperation(preflight.operation),
+    scope: preflight.scope,
+    trigger: triggerFor(
+      preflight.operation,
+      preflight.registration.id,
+      preflight.plugin.marketplaceEntryId,
+    ),
+    expectedStateRevision: preflight.stateRevision,
+    validationSnapshot: preflight.snapshot.fingerprint,
+    summary: 'Declined',
+    findings: preflight.findings,
+    stateChanged: false,
+  });
+  await appendReceipt(preflight.scope, receipt, opts);
+  return { status: 'declined', receipt };
+}
+
 /** Confirm either path. Enabled state is impossible without explicit Activation Confirmation. */
 export async function confirmPluginInstallation(
   preflight: PluginInstallationPreflight,

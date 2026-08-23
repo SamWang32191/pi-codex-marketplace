@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import {
   appendReceipt,
@@ -67,6 +67,7 @@ describe('Receipt Journal — Storage & Bounded Retention', () => {
     await appendReceipt('global', rcpt1, { agentDir, cwd: projectDir });
 
     const journalPath = getReceiptsJournalPath('global', { agentDir, cwd: projectDir });
+    mkdirSync(dirname(journalPath), { recursive: true });
     // Manually inject corrupted line
     writeFileSync(journalPath, readFileSync(journalPath, 'utf-8') + '{ invalid json\n', 'utf-8');
 
@@ -86,6 +87,25 @@ describe('Receipt Journal — Storage & Bounded Retention', () => {
     expect(journal.receipts.map((r) => r.id)).toEqual(['rcpt_1', 'rcpt_2']);
     expect(journal.corruptedLineCount).toBe(1);
     expect(journal.findings.some((f) => f.code === 'RECEIPT_CORRUPT')).toBe(true);
+  });
+
+  it('treats structurally incomplete Receipt JSON as a degraded line', async () => {
+    const journalPath = getReceiptsJournalPath('global', { agentDir, cwd: projectDir });
+    mkdirSync(dirname(journalPath), { recursive: true });
+    writeFileSync(
+      journalPath,
+      `${JSON.stringify({ id: 'rcpt_incomplete', summary: 'Blocked' })}\n`,
+      'utf-8',
+    );
+
+    const journal = await readReceiptJournal('global', { agentDir, cwd: projectDir });
+
+    expect(journal.receipts).toEqual([]);
+    expect(journal.corruptedLineCount).toBe(1);
+    expect(journal.isDegraded).toBe(true);
+    expect(journal.findings).toEqual([
+      expect.objectContaining({ code: 'RECEIPT_CORRUPT' }),
+    ]);
   });
 
   it('prunes resolved receipts outside active chains while keeping ALL active recovery chains intact', async () => {

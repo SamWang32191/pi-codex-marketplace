@@ -228,6 +228,25 @@ describe('Plugin Installation lifecycle', () => {
     preflight.preflight.fence.release();
   });
 
+  it('escapes Marketplace-controlled identities in TUI entry choices', async () => {
+    writeFileSync(
+      join(env.marketplace, '.agents', 'plugins', 'marketplace.json'),
+      JSON.stringify({
+        name: 'acme\nFORGED-MARKET',
+        plugins: [{ source: { source: 'local', path: './plugins/release-helper' } }],
+      }),
+    );
+
+    const choices = await entryChoices(
+      { id: registrationId, sourceKind: 'local', source: env.marketplace },
+      'global',
+      { cwd: env.projectDir },
+    );
+
+    expect(choices[0]?.label).toContain('acme\\nFORGED-MARKET');
+    expect(choices[0]?.label).not.toContain('acme\nFORGED-MARKET');
+  });
+
   it('fails closed when a Skill Resource symlink targets snapshot-excluded content', () => {
     const skill = join(env.marketplace, 'plugins', 'release-helper', 'skills', 'release-notes');
     mkdirSync(join(skill, 'node_modules'), { recursive: true });

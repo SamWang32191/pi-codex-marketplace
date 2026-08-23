@@ -7,84 +7,83 @@
  * The flow logic itself lives in src/registration/flow.ts (the tested seam); this file renders it.
  */
 
-import type { Theme } from '@earendil-works/pi-coding-agent';
 import type { ExtensionCommandContext, ExtensionUIContext } from '@earendil-works/pi-coding-agent';
-import { truncateToWidth } from '@earendil-works/pi-tui';
 
 import {
   preflightLocalRegistration,
   confirmLocalRegistration,
-  disclosureSummary,
-  type LocalRegistrationPreflight,
 } from '../../src/registration/flow.js';
-import type { ValidationFinding } from '../../src/registration/findings.js';
-import type { RegistrationOutcome } from '../../src/registration/flow.js';
-import { formatThreeOrthogonalReport, type AttemptReceipt } from '../../src/registration/receipt.js';
+import type { Scope } from '../../src/bridge-state/types.js';
+import { sortFindings, type ValidationFinding } from '../../src/registration/findings.js';
+import type { AttemptReceipt } from '../../src/registration/receipt.js';
+import { quoteTerminalText } from './terminal-presentation.js';
+import { openTransactionSheet, type TransactionSheetModel } from './transaction-sheet.js';
 
 export function formatFindings(findings: ValidationFinding[]): string[] {
-  const sorted = [...findings].sort((a, b) => {
-    const rank: Record<string, number> = { blocking: 0, warning: 1, notice: 2 };
-    const phaseRank: Record<string, number> = { admission: 0, identity: 1, validation: 2, persistence: 3, 'post-commit': 4 };
-    return (
-      (rank[a.classification] ?? 9) - (rank[b.classification] ?? 9) ||
-      (phaseRank[a.phase] ?? 9) - (phaseRank[b.phase] ?? 9) ||
-      a.target.localeCompare(b.target) ||
-      a.pointer.localeCompare(b.pointer) ||
-      a.rule.localeCompare(b.rule)
-    );
-  });
-  return sorted.map((f) => {
-    const cls = f.classification === 'blocking' ? 'BLOCKING' : f.classification === 'warning' ? 'WARNING' : 'NOTICE';
-    const ptr = f.pointer ? ` @${f.pointer}` : '';
-    return `  [${cls}] ${f.code} (${f.rule}) · ${f.target}${ptr} — ${f.outcome}`;
+  return sortFindings(findings).map((f) => {
+    return `Finding classification ${f.classification} | scope ${f.scope} | phase ${f.phase} | ` +
+      `target ${f.target} | pointer ${quoteTerminalText(f.pointer || '(none)')} | ` +
+      `code ${quoteTerminalText(f.code)} | rule ${quoteTerminalText(f.rule)} | ` +
+      `outcome ${quoteTerminalText(f.outcome)}`;
   });
 }
 
-/** Static disclosure view (mirrors the scaffold component pattern). */
-class DisclosureComponent {
-  private lines: string[];
-  private theme: Theme;
-  private onClose: () => void;
+export function validationDisclosureLines(findings: ValidationFinding[]): string[] {
+  const counts = {
+    blocking: findings.filter((finding) => finding.classification === 'blocking').length,
+    warning: findings.filter((finding) => finding.classification === 'warning').length,
+    notice: findings.filter((finding) => finding.classification === 'notice').length,
+  };
+  const verdict = counts.blocking > 0
+    ? 'Blocked'
+    : counts.warning > 0 || counts.notice > 0
+      ? 'Passed with diagnostics'
+      : 'Passed';
+  return [
+    `Verdict ${verdict}`,
+    `Findings ${counts.blocking} blocking · ${counts.warning} warning · ${counts.notice} notice`,
+  ];
+}
 
-  constructor(lines: string[], theme: Theme, onClose: () => void) {
-    this.lines = lines;
-    this.theme = theme;
-    this.onClose = onClose;
-  }
+/** Verdict/count preview followed by the complete, canonically sorted disclosure. */
+export function fullValidationDisclosureLines(findings: ValidationFinding[]): string[] {
+  return [
+    ...validationDisclosureLines(findings),
+    ...formatFindings(findings),
+  ];
+}
 
-  handleInput(data: string): void {
-    if (data) this.onClose();
-  }
-
-  render(width: number): string[] {
-    const th = this.theme;
-    const out: string[] = [];
-    out.push('');
-    out.push(truncateToWidth(th.fg('accent', th.bold(' Validation Disclosure ')) + th.fg('borderMuted', '─'.repeat(Math.max(0, width - 22))), width));
-    for (const ln of this.lines) {
-      out.push(truncateToWidth(`  ${ln}`, width));
-    }
-    out.push('');
-    out.push(truncateToWidth(`  ${th.fg('dim', 'Any key: continue to Registration Confirmation (Default No) · Confirm is snapshot + State Revision bound')}`, width));
-    out.push('');
-    return out;
-  }
-
-  invalidate(): void {}
+async function transactionStep(
+  ctx: ExtensionCommandContext,
+  model: TransactionSheetModel,
+  cancel?: () => void | Promise<void>,
+): Promise<boolean> {
+  if (await openTransactionSheet(ctx, model) === 'continue') return true;
+  if (cancel) await cancel();
+  else ctx.ui.notify('已取消 Transaction；Bridge State 未變更。', 'info');
+  return false;
 }
 
 /** One interactive registration flow invocation. */
-export async function runLocalRegistrationFlow(ctx: ExtensionCommandContext): Promise<void> {
+export async function runLocalRegistrationFlow(
+  ctx: ExtensionCommandContext,
+  target: { scope?: Scope } = {},
+): Promise<void> {
   const ui: ExtensionUIContext = ctx.ui;
-  const scopeChoice = await ui.select('Marketplace Registration — 選擇 Scope', [
-    'Global Scope',
-    'Project Scope',
-  ]);
-  if (!scopeChoice) {
-    ui.notify('已取消 Registration', 'info');
-    return;
+  let scope = target.scope;
+  if (!scope) {
+    const scopeLabels = new Map<string, Scope>([
+      ['Global Scope', 'global'],
+      ['Project Scope', 'project'],
+    ]);
+    const scopeChoice = await ui.select('Marketplace Registration — 選擇 Scope', [...scopeLabels.keys()]);
+    if (!scopeChoice) {
+      ui.notify('已取消 Registration', 'info');
+      return;
+    }
+    scope = scopeLabels.get(scopeChoice);
+    if (!scope) return;
   }
-  const scope: 'global' | 'project' = scopeChoice.startsWith('Global') ? 'global' : 'project';
 
   const rootPath = await ui.input('本地 Marketplace Root（需含 .agents/plugins/marketplace.json）', '.');
   if (!rootPath) {
@@ -92,52 +91,106 @@ export async function runLocalRegistrationFlow(ctx: ExtensionCommandContext): Pr
     return;
   }
 
+  const actionLabel = 'Local Marketplace Registration';
+  if (!await transactionStep(ctx, {
+    step: 'Intent',
+    actionLabel,
+    authority: scope,
+    target: rootPath,
+    details: [`Source ${quoteTerminalText(rootPath)}`],
+  })) return;
+
   const opts = { cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() };
   const res = await preflightLocalRegistration(scope, rootPath, opts);
   if (!res.ok) {
-    reportOutcome(ctx, res.outcome);
+    await reportOutcome(ctx, res.outcome);
     return;
   }
 
   const pf = res.preflight;
-  // Validation Disclosure → confirmation
-  const lines = [
-    ...disclosureSummary(pf).split('\n'),
-    '',
-    ...formatFindings(pf.findings),
+  const validationDetails = [
+    `Registration ID ${quoteTerminalText(pf.registrationId)}`,
+    `Source ${quoteTerminalText(pf.canonicalPath)}`,
+    `Marketplace ${quoteTerminalText(pf.marketplaceName)}`,
+    `Entries ${pf.catalog.entries.length} (` +
+      `${pf.catalog.entries.filter((entry) => entry.available).length} locatable / ` +
+      `${pf.catalog.entries.filter((entry) => !entry.available).length} unavailable)`,
+    `Compatibility Profile ${quoteTerminalText(pf.snapshot.profile)}`,
+    `Ruleset ${quoteTerminalText(pf.snapshot.ruleset)}`,
+    `Validation Budget ${quoteTerminalText(pf.snapshot.budget)}`,
+    ...fullValidationDisclosureLines(pf.findings),
+    ...pf.catalog.entries.map((entry) =>
+      `Entry ${quoteTerminalText(entry.entryId)} ${quoteTerminalText(entry.name ?? '(unnamed)')} ${quoteTerminalText(entry.available ? 'locatable' : entry.unavailableReason ?? 'unavailable')}`,
+    ),
   ];
-  const disclosure: string[] = lines;
-
-  if (ctx.mode !== 'tui') {
-    ui.notify('Registration 需要 TUI 模式; disclosure:\n' + lines.join('\n'), 'info');
-  } else {
-    await ui.custom<void>(
-      (_tui, theme, _kb, done) =>
-        new DisclosureComponent(disclosure, theme, () => done(undefined)),
-    );
-  }
+  const boundModel = {
+    actionLabel,
+    authority: scope,
+    target: pf.registrationId,
+    stateRevision: pf.stateRevision,
+    validationSnapshot: pf.snapshot.fingerprint,
+  };
+  const cancel = async () => {
+    await reportOutcome(ctx, await confirmLocalRegistration(pf, false, opts));
+  };
+  if (!await transactionStep(ctx, {
+    ...boundModel,
+    step: 'Validation',
+    details: validationDetails,
+  }, cancel)) return;
+  if (!await transactionStep(ctx, {
+    ...boundModel,
+    step: 'Consent',
+    details: ['Registration Confirmation: separate Default No host gate'],
+  }, cancel)) return;
 
   const yes = await ui.confirm(
     'Registration Confirmation — 預設 No（綁定 State Revision + Validation Snapshot，不可記憶、不可批次）',
-    `確認註冊 ${pf.canonicalPath} 至 ${scope}？\n${disclosure.slice(0, 8).join('\n')}`,
+    `確認 Registration ID ${quoteTerminalText(pf.registrationId)}：` +
+      `${quoteTerminalText(pf.canonicalPath)} 至 ${scope}？\n` +
+      `Validation Disclosure:\n${validationDetails.join('\n')}`,
   );
 
+  if (yes) {
+    if (!await transactionStep(ctx, {
+      ...boundModel,
+      step: 'Plan',
+      details: ['Update Plan: N/A — new Registration has no replacement plan'],
+    }, cancel)) return;
+    if (!await transactionStep(ctx, {
+      ...boundModel,
+      step: 'Commit',
+      details: [
+        `Persist Registration ID ${quoteTerminalText(pf.registrationId)}`,
+        `Write authority ${scope} at State Revision ${quoteTerminalText(pf.stateRevision)}`,
+      ],
+    }, cancel)) return;
+  }
+
   const outcome = await confirmLocalRegistration(pf, yes, opts);
-  reportOutcome(ctx, outcome);
+  await reportOutcome(ctx, outcome);
 }
 
 /** Render the three-orthogonal outcome (persistence / findings / runtime) as an Attempt Summary + Recovery Action. */
-export function reportOutcome(
-  ctx: { ui: { notify(message: string, type?: 'info' | 'warning' | 'error'): void } },
+export async function reportOutcome(
+  ctx: Pick<ExtensionCommandContext, 'mode' | 'hasUI' | 'ui'>,
   outcome: { receipt: AttemptReceipt },
-): void {
+): Promise<void> {
   const rc = outcome.receipt;
-  const report = formatThreeOrthogonalReport(rc);
   const notifyType =
     rc.summary === 'Completed' || rc.summary === 'Completed with diagnostics'
       ? 'info'
       : rc.summary === 'Declined' || rc.summary === 'Rejected as Stale'
         ? 'warning'
         : 'error';
-  ctx.ui.notify(report, notifyType);
+  await openTransactionSheet(ctx, {
+    step: 'Receipt',
+    actionLabel: rc.operation,
+    authority: rc.scope,
+    target: rc.trigger,
+    stateRevision: rc.observedStateRevision ?? rc.targetStateRevision ?? rc.expectedStateRevision,
+    validationSnapshot: rc.validationSnapshot,
+    receipt: rc,
+  });
+  ctx.ui.notify(`Attempt Summary: ${rc.summary} · Receipt ${quoteTerminalText(rc.id)}`, notifyType);
 }

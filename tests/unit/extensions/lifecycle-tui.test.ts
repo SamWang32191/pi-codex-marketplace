@@ -78,8 +78,45 @@ describe('Update Plan Checklist TUI helpers', () => {
     expect(summary).toContain('aaaa');
     expect(summary).toContain('cccc');
     expect(summary).toContain('/plugins/0');
-    expect(summary).toContain('unavailable (invalid manifest)');
+    expect(summary).toContain('unavailable ("invalid manifest")');
     // Marketplace-controlled text is quoted so values cannot forge disclosure lines.
     expect(summary).toContain('"kept"');
+  });
+
+  it('discloses complete findings in canonical order instead of counts alone', () => {
+    const candidate = candidateWith([]);
+    candidate.inspection.findings = [
+      {
+        code: 'NOTICE_CODE',
+        classification: 'notice',
+        phase: 'post-commit',
+        target: 'entry',
+        scope: 'global',
+        pointer: '/z',
+        rule: 'NOTICE-01',
+        outcome: 'notice outcome',
+      },
+      {
+        code: 'BLOCKING_CODE',
+        classification: 'blocking',
+        phase: 'validation',
+        target: 'catalog',
+        scope: 'global',
+        pointer: '/a',
+        rule: 'BLOCK-01',
+        outcome: 'blocking outcome',
+      },
+    ];
+
+    const summary = candidateSummary(candidate);
+    expect(summary).toContain(
+      'Finding classification blocking | scope global | phase validation | target catalog | ' +
+        'pointer "/a" | code "BLOCKING_CODE" | rule "BLOCK-01" | outcome "blocking outcome"',
+    );
+    expect(summary).toContain(
+      'Finding classification notice | scope global | phase post-commit | target entry | ' +
+        'pointer "/z" | code "NOTICE_CODE" | rule "NOTICE-01" | outcome "notice outcome"',
+    );
+    expect(summary.indexOf('BLOCKING_CODE')).toBeLessThan(summary.indexOf('NOTICE_CODE'));
   });
 });
