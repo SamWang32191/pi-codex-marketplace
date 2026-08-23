@@ -9,6 +9,7 @@
 import { createHash } from 'node:crypto';
 import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
+import { TextDecoder } from 'node:util';
 
 import { parseFrontmatter } from '@earendil-works/pi-coding-agent';
 import { CST, Lexer, isCollection, parseDocument, visit } from 'yaml';
@@ -405,7 +406,13 @@ function loadAgentProfile(
       );
     }
     capture.add(`agent-profile:${skillName}`, read.bytes);
-    return validateAgentProfile(read.bytes.toString('utf8'), pointer, opts);
+    let text: string;
+    try {
+      text = new TextDecoder('utf-8', { fatal: true }).decode(read.bytes);
+    } catch {
+      return invalidAgentProfile(opts, pointer);
+    }
+    return validateAgentProfile(text, pointer, opts);
   } catch {
     capture.add(`agent-profile-error:${skillName}`, pointer);
     return {

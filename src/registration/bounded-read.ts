@@ -9,9 +9,23 @@ export type BoundedHashResult =
   | { ok: true; bytesRead: number; contentHash: string }
   | { ok: false; observedBytes: number };
 
+function regularFileOpenFlags(): number {
+  const noFollow: unknown = constants.O_NOFOLLOW;
+  const nonBlock: unknown = constants.O_NONBLOCK;
+  if (
+    typeof noFollow !== 'number'
+    || noFollow === 0
+    || typeof nonBlock !== 'number'
+    || nonBlock === 0
+  ) {
+    throw new Error('secure non-blocking regular-file open is unavailable on this platform');
+  }
+  return constants.O_RDONLY | noFollow | nonBlock;
+}
+
 /** Read at most `maxBytes + 1` bytes from one regular file without a stat/read allocation race. */
 export function readBoundedFileSync(path: string, maxBytes: number): BoundedReadResult {
-  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const descriptor = openSync(path, regularFileOpenFlags());
   try {
     const stat = fstatSync(descriptor);
     if (!stat.isFile()) throw new TypeError('not a regular file');
@@ -33,7 +47,7 @@ export function readBoundedFileSync(path: string, maxBytes: number): BoundedRead
 
 /** Hash a regular file incrementally while reading at most `maxBytes + 1` bytes. */
 export function hashBoundedFileSync(path: string, maxBytes: number): BoundedHashResult {
-  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const descriptor = openSync(path, regularFileOpenFlags());
   try {
     const stat = fstatSync(descriptor);
     if (!stat.isFile()) throw new TypeError('not a regular file');

@@ -293,6 +293,30 @@ describe('Compatibility Profile v1', () => {
     ]));
   });
 
+  it('rejects Skill Agent Profile bytes that are not valid UTF-8', () => {
+    const root = pluginRoot();
+    const profileDirectory = join(root, 'skills', 'release-notes', 'agents');
+    mkdirSync(profileDirectory, { recursive: true });
+    writeFileSync(
+      join(profileDirectory, 'openai.yaml'),
+      Buffer.concat([
+        Buffer.from('interface:\n  display_name: "'),
+        Buffer.from([0xff]),
+        Buffer.from('"\n'),
+      ]),
+    );
+
+    const result = classifyPlugin(root, {
+      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+    });
+
+    expect(result.classification).toBe('invalid');
+    expect(result.plugin).toBeUndefined();
+    expect(result.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'SKILL_AGENT_PROFILE_INVALID' }),
+    ]));
+  });
+
   it('rejects a Skill Agent Profile above its dedicated byte budget before parsing', () => {
     const root = pluginRoot();
     const profileDirectory = join(root, 'skills', 'release-notes', 'agents');
