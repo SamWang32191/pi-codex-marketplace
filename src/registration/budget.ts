@@ -7,7 +7,7 @@
  * never partial or best-effort validation.
  */
 
-export const VALIDATION_RULESET = 'ruleset:v1';
+export const VALIDATION_RULESET = 'ruleset:v2';
 export const VALIDATION_BUDGET = 'budget:v1';
 /** Compatibility Profile reference bound into every snapshot (full profile contract is #19). */
 export const COMPATIBILITY_PROFILE = 'profile:v1';

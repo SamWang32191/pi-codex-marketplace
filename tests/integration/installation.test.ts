@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -14,9 +15,26 @@ import {
   preflightPluginEnable,
 } from '../../src/installation/flow.js';
 import { inspectMarketplaceEntries } from '../../src/installation/inspection.js';
+import { buildLocalSnapshot, type ValidationSnapshot } from '../../src/registration/snapshot.js';
+import { localSourceKey } from '../../src/registration/source-key.js';
 import { entryChoices } from '../../extensions/pi/installation.js';
 
 const PINNED_CODEX_PLUGINS_COMMIT = '98e78caf2b658dc5ccfd77720b0849dff9b7e99a';
+
+function legacyRulesetV1Fingerprint(snapshot: ValidationSnapshot): string {
+  const hash = createHash('sha256');
+  for (const entry of snapshot.entries) {
+    const parts = [entry.relPath, entry.type, String(entry.mode), String(entry.size)];
+    if (entry.type === 'symlink') parts.push(entry.symlinkTarget ?? '');
+    if (entry.type === 'file') parts.push(entry.contentHash ?? '');
+    hash.update(parts.join('\u001f'));
+  }
+  hash.update('\u001e');
+  for (const binding of [snapshot.sourceKey.key, snapshot.profile, 'ruleset:v1', snapshot.budget]) {
+    hash.update(`${binding}\u001f`);
+  }
+  return hash.digest('hex');
+}
 
 function makeEnv() {
   const root = mkdtempSync(join(tmpdir(), 'installation-integration-'));
@@ -162,6 +180,26 @@ describe('Plugin Installation lifecycle', () => {
 
     const outcome = await confirmPluginInstallation(preflight.preflight, 'disabled', opts);
     expect(outcome.status).toBe('rejected-as-stale');
+  });
+
+  it('requires Marketplace Refresh for a persisted ruleset:v1 Validation Snapshot', () => {
+    const sourceKey = localSourceKey(env.marketplace).sourceKey!;
+    const currentSnapshot = buildLocalSnapshot(env.marketplace, sourceKey, 'global').snapshot!;
+    const legacyFingerprint = legacyRulesetV1Fingerprint(currentSnapshot);
+    expect(currentSnapshot.ruleset).toBe('ruleset:v2');
+    expect(legacyFingerprint).not.toBe(currentSnapshot.fingerprint);
+
+    const inspected = inspectMarketplaceEntries({
+      id: registrationId,
+      sourceKind: 'local',
+      source: env.marketplace,
+      validationSnapshot: legacyFingerprint,
+    }, 'global');
+
+    expect(inspected.entries[0]!.unavailableReason).toContain('Marketplace Refresh');
+    expect(inspected.entries[0]!.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'REJECTED_AS_STALE', classification: 'blocking' }),
+    ]));
   });
 
   it('rejects installation as stale when State Revision advances after confirmation', async () => {
