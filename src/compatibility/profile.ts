@@ -9,10 +9,13 @@
 import { createHash } from 'node:crypto';
 import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
+import { TextDecoder } from 'node:util';
 
 import { parseFrontmatter } from '@earendil-works/pi-coding-agent';
+import { CST, Lexer, isCollection, parseDocument, visit } from 'yaml';
 
 import type { Scope } from '../bridge-state/types.js';
+import { readBoundedFileSync } from '../registration/bounded-read.js';
 import { BUDGET } from '../registration/budget.js';
 import { CODE, RULE, blocking, sortFindings, warning, type ValidationFinding } from '../registration/findings.js';
 
@@ -39,7 +42,7 @@ export interface ClassificationResult {
   plugin?: CompatiblePlugin;
   /** Valid manifest identity even when the complete Plugin is Invalid/Incompatible. */
   identity?: string;
-  /** Hash of the exact manifest, descriptors, and resources used to derive this result. */
+  /** Hash of the exact manifest, descriptors, Agent Profiles, and resources used to derive this result. */
   captureFingerprint: string;
   findings: ValidationFinding[];
 }
@@ -53,6 +56,14 @@ export interface ClassificationOptions {
 const KEBAB = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const UNSUPPORTED_COMPONENTS = new Set(['apps', 'commands', 'hooks', 'mcp', 'mcpServers', 'servers', 'extensions']);
 const INERT_MANIFEST_FIELDS = new Set(['version', 'description', 'author', 'homepage', 'repository', 'license', 'keywords', 'interface']);
+const AGENT_INTERFACE_STRING_FIELDS = new Set([
+  'brand_color',
+  'default_prompt',
+  'display_name',
+  'icon_large',
+  'icon_small',
+  'short_description',
+]);
 
 function finding(
   opts: ClassificationOptions,
@@ -75,6 +86,10 @@ function parseDescriptor(text: string): { frontmatter?: Record<string, unknown>;
   } catch {
     return {};
   }
+}
+
+function isMapping(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /** Read the authoritative manifest identity without projecting a Compatible Plugin. */
@@ -103,6 +118,320 @@ class MaterialCapture {
   }
 }
 
+interface AgentProfileResult {
+  invocationPolicy?: InvocationPolicy;
+  findings: ValidationFinding[];
+}
+
+function agentProfileBudgetExceeded(
+  opts: ClassificationOptions,
+  pointer: string,
+  outcome: string,
+): AgentProfileResult {
+  return {
+    findings: [finding(
+      opts,
+      CODE.BUDGET_EXCEEDED,
+      RULE.BUDGET_EXCEEDED,
+      'plugin',
+      pointer,
+      outcome,
+    )],
+  };
+}
+
+function invalidAgentProfile(opts: ClassificationOptions, pointer: string): AgentProfileResult {
+  return {
+    findings: [finding(
+      opts,
+      CODE.SKILL_AGENT_PROFILE_INVALID,
+      RULE.SKILL_AGENT_PROFILE_INVALID,
+      'skill',
+      pointer,
+      'Skill Agent Profile must be valid YAML that parses to a mapping',
+    )],
+  };
+}
+
+function agentProfileYamlComplexityViolation(text: string): string | undefined {
+  let tokens = 0;
+  let flowDepth = 0;
+  let inlineBlockDepth = 0;
+  let atLineStart = true;
+  let indentation = 0;
+  const indentationStack: number[] = [];
+
+  for (const lexeme of new Lexer().lex(text)) {
+    tokens += 1;
+    if (tokens > BUDGET.maxAgentProfileYamlTokens) {
+      return `YAML token count exceeds ${BUDGET.maxAgentProfileYamlTokens}`;
+    }
+    const type = CST.tokenType(lexeme);
+    if (type === 'newline') {
+      atLineStart = true;
+      indentation = 0;
+      inlineBlockDepth = 0;
+      continue;
+    }
+    if (atLineStart && type === 'space' && lexeme.startsWith(' ')) {
+      indentation += lexeme.length;
+      continue;
+    }
+    if (atLineStart && type === 'comment') continue;
+    if (atLineStart) {
+      while (
+        indentationStack.length > 0
+        && indentationStack[indentationStack.length - 1]! >= indentation
+      ) {
+        indentationStack.pop();
+      }
+      indentationStack.push(indentation);
+      if (indentationStack.length > BUDGET.maxAgentProfileYamlDepth) {
+        return `YAML block depth exceeds ${BUDGET.maxAgentProfileYamlDepth}`;
+      }
+      atLineStart = false;
+    }
+
+    if (type === 'flow-map-start' || type === 'flow-seq-start') {
+      flowDepth += 1;
+      if (flowDepth > BUDGET.maxAgentProfileYamlDepth) {
+        return `YAML flow depth exceeds ${BUDGET.maxAgentProfileYamlDepth}`;
+      }
+    } else if (type === 'flow-map-end' || type === 'flow-seq-end') {
+      flowDepth = Math.max(0, flowDepth - 1);
+    } else if (
+      flowDepth === 0
+      && (type === 'seq-item-ind' || type === 'explicit-key-ind' || type === 'map-value-ind')
+    ) {
+      inlineBlockDepth += 1;
+      if (inlineBlockDepth > BUDGET.maxAgentProfileYamlDepth) {
+        return `YAML inline block depth exceeds ${BUDGET.maxAgentProfileYamlDepth}`;
+      }
+    }
+  }
+  return undefined;
+}
+
+function validateAgentProfile(text: string, pointer: string, opts: ClassificationOptions): AgentProfileResult {
+  const findings: ValidationFinding[] = [];
+  let document: ReturnType<typeof parseDocument>;
+  try {
+    const violation = agentProfileYamlComplexityViolation(text);
+    if (violation) {
+      return agentProfileBudgetExceeded(
+        opts,
+        pointer,
+        `Skill Agent Profile exceeds Validation Budget: ${violation}`,
+      );
+    }
+    document = parseDocument(text, { logLevel: 'silent', prettyErrors: false });
+    if (document.errors.length > 0) throw document.errors[0];
+  } catch {
+    return invalidAgentProfile(opts, pointer);
+  }
+
+  let nodeCount = 0;
+  let astViolation: string | undefined;
+  visit(document, (_key, node, path) => {
+    nodeCount += 1;
+    if (nodeCount > BUDGET.maxAgentProfileYamlNodes) {
+      astViolation = `YAML node count exceeds ${BUDGET.maxAgentProfileYamlNodes}`;
+      return visit.BREAK;
+    }
+    const collectionDepth = path.reduce(
+      (depth, ancestor) => depth + (isCollection(ancestor) ? 1 : 0),
+      isCollection(node) ? 1 : 0,
+    );
+    if (collectionDepth > BUDGET.maxAgentProfileYamlDepth) {
+      astViolation = `YAML AST depth exceeds ${BUDGET.maxAgentProfileYamlDepth}`;
+      return visit.BREAK;
+    }
+    return undefined;
+  });
+  if (astViolation) {
+    return agentProfileBudgetExceeded(
+      opts,
+      pointer,
+      `Skill Agent Profile exceeds Validation Budget: ${astViolation}`,
+    );
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = document.toJS({ maxAliasCount: BUDGET.maxAgentProfileYamlAliases });
+  } catch (error) {
+    if (
+      error instanceof ReferenceError
+      && error.message === 'Excessive alias count indicates a resource exhaustion attack'
+    ) {
+      return agentProfileBudgetExceeded(
+        opts,
+        pointer,
+        `Skill Agent Profile exceeds Validation Budget: YAML alias expansion exceeds ${BUDGET.maxAgentProfileYamlAliases}`,
+      );
+    }
+    return invalidAgentProfile(opts, pointer);
+  }
+  if (!isMapping(parsed)) {
+    return invalidAgentProfile(opts, pointer);
+  }
+  const profile = parsed;
+
+  for (const key of Object.keys(profile).sort((a, b) => a.localeCompare(b))) {
+    if (key === 'interface' || key === 'policy') continue;
+    findings.push(finding(
+      opts,
+      CODE.UNSUPPORTED_ACTIVE_COMPONENT,
+      RULE.UNSUPPORTED_ACTIVE_COMPONENT,
+      'skill',
+      `${pointer}#/${key}`,
+      key === 'dependencies'
+        ? 'Compatibility Profile v1 does not support Skill Agent Profile dependencies'
+        : `Unknown Skill Agent Profile field '${key}' may declare active behaviour and is fail-closed`,
+    ));
+  }
+
+  const interfaceMetadata = profile.interface;
+  if (isMapping(interfaceMetadata)) {
+    for (const [key, value] of Object.entries(interfaceMetadata).sort(([a], [b]) => a.localeCompare(b))) {
+      if (AGENT_INTERFACE_STRING_FIELDS.has(key) && typeof value === 'string' && value.trim()) continue;
+      findings.push(warning({
+        code: CODE.INERT_METADATA_IGNORED,
+        rule: 'COMP-W01',
+        target: 'skill',
+        pointer: `${pointer}#/interface/${key}`,
+        outcome: `Ignored malformed or unknown Skill Agent Profile presentation member '${key}'`,
+        scope: opts.scope,
+        phase: 'validation',
+      }));
+    }
+  } else if (Object.hasOwn(profile, 'interface')) {
+    findings.push(warning({
+      code: CODE.INERT_METADATA_IGNORED,
+      rule: 'COMP-W01',
+      target: 'skill',
+      pointer: `${pointer}#/interface`,
+      outcome: 'Ignored malformed Skill Agent Profile interface metadata',
+      scope: opts.scope,
+      phase: 'validation',
+    }));
+  }
+
+  const policy = profile.policy;
+  if (!isMapping(policy)) {
+    if (Object.hasOwn(profile, 'policy')) {
+      findings.push(finding(
+        opts,
+        CODE.SKILL_AGENT_PROFILE_INVALID,
+        RULE.SKILL_AGENT_PROFILE_INVALID,
+        'skill',
+        `${pointer}#/policy`,
+        'Skill Agent Profile policy must be a mapping when declared',
+      ));
+    }
+    return { findings };
+  }
+
+  for (const key of Object.keys(policy).sort((a, b) => a.localeCompare(b))) {
+    if (key === 'allow_implicit_invocation') continue;
+    findings.push(finding(
+      opts,
+      CODE.UNSUPPORTED_ACTIVE_COMPONENT,
+      RULE.UNSUPPORTED_ACTIVE_COMPONENT,
+      'skill',
+      `${pointer}#/policy/${key}`,
+      `Unknown Skill Agent Profile policy '${key}' may declare active behaviour and is fail-closed`,
+    ));
+  }
+  const allowImplicit = policy.allow_implicit_invocation;
+  if (typeof allowImplicit === 'boolean') {
+    return { invocationPolicy: allowImplicit ? 'implicit' : 'explicit', findings };
+  }
+  if (Object.hasOwn(policy, 'allow_implicit_invocation')) {
+    findings.push(finding(
+      opts,
+      CODE.SKILL_AGENT_PROFILE_INVALID,
+      RULE.SKILL_AGENT_PROFILE_INVALID,
+      'skill',
+      `${pointer}#/policy/allow_implicit_invocation`,
+      'allow_implicit_invocation must be a boolean when declared',
+    ));
+  }
+  return { findings };
+}
+
+function loadAgentProfile(
+  pluginRoot: string,
+  skillDirectory: string,
+  skillName: string,
+  opts: ClassificationOptions,
+  capture: MaterialCapture,
+): AgentProfileResult {
+  const pointer = `skills/${skillName}/agents/openai.yaml`;
+  const profilePath = join(skillDirectory, 'agents', 'openai.yaml');
+  try {
+    lstatSync(profilePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { findings: [] };
+    capture.add(`agent-profile-error:${skillName}`, pointer);
+    return {
+      findings: [finding(
+        opts,
+        CODE.SKILL_AGENT_PROFILE_INVALID,
+        RULE.SKILL_AGENT_PROFILE_INVALID,
+        'skill',
+        pointer,
+        'Skill Agent Profile cannot be inspected safely',
+      )],
+    };
+  }
+
+  try {
+    const canonicalPluginRoot = realpathSync.native(pluginRoot);
+    const canonicalSkillDirectory = realpathSync.native(skillDirectory);
+    const canonicalProfilePath = realpathSync.native(profilePath);
+    if (
+      !isWithin(canonicalSkillDirectory, canonicalProfilePath)
+      || isSnapshotExcluded(canonicalPluginRoot, canonicalProfilePath)
+    ) {
+      throw new TypeError('not a snapshot-covered regular file owned by the Skill');
+    }
+    const read = readBoundedFileSync(canonicalProfilePath, BUDGET.maxAgentProfileBytes);
+    if (!read.ok) {
+      capture.add(`agent-profile-budget:${skillName}`, `${pointer}:${read.observedBytes}`);
+      return agentProfileBudgetExceeded(
+        opts,
+        pointer,
+        `Skill Agent Profile exceeds Validation Budget: ${read.observedBytes} bytes > ${BUDGET.maxAgentProfileBytes}`,
+      );
+    }
+    capture.add(`agent-profile:${skillName}`, read.bytes);
+    let text: string;
+    try {
+      text = new TextDecoder('utf-8', { fatal: true }).decode(read.bytes);
+    } catch {
+      return invalidAgentProfile(opts, pointer);
+    }
+    return validateAgentProfile(text, pointer, opts);
+  } catch {
+    capture.add(`agent-profile-error:${skillName}`, pointer);
+    return {
+      findings: [finding(
+        opts,
+        CODE.SKILL_AGENT_PROFILE_INVALID,
+        RULE.SKILL_AGENT_PROFILE_INVALID,
+        'skill',
+        pointer,
+        'Skill Agent Profile must resolve within its owning Skill to a readable regular file covered by the Validation Snapshot',
+      )],
+    };
+  }
+}
+
+function descriptorInvocationPolicy(value: unknown): InvocationPolicy | undefined {
+  return typeof value === 'boolean' ? (value ? 'explicit' : 'implicit') : undefined;
+}
+
 function isWithin(root: string, target: string): boolean {
   return target === root || target.startsWith(root.endsWith(sep) ? root : root + sep);
 }
@@ -128,6 +457,7 @@ function resourcesIn(root: string, skillDirectory: string, capture: MaterialCapt
       const path = join(directory, entry.name);
       if (entry.isDirectory()) walk(path, next, depth + 1);
       else {
+        if (next === 'agents/openai.yaml') continue;
         const stat = lstatSync(path);
         let chargeSize = stat.size;
         if (stat.isSymbolicLink()) {
@@ -261,16 +591,20 @@ export function classifyPlugin(root: string, opts: ClassificationOptions): Class
       if (descriptor.frontmatter?.['disable-model-invocation'] !== undefined && typeof descriptor.frontmatter['disable-model-invocation'] !== 'boolean') {
         findings.push(finding(opts, CODE.SKILL_DESCRIPTOR_INVALID, RULE.SKILL_DESCRIPTOR_INVALID, 'skill', `skills/${entry.name}/SKILL.md#/disable-model-invocation`, 'disable-model-invocation must be a boolean when declared'));
       }
-      // Pi conventionally discovers this companion as an Agent Profile. Its invocation and
-      // external-dependency declarations are active behavior, not an opaque resource.
-      try {
-        if (lstatSync(join(skillDirectory, 'agents', 'openai.yaml')).isFile()) {
-          findings.push(finding(opts, CODE.UNSUPPORTED_ACTIVE_COMPONENT, RULE.UNSUPPORTED_ACTIVE_COMPONENT, 'skill', `skills/${entry.name}/agents/openai.yaml`, 'Compatibility Profile v1 does not support Skill Agent Profiles'));
-        }
-      } catch {
-        // Optional companion is absent; the descriptor remains the only accepted declaration.
+      const agentProfile = loadAgentProfile(root, skillDirectory, entry.name, opts, capture);
+      findings.push(...agentProfile.findings);
+      const descriptorPolicy = descriptorInvocationPolicy(descriptor.frontmatter?.['disable-model-invocation']);
+      if (descriptorPolicy && agentProfile.invocationPolicy && descriptorPolicy !== agentProfile.invocationPolicy) {
+        findings.push(finding(
+          opts,
+          CODE.SKILL_AGENT_PROFILE_INVALID,
+          RULE.SKILL_AGENT_PROFILE_INVALID,
+          'skill',
+          `skills/${entry.name}/agents/openai.yaml#/policy/allow_implicit_invocation`,
+          'Skill Descriptor and Skill Agent Profile declare contradictory Invocation Policies',
+        ));
       }
-      const disabled = descriptor.frontmatter?.['disable-model-invocation'] === true;
+      const invocationPolicy = descriptorPolicy ?? agentProfile.invocationPolicy ?? 'implicit';
       const pluginId = manifest && typeof manifest.name === 'string' ? `${opts.marketplaceId}/${manifest.name}` : '';
       const resourceResult = resourcesIn(root, skillDirectory, capture);
       if (resourceResult.error) {
@@ -282,7 +616,7 @@ export function classifyPlugin(root: string, opts: ClassificationOptions): Class
         name,
         path: skillDirectory,
         resources: resourceResult.resources,
-        invocationPolicy: disabled ? 'explicit' : 'implicit',
+        invocationPolicy,
       });
     }
   }
@@ -305,7 +639,7 @@ export function classifyPlugin(root: string, opts: ClassificationOptions): Class
   const identity = manifest && typeof manifest.name === 'string' && KEBAB.test(manifest.name)
     ? `${opts.marketplaceId}/${manifest.name}`
     : undefined;
-  if (sorted.some((item) => item.code === CODE.PLUGIN_MANIFEST_INVALID || item.code === CODE.SKILL_DESCRIPTOR_INVALID)) {
+  if (sorted.some((item) => item.code === CODE.PLUGIN_MANIFEST_INVALID || item.code === CODE.SKILL_DESCRIPTOR_INVALID || item.code === CODE.SKILL_AGENT_PROFILE_INVALID)) {
     return { classification: 'invalid', identity, captureFingerprint: capture.fingerprint(), findings: sorted };
   }
   if (sorted.some((item) => item.code === CODE.UNSUPPORTED_ACTIVE_COMPONENT && item.classification === 'blocking')) {

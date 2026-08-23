@@ -1,6 +1,7 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -14,7 +15,26 @@ import {
   preflightPluginEnable,
 } from '../../src/installation/flow.js';
 import { inspectMarketplaceEntries } from '../../src/installation/inspection.js';
+import { buildLocalSnapshot, type ValidationSnapshot } from '../../src/registration/snapshot.js';
+import { localSourceKey } from '../../src/registration/source-key.js';
 import { entryChoices } from '../../extensions/pi/installation.js';
+
+const PINNED_CODEX_PLUGINS_COMMIT = '98e78caf2b658dc5ccfd77720b0849dff9b7e99a';
+
+function legacyValidationFingerprint(snapshot: ValidationSnapshot): string {
+  const hash = createHash('sha256');
+  for (const entry of snapshot.entries) {
+    const parts = [entry.relPath, entry.type, String(entry.mode), String(entry.size)];
+    if (entry.type === 'symlink') parts.push(entry.symlinkTarget ?? '');
+    if (entry.type === 'file') parts.push(entry.contentHash ?? '');
+    hash.update(parts.join('\u001f'));
+  }
+  hash.update('\u001e');
+  for (const binding of [snapshot.sourceKey.key, snapshot.profile, 'ruleset:v1', 'budget:v1']) {
+    hash.update(`${binding}\u001f`);
+  }
+  return hash.digest('hex');
+}
 
 function makeEnv() {
   const root = mkdtempSync(join(tmpdir(), 'installation-integration-'));
@@ -34,6 +54,21 @@ function makeMarketplace(root: string) {
     join(root, 'plugins', 'release-helper', 'skills', 'release-notes', 'SKILL.md'),
     '---\nname: release-notes\ndescription: Write release notes\n---\n\nWrite release notes.\n',
   );
+}
+
+function materializePinnedMarketplace(root: string): void {
+  const fixture = JSON.parse(readFileSync(
+    join(import.meta.dirname, '..', 'fixtures', 'pinned', 'codex-plugins-98e78caf.json'),
+    'utf8',
+  )) as { commit: string; encoding: string; files: Record<string, string[]> };
+  if (fixture.commit !== PINNED_CODEX_PLUGINS_COMMIT || fixture.encoding !== 'base64') {
+    throw new Error('Pinned codex-plugins fixture metadata does not match its immutable source');
+  }
+  for (const [relativePath, chunks] of Object.entries(fixture.files)) {
+    const path = join(root, relativePath);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, Buffer.from(chunks.join(''), 'base64'));
+  }
 }
 
 describe('Plugin Installation lifecycle', () => {
@@ -129,6 +164,43 @@ describe('Plugin Installation lifecycle', () => {
 
     const outcome = await confirmPluginInstallation(preflight.preflight, 'disabled', opts);
     expect(outcome.status).toBe('rejected-as-stale');
+  });
+
+  it('rejects a Skill Agent Profile change after preflight as stale', async () => {
+    const profileDirectory = join(env.marketplace, 'plugins', 'release-helper', 'skills', 'release-notes', 'agents');
+    const profilePath = join(profileDirectory, 'openai.yaml');
+    mkdirSync(profileDirectory, { recursive: true });
+    writeFileSync(profilePath, 'policy:\n  allow_implicit_invocation: true\n');
+    const opts = { agentDir: env.agentDir, cwd: env.projectDir };
+    const preflight = await preflightPluginInstallation('global', registrationId, '/plugins/0', opts);
+    expect(preflight.ok).toBe(true);
+    if (!preflight.ok) return;
+
+    writeFileSync(profilePath, 'policy:\n  allow_implicit_invocation: false\n');
+
+    const outcome = await confirmPluginInstallation(preflight.preflight, 'disabled', opts);
+    expect(outcome.status).toBe('rejected-as-stale');
+  });
+
+  it('requires Marketplace Refresh for a persisted ruleset:v1 Validation Snapshot', () => {
+    const sourceKey = localSourceKey(env.marketplace).sourceKey!;
+    const currentSnapshot = buildLocalSnapshot(env.marketplace, sourceKey, 'global').snapshot!;
+    const legacyFingerprint = legacyValidationFingerprint(currentSnapshot);
+    expect(currentSnapshot.ruleset).toBe('ruleset:v2');
+    expect(currentSnapshot.budget).toBe('budget:v2');
+    expect(legacyFingerprint).not.toBe(currentSnapshot.fingerprint);
+
+    const inspected = inspectMarketplaceEntries({
+      id: registrationId,
+      sourceKind: 'local',
+      source: env.marketplace,
+      validationSnapshot: legacyFingerprint,
+    }, 'global');
+
+    expect(inspected.entries[0]!.unavailableReason).toContain('Marketplace Refresh');
+    expect(inspected.entries[0]!.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'REJECTED_AS_STALE', classification: 'blocking' }),
+    ]));
   });
 
   it('rejects installation as stale when State Revision advances after confirmation', async () => {
@@ -262,6 +334,21 @@ describe('Plugin Installation lifecycle', () => {
     expect(inspected.entries.every((entry) => entry.unavailableReason === undefined)).toBe(true);
     const choices = await entryChoices({ id: registrationId, sourceKind: 'local', source: env.marketplace }, 'global', { cwd: env.projectDir });
     expect(choices).toHaveLength(2);
+    expect(choices.map((choice) => choice.pointer)).toEqual(['/plugins/0', '/plugins/1']);
+  });
+
+  it('keeps both codex-plugins@98e78caf Marketplace Entries installable from the pinned fixture', async () => {
+    const pinnedMarketplace = join(env.root, 'pinned-marketplace');
+    materializePinnedMarketplace(pinnedMarketplace);
+    const registration = { id: registrationId, sourceKind: 'local' as const, source: pinnedMarketplace };
+
+    const inspected = inspectMarketplaceEntries(registration, 'global');
+    expect(inspected.entries.map((entry) => entry.plugin?.manifestName)).toEqual(['cmd', 'dev']);
+    expect(inspected.entries.every((entry) => entry.unavailableReason === undefined)).toBe(true);
+    expect(inspected.entries.map((entry) => entry.plugin?.skills.length)).toEqual([8, 1]);
+    expect(inspected.entries[0]!.plugin!.skills.every((skill) => skill.invocationPolicy === 'explicit')).toBe(true);
+    expect(inspected.entries[1]!.plugin!.skills[0]!.invocationPolicy).toBe('implicit');
+    const choices = await entryChoices(registration, 'global', { cwd: env.projectDir });
     expect(choices.map((choice) => choice.pointer)).toEqual(['/plugins/0', '/plugins/1']);
   });
 
