@@ -9,11 +9,12 @@ import type { BridgeState, Scope } from '../../src/bridge-state/types.js';
 import { readBridgeState } from '../../src/bridge-state/store.js';
 import { inspectMarketplaceEntries } from '../../src/installation/inspection.js';
 import { appendReceipt, readReceiptJournal } from '../../src/journal/journal.js';
-import { repairBridgeState } from '../../src/bridge-state/repair.js';
+import type { JournalAppendResult } from '../../src/journal/types.js';
+import { createRepairStateExpectation, repairBridgeState } from '../../src/bridge-state/repair.js';
 import { requestRuntimeApplication } from '../../src/projection/project.js';
 import { acquireAttemptFence } from '../../src/registration/fence.js';
-import { blocking, CODE, RULE, type ValidationFinding } from '../../src/registration/findings.js';
-import { createReceipt } from '../../src/registration/receipt.js';
+import { blocking, CODE, notice, RULE, type ValidationFinding } from '../../src/registration/findings.js';
+import { createReceipt, type AttemptReceipt } from '../../src/registration/receipt.js';
 import { fullValidationDisclosureLines, reportOutcome } from './registration.js';
 import { quoteTerminalText } from './terminal-presentation.js';
 import { openTransactionSheet, type TransactionSheetModel } from './transaction-sheet.js';
@@ -40,6 +41,60 @@ async function showTransactionStep(ctx: ExtensionCommandContext, model: Transact
   return await openTransactionSheet(ctx, model) === 'continue';
 }
 
+function receiptPersistenceFailureFinding(
+  receipt: AttemptReceipt,
+  appended: JournalAppendResult,
+): ValidationFinding {
+  return appended.finding ?? notice({
+    code: CODE.RECEIPT_PERSISTENCE_FAILED,
+    phase: 'post-commit',
+    target: 'attempt',
+    scope: receipt.scope,
+    pointer: '',
+    rule: RULE.RECEIPT_PERSISTENCE_FAILED,
+    outcome: `Failed to persist Attempt Receipt to journal: ${appended.error ?? 'unknown append failure'}`,
+  });
+}
+
+/** Rebuild the non-durable presentation Receipt without mutating the original Attempt Receipt. */
+export function receiptAfterJournalAppendFailure(
+  receipt: AttemptReceipt,
+  appended: JournalAppendResult,
+): AttemptReceipt {
+  const journalFinding = receiptPersistenceFailureFinding(receipt, appended);
+  return createReceipt({
+    id: receipt.id,
+    kind: receipt.kind,
+    operation: receipt.operation,
+    scope: receipt.scope,
+    trigger: receipt.trigger,
+    startedAt: receipt.startedAt,
+    completedAt: receipt.completedAt,
+    expectedStateRevision: receipt.expectedStateRevision,
+    targetStateRevision: receipt.targetStateRevision,
+    observedStateRevision: receipt.observedStateRevision,
+    validationSnapshot: receipt.validationSnapshot,
+    snapshotFingerprints: receipt.snapshotFingerprints,
+    durableOutcome: receipt.durableOutcome,
+    runtimeOutcome: receipt.runtimeOutcome,
+    findings: [...receipt.findings, journalFinding],
+    summary: 'Persistence Failed',
+    stateChanged: receipt.stateChanged,
+    recoversReceiptId: receipt.recoversReceiptId,
+    supersedesReceiptId: receipt.supersedesReceiptId,
+  });
+}
+
+export async function appendAndReportReceipt(
+  ctx: ExtensionCommandContext,
+  receipt: AttemptReceipt,
+): Promise<void> {
+  const appended = await appendReceipt(receipt.scope, receipt, { cwd: ctx.cwd });
+  await reportOutcome(ctx, {
+    receipt: appended.success ? receipt : receiptAfterJournalAppendFailure(receipt, appended),
+  });
+}
+
 async function reportDeclinedRepair(
   ctx: ExtensionCommandContext,
   scope: Scope,
@@ -54,8 +109,7 @@ async function reportDeclinedRepair(
     summary: 'Declined',
     stateChanged: false,
   });
-  await appendReceipt(scope, receipt, { cwd: ctx.cwd });
-  await reportOutcome(ctx, { receipt });
+  await appendAndReportReceipt(ctx, receipt);
 }
 
 function retryFinding(
@@ -134,8 +188,7 @@ async function reportRetryTerminal(
     stateChanged: false,
     recoversReceiptId: input.attachToChain ? input.receiptId : undefined,
   });
-  await appendReceipt(input.scope, receipt, { cwd: ctx.cwd });
-  await reportOutcome(ctx, { receipt });
+  await appendAndReportReceipt(ctx, receipt);
 }
 
 export interface ReceiptJournalViewTarget {
@@ -572,9 +625,14 @@ export async function runReceiptJournalView(
   ui.notify(lines.join('\n'), journal.isDegraded ? 'warning' : 'info');
 }
 
+export interface RepairStateTarget {
+  scope?: Scope;
+  expectedStateRevision?: string;
+}
+
 export async function runRepairStateFlow(
   ctx: ExtensionCommandContext,
-  target: { scope?: Scope } = {},
+  target: RepairStateTarget = {},
 ): Promise<void> {
   const ui: ExtensionUIContext = ctx.ui;
   const scope = await pickScope(ui, 'Repair State — 選擇 Scope', target.scope);
@@ -584,11 +642,17 @@ export async function runRepairStateFlow(
     readBridgeState(scope, { cwd: ctx.cwd }),
     readReceiptJournal(scope, { cwd: ctx.cwd }),
   ]);
+  const initialExpectation = createRepairStateExpectation(initial, initialJournal);
+  const selectedStateRevision = target.expectedStateRevision ?? initialExpectation.stateRevision;
+  const expected = {
+    ...initialExpectation,
+    stateRevision: selectedStateRevision,
+  };
   const model = {
     actionLabel: 'Repair State',
     authority: scope,
     target: `${scope} Bridge State`,
-    stateRevision: initial.state?.stateRevision,
+    stateRevision: selectedStateRevision,
   } satisfies Omit<TransactionSheetModel, 'step'>;
   const stateFindings = initial.status === 'ok' || initial.status === 'missing'
     ? []
@@ -603,7 +667,7 @@ export async function runRepairStateFlow(
   const decline = async () => reportDeclinedRepair(
     ctx,
     scope,
-    initial.state?.stateRevision ?? '?',
+    selectedStateRevision ?? '?',
   );
   if (!await showTransactionStep(ctx, {
     ...model,
@@ -618,6 +682,8 @@ export async function runRepairStateFlow(
       `Current read status: ${initial.status}`,
       `Current diagnostic: ${quote(initial.error ?? 'none')}`,
       `Receipt Journal: ${initialJournal.isDegraded ? `${initialJournal.corruptedLineCount} corrupted line(s)` : 'healthy'}`,
+      `Receipt Journal revision: ${initialJournal.revision}`,
+      `Receipt Journal repair eligibility: ${expected.journalEligibility}`,
       'The domain Recovery Action will revalidate under the Attempt Fence; this presentation result does not authorize repair',
     ],
   })) return void await decline();
@@ -648,6 +714,7 @@ export async function runRepairStateFlow(
 
   const res = await repairBridgeState(scope, {
     cwd: ctx.cwd,
+    expected,
   });
 
   await reportOutcome(ctx, { receipt: res.receipt });

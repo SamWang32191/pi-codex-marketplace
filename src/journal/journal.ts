@@ -7,7 +7,8 @@
  * - Project: {cwd}/.pi/codex-marketplace/receipts.jsonl
  */
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, openSync, closeSync, fsyncSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, openSync, closeSync, fsyncSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 import { atomicWriteFile, withFileLock } from '../bridge-state/atomic.js';
@@ -20,17 +21,32 @@ import type {
   JournalAppendResult,
   JournalPruneResult,
   JournalReadResult,
+  JournalRepairCommitResult,
+  JournalRevision,
+  ObservedJournalReadResult,
 } from './types.js';
 
 export interface JournalTestHooks {
+  /** @internal Runs immediately before reading Receipt Journal bytes; throwing injects read failure. */
+  beforeJournalRead?: () => void;
   /** @internal Deterministic seam for exercising append-vs-rewrite concurrency. */
   beforePruneRewrite?: () => Promise<void> | void;
+  /** @internal Runs after Repair rewrites degraded lines but before its bound Receipt append. */
+  afterPruneRewrite?: () => Promise<void> | void;
+  /** @internal Runs immediately before any Receipt fsync; throwing injects durability failure. */
+  beforeReceiptFsync?: () => void;
+  /** @internal Runs before Repair's final exact-revision check and Receipt append. */
+  beforeRepairReceiptAppend?: () => Promise<void> | void;
+  /** @internal Runs after Repair appends its Receipt but before read-back verification. */
+  afterRepairReceiptAppend?: () => Promise<void> | void;
 }
 
 export interface JournalOptions {
   cwd?: string;
   agentDir?: string;
   journalLockTimeoutMs?: number;
+  /** Refuse an append unless these exact raw Journal bytes are still current under lock. */
+  expectedRevision?: JournalRevision;
   /** @internal Test-only coordination hooks; production callers should omit this. */
   testHooks?: JournalTestHooks;
 }
@@ -43,6 +59,35 @@ function withJournalLock<T>(
   return withFileLock(`${journalPath}.lock`, action, opts.journalLockTimeoutMs ?? 5000);
 }
 
+function revisionForBytes(bytes: Uint8Array): JournalRevision {
+  return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+}
+
+function readJournalRevisionUnlocked(journalPath: string): JournalRevision {
+  if (!existsSync(journalPath)) return 'missing';
+  try {
+    return revisionForBytes(readFileSync(journalPath));
+  } catch {
+    return 'read-error';
+  }
+}
+
+function appendReceiptUnlocked(
+  journalPath: string,
+  receipt: AttemptReceipt,
+  opts: JournalOptions,
+): void {
+  mkdirSync(dirname(journalPath), { recursive: true });
+  const fd = openSync(journalPath, 'a');
+  try {
+    writeFileSync(fd, `${JSON.stringify(receipt)}\n`, 'utf-8');
+    opts.testHooks?.beforeReceiptFsync?.();
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 /** Append an Attempt Receipt to the scope's Receipt Journal with fsync durability. */
 export async function appendReceipt(
   scope: Scope,
@@ -52,19 +97,19 @@ export async function appendReceipt(
   const journalPath = getReceiptsJournalPath(scope, opts);
   try {
     return await withJournalLock(journalPath, opts, () => {
-      mkdirSync(dirname(journalPath), { recursive: true });
-      const line = JSON.stringify(receipt) + '\n';
-      appendFileSync(journalPath, line, 'utf-8');
-
-      // fsync file for durability
-      try {
-        const fd = openSync(journalPath, 'r');
-        try {
-          fsyncSync(fd);
-        } finally {
-          closeSync(fd);
+      if (opts.expectedRevision !== undefined) {
+        const observedRevision = readJournalRevisionUnlocked(journalPath);
+        if (observedRevision !== opts.expectedRevision) {
+          return {
+            success: false,
+            isStale: true,
+            expectedRevision: opts.expectedRevision,
+            observedRevision,
+          };
         }
-      } catch {}
+      }
+
+      appendReceiptUnlocked(journalPath, receipt, opts);
 
       return { success: true };
     });
@@ -88,9 +133,10 @@ function readReceiptJournalUnlocked(
   scope: Scope,
   opts: JournalOptions = {},
   journalPath = getReceiptsJournalPath(scope, opts),
-): JournalReadResult {
+): ObservedJournalReadResult {
   if (!existsSync(journalPath)) {
     return {
+      revision: 'missing',
       receipts: [],
       activeChains: [],
       allChains: [],
@@ -100,12 +146,14 @@ function readReceiptJournalUnlocked(
     };
   }
 
-  let content: string;
+  let bytes: Buffer;
   try {
-    content = readFileSync(journalPath, 'utf-8');
+    opts.testHooks?.beforeJournalRead?.();
+    bytes = readFileSync(journalPath);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return {
+      revision: 'read-error',
       receipts: [],
       activeChains: [],
       allChains: [],
@@ -125,6 +173,9 @@ function readReceiptJournalUnlocked(
       error: msg,
     };
   }
+
+  const revision = revisionForBytes(bytes);
+  const content = bytes.toString('utf-8');
 
   const lines = content.split('\n');
   const receipts: AttemptReceipt[] = [];
@@ -177,6 +228,7 @@ function readReceiptJournalUnlocked(
   const isDegraded = corruptedLineCount > 0;
 
   return {
+    revision,
     receipts,
     activeChains,
     allChains,
@@ -186,11 +238,32 @@ function readReceiptJournalUnlocked(
   };
 }
 
+function retainedJournalReceipts(
+  current: JournalReadResult,
+  keepCount: number,
+): { retained: AttemptReceipt[]; prunedCount: number } {
+  const activeReceiptIds = new Set<string>();
+  for (const chain of current.activeChains) {
+    for (const receipt of chain.receipts) activeReceiptIds.add(receipt.id);
+  }
+
+  const outsideActive = current.receipts.filter((receipt) => !activeReceiptIds.has(receipt.id));
+  const retainOutsideIds = new Set(outsideActive.slice(-keepCount).map((receipt) => receipt.id));
+  const retained = current.receipts.filter(
+    (receipt) => activeReceiptIds.has(receipt.id) || retainOutsideIds.has(receipt.id),
+  );
+  return { retained, prunedCount: current.receipts.length - retained.length };
+}
+
+function serializedJournal(receipts: AttemptReceipt[]): string {
+  return receipts.map((receipt) => JSON.stringify(receipt)).join('\n') + (receipts.length > 0 ? '\n' : '');
+}
+
 /** Read the scope's Receipt Journal, parsing line-by-line with tolerance for single-line corruptions. */
 export async function readReceiptJournal(
   scope: Scope,
   opts: JournalOptions = {},
-): Promise<JournalReadResult> {
+): Promise<ObservedJournalReadResult> {
   return readReceiptJournalUnlocked(scope, opts);
 }
 
@@ -205,33 +278,11 @@ export async function pruneReceiptJournal(
     // Re-read only after acquiring the lock so every completed append participates
     // in this rewrite and cannot be overwritten by a stale snapshot.
     const current = readReceiptJournalUnlocked(scope, opts, journalPath);
-    const activeReceiptIds = new Set<string>();
-
-    for (const chain of current.activeChains) {
-      for (const r of chain.receipts) {
-        activeReceiptIds.add(r.id);
-      }
+    if (current.revision === 'read-error' || current.error) {
+      throw new Error(`Receipt Journal cannot be read safely: ${current.error ?? 'read failed'}`);
     }
-
-    const outsideActive: AttemptReceipt[] = [];
-    for (const r of current.receipts) {
-      if (!activeReceiptIds.has(r.id)) {
-        outsideActive.push(r);
-      }
-    }
-
-    // Keep latest N outside active chains
-    const retainOutside = outsideActive.slice(-keepCount);
-    const retainOutsideIds = new Set(retainOutside.map((r) => r.id));
-
-    // Build final retained receipts preserving chronological order
-    const retained = current.receipts.filter(
-      (r) => activeReceiptIds.has(r.id) || retainOutsideIds.has(r.id),
-    );
-
-    const prunedCount = current.receipts.length - retained.length;
-
-    const content = retained.map((r) => JSON.stringify(r)).join('\n') + (retained.length > 0 ? '\n' : '');
+    const { retained, prunedCount } = retainedJournalReceipts(current, keepCount);
+    const content = serializedJournal(retained);
     mkdirSync(dirname(journalPath), { recursive: true });
     await opts.testHooks?.beforePruneRewrite?.();
     const write = atomicWriteFile(journalPath, content);
@@ -240,6 +291,104 @@ export async function pruneReceiptJournal(
     }
 
     return { prunedCount, retainedCount: retained.length };
+  });
+}
+
+/**
+ * Compare one exact Journal observation, optionally reconstruct degraded lines, and append the
+ * bound Repair Receipt while holding one journal lock. A normal concurrent appender waits until
+ * the Repair Receipt is durable, so neither side can overwrite the other.
+ */
+export async function commitJournalRepair(
+  scope: Scope,
+  receipt: AttemptReceipt,
+  expectedRevision: JournalRevision,
+  keepCount = 100,
+  opts: JournalOptions = {},
+): Promise<JournalRepairCommitResult> {
+  const journalPath = getReceiptsJournalPath(scope, opts);
+  return withJournalLock(journalPath, opts, async () => {
+    const current = readReceiptJournalUnlocked(scope, opts, journalPath);
+    if (current.revision !== expectedRevision) {
+      return {
+        status: 'stale',
+        stage: 'before-prune',
+        expectedRevision,
+        observedRevision: current.revision,
+        prunedCount: 0,
+        retainedCount: current.receipts.length,
+      };
+    }
+    if (current.error) throw new Error(`Receipt Journal cannot be read safely: ${current.error}`);
+
+    let postPruneRevision = current.revision;
+    let prunedCount = 0;
+    let retainedCount = current.receipts.length;
+    if (current.isDegraded) {
+      const pruned = retainedJournalReceipts(current, keepCount);
+      const content = serializedJournal(pruned.retained);
+      mkdirSync(dirname(journalPath), { recursive: true });
+      await opts.testHooks?.beforePruneRewrite?.();
+      const observedBeforeRewrite = readJournalRevisionUnlocked(journalPath);
+      if (observedBeforeRewrite !== current.revision) {
+        return {
+          status: 'stale',
+          stage: 'before-prune',
+          expectedRevision,
+          observedRevision: observedBeforeRewrite,
+          prunedCount: 0,
+          retainedCount: current.receipts.length,
+        };
+      }
+      const write = atomicWriteFile(journalPath, content);
+      if (!write.success || !write.verified) {
+        throw new Error(`Failed to atomically replace Receipt Journal: ${write.error ?? 'verification failed'}`);
+      }
+      postPruneRevision = revisionForBytes(Buffer.from(content, 'utf-8'));
+      prunedCount = pruned.prunedCount;
+      retainedCount = pruned.retained.length;
+      await opts.testHooks?.afterPruneRewrite?.();
+    }
+
+    await opts.testHooks?.beforeRepairReceiptAppend?.();
+    const observedBeforeAppend = readJournalRevisionUnlocked(journalPath);
+    if (observedBeforeAppend !== postPruneRevision) {
+      if (!current.isDegraded) {
+        return {
+          status: 'stale',
+          stage: 'before-append',
+          expectedRevision,
+          observedRevision: observedBeforeAppend,
+          postPruneRevision,
+          prunedCount: 0,
+          retainedCount,
+        };
+      }
+      return {
+        status: 'stale',
+        stage: 'after-prune',
+        expectedRevision,
+        observedRevision: observedBeforeAppend,
+        postPruneRevision,
+        prunedCount,
+        retainedCount,
+      };
+    }
+
+    appendReceiptUnlocked(journalPath, receipt, opts);
+    await opts.testHooks?.afterRepairReceiptAppend?.();
+    const verified = readReceiptJournalUnlocked(scope, opts, journalPath);
+    if (verified.error || verified.isDegraded || !verified.receipts.some((stored) => stored.id === receipt.id)) {
+      throw new Error(`Bound Repair Receipt ${receipt.id} could not be verified in the readable Receipt Journal`);
+    }
+    return {
+      status: 'committed',
+      expectedRevision,
+      postPruneRevision,
+      revision: verified.revision,
+      prunedCount,
+      retainedCount,
+    };
   });
 }
 

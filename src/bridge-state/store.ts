@@ -18,7 +18,7 @@
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-import { atomicWriteFile, acquireLock, releaseLock } from './atomic.js';
+import { atomicWriteFile, acquireLock, releaseLock, withFileLock } from './atomic.js';
 import { commitMigratedState, migrateForward, recoverWalIfNeeded } from './migrate.js';
 import { getLockPath, getStatePath } from './paths.js';
 import { parseJson, validateSchema } from './schema.js';
@@ -32,6 +32,13 @@ import {
   type WriteResult,
 } from './types.js';
 
+export interface BridgeStateLockOptions {
+  cwd?: string;
+  agentDir?: string;
+  /** Timeout for acquiring the state lock around a coordinated read/action (default 5000). */
+  stateLockTimeoutMs?: number;
+}
+
 export interface StoreOptions {
   cwd?: string;
   agentDir?: string;
@@ -41,22 +48,137 @@ export interface StoreOptions {
   expectedStateRevision?: string;
 }
 
+function hasNumericSchemaVersion(value: unknown): boolean {
+  return typeof value === 'object'
+    && value !== null
+    && typeof (value as Record<string, unknown>).schemaVersion === 'number';
+}
+
+/** Read/recover/migrate one exact state snapshot. Caller must already hold statePath's lock. */
+function readBridgeStateUnderFileLock(statePath: string): ReadResult {
+  if (!existsSync(statePath)) {
+    const recovered = recoverWalIfNeeded(statePath, null);
+    if (recovered.recovered && recovered.state) {
+      return { status: 'ok', state: recovered.state };
+    }
+    return { status: 'missing', state: createEmptyState(), isEmptyInit: true };
+  }
+
+  let content: string;
+  try {
+    content = readFileSync(statePath, 'utf-8');
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { status: 'corrupted', error: `Failed to read ${statePath}: ${msg}` };
+  }
+
+  if (content.trim().length === 0) {
+    return { status: 'corrupted', error: 'Empty file (corrupted)', raw: content };
+  }
+
+  const parsed = parseJson(content);
+  if (!parsed.ok) {
+    return { status: 'corrupted', error: parsed.error, raw: content };
+  }
+
+  const preState = parsed.value as BridgeState;
+  const hasVersion = hasNumericSchemaVersion(parsed.value);
+  if (hasVersion) {
+    const recovered = recoverWalIfNeeded(statePath, preState);
+    if (recovered.recovered && recovered.state) {
+      return { status: 'ok', state: recovered.state };
+    }
+  }
+
+  const validation = validateSchema(parsed.value);
+  if (!validation.ok) {
+    if (validation.code === 'INCOMPATIBLE_SCHEMA_VERSION') {
+      return {
+        status: 'incompatible',
+        error: validation.error,
+        raw: parsed.value,
+      };
+    }
+    return { status: 'corrupted', error: validation.error, raw: parsed.value };
+  }
+
+  const state = parsed.value as BridgeState;
+  if (state.schemaVersion === CURRENT_SCHEMA_VERSION) {
+    return { status: 'ok', state };
+  }
+
+  const migration = migrateForward(state);
+  if (!migration.ok) {
+    return {
+      status: migration.code === 'INCOMPATIBLE_NEWER' ? 'incompatible' : 'corrupted',
+      error: migration.error,
+      raw: parsed.value,
+    };
+  }
+  if (!migration.migrated || !migration.state) {
+    return { status: 'ok', state };
+  }
+
+  const committed = commitMigratedState(
+    statePath,
+    migration.state,
+    state.schemaVersion,
+    state.stateRevision,
+  );
+  if (!committed) {
+    return {
+      status: 'corrupted',
+      error: 'Migration WAL commit failed — treated as Persistence Indeterminate',
+      raw: parsed.value,
+    };
+  }
+  return { status: 'ok', state: migration.state };
+}
+
+async function tryReadBridgeStateUnderFileLock(
+  statePath: string,
+  timeoutMs: number,
+): Promise<ReadResult | undefined> {
+  try {
+    return await withFileLock(
+      getLockPath(statePath),
+      () => readBridgeStateUnderFileLock(statePath),
+      timeoutMs,
+    );
+  } catch {
+    // A live or unverifiable owner keeps any WAL/migration work for a later read.
+    return undefined;
+  }
+}
+
+/**
+ * Hold one scope's State lock across an asynchronous action. The ReadResult is obtained only
+ * after the lock is held, including any WAL recovery or forward migration, and remains exact
+ * until the action settles. The action must not call public State readers/writers for this scope.
+ */
+export function withBridgeStateLock<T>(
+  scope: Scope,
+  opts: BridgeStateLockOptions,
+  action: (read: ReadResult) => Promise<T> | T,
+): Promise<T> {
+  const statePath = getStatePath(scope, opts);
+  return withFileLock(
+    getLockPath(statePath),
+    () => action(readBridgeStateUnderFileLock(statePath)),
+    opts.stateLockTimeoutMs ?? 5000,
+  );
+}
+
 /** Read a scope's Bridge State with closed handling of missing/corrupted/incompatible + WAL forward migration. */
 export async function readBridgeState(scope: Scope, opts: StoreOptions = {}): Promise<ReadResult> {
   const statePath = getStatePath(scope, opts);
 
   if (!existsSync(statePath)) {
     // WAL recovery may have materialized a file after a prior crash — attempt lock-protected replay
-    const lockPath = getLockPath(statePath);
-    if (!existsSync(lockPath)) {
-      const recovered = recoverWalIfNeeded(statePath, null);
-      if (recovered.recovered && recovered.state) {
-        return { status: 'ok', state: recovered.state };
-      }
-    } else {
-      // WAL replay is deferred while another process holds the migration lock; treat as missing and let holder commit
-      const walPath = statePath + '.wal';
-      if (!existsSync(walPath)) return { status: 'missing', state: createEmptyState(), isEmptyInit: true };
+    const walPath = statePath + '.wal';
+    if (existsSync(walPath)) {
+      const recovered = await tryReadBridgeStateUnderFileLock(statePath, 0);
+      if (recovered) return recovered;
     }
     return { status: 'missing', state: createEmptyState(), isEmptyInit: true };
   }
@@ -80,17 +202,10 @@ export async function readBridgeState(scope: Scope, opts: StoreOptions = {}): Pr
 
   // Attempt WAL recovery before schema validation — lock-protected to avoid racing a concurrent commitMigratedState
   const preState = parsed.value as BridgeState;
-  const hasVersion = typeof (preState as unknown as Record<string, unknown>).schemaVersion === 'number';
-  if (hasVersion) {
-    const lockPath = getLockPath(statePath);
-    if (!existsSync(lockPath)) {
-      const walRecovered = recoverWalIfNeeded(statePath, preState);
-      if (walRecovered.recovered && walRecovered.state) {
-        return { status: 'ok', state: walRecovered.state };
-      }
-    } else {
-      // Migration lock held — skip WAL replay, let holder finish; orphan WAL will be cleaned after commit
-    }
+  const hasVersion = hasNumericSchemaVersion(parsed.value);
+  if (hasVersion && existsSync(statePath + '.wal')) {
+    const walRecovered = await tryReadBridgeStateUnderFileLock(statePath, 0);
+    if (walRecovered) return walRecovered;
   }
 
   const validation = validateSchema(parsed.value);
@@ -119,44 +234,10 @@ export async function readBridgeState(scope: Scope, opts: StoreOptions = {}): Pr
       };
     }
     if (migration.migrated && migration.state) {
-      // Acquire lock to commit migrated state atomically with WAL; if lock unavailable, surface as incompatible/corrupted per fail-closed.
-      try {
-        const lockPath = getLockPath(statePath);
-        const fd = await acquireLock(lockPath, 1000);
-        try {
-          // Re-read under lock to avoid racing with a concurrent writer
-          let fresh: BridgeState | null = null;
-          try {
-            const freshContent = readFileSync(statePath, 'utf-8');
-            const freshParsed = parseJson(freshContent);
-            if (freshParsed.ok) {
-              const v = validateSchema(freshParsed.value);
-              // If fresh already migrated by another process, use it
-              if (v.ok) fresh = freshParsed.value as BridgeState;
-              // If fresh is now at CURRENT, no need to migrate
-              if (fresh && fresh.schemaVersion === CURRENT_SCHEMA_VERSION) {
-                state = fresh;
-              } else {
-                const ok = commitMigratedState(statePath, migration.state, state.schemaVersion, state.stateRevision);
-                if (ok) state = migration.state;
-                else return { status: 'corrupted', error: 'Migration WAL commit failed — treated as Persistence Indeterminate', raw: parsed.value };
-              }
-            } else {
-              const ok = commitMigratedState(statePath, migration.state, state.schemaVersion, state.stateRevision);
-              if (ok) state = migration.state;
-              else return { status: 'corrupted', error: 'Migration WAL commit failed — treated as Persistence Indeterminate', raw: parsed.value };
-            }
-          } catch {
-            const ok = commitMigratedState(statePath, migration.state, state.schemaVersion, state.stateRevision);
-            if (ok) state = migration.state;
-          }
-        } finally {
-          releaseLock(fd, lockPath);
-        }
-      } catch {
-        // Lock contention — fail-closed as corrupted so callers retry after holder releases
-        return { status: 'corrupted', error: migration.error ?? 'Migration pending — lock contention', raw: parsed.value };
-      }
+      const migrated = await tryReadBridgeStateUnderFileLock(statePath, 1000);
+      if (migrated) return migrated;
+      // Lock contention — fail-closed as corrupted so callers retry after holder releases.
+      return { status: 'corrupted', error: migration.error ?? 'Migration pending — lock contention', raw: parsed.value };
     }
   }
 

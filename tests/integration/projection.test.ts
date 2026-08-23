@@ -13,6 +13,8 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { commitBridgeState, readBridgeState, readBridgeStateSync } from '../../src/bridge-state/store.js';
+import { acquireLockSync, releaseLock } from '../../src/bridge-state/atomic.js';
+import { getReceiptsJournalPath, getStatePath } from '../../src/bridge-state/paths.js';
 import type { BridgeState } from '../../src/bridge-state/types.js';
 import {
   createScopeOverride,
@@ -119,6 +121,47 @@ describe('Scope Override lifecycle', () => {
     expect(project.state!.scopeOverrides).toEqual([{ kind: 'registration', targetId: GLOBAL_REG }]);
   });
 
+  it('reports journal persistence failure when create commits State but cannot append its Receipt', async () => {
+    const opts = { agentDir: env.agentDir, cwd: env.projectDir, projectTrusted: true };
+    const journalPath = getReceiptsJournalPath('project', opts);
+    const lockPath = `${journalPath}.lock`;
+    const lockFd = acquireLockSync(lockPath);
+
+    try {
+      const outcome = await createScopeOverride('registration', GLOBAL_REG, {
+        ...opts,
+        journalLockTimeoutMs: 1,
+      });
+
+      expect(outcome).toEqual(expect.objectContaining({
+        status: 'journal-persistence-failed',
+        receiptPersisted: false,
+        stateCommitted: true,
+        isIndeterminate: true,
+        newRevision: '1',
+        error: expect.stringContaining('Failed to acquire lock'),
+      }));
+      expect(outcome.receipt).toEqual(expect.objectContaining({
+        summary: 'Completed',
+        durableOutcome: 'committed',
+        stateChanged: true,
+        observedStateRevision: '1',
+        findings: expect.arrayContaining([
+          expect.objectContaining({
+            code: 'RECEIPT_PERSISTENCE_FAILED',
+            rule: 'JOURNAL-01',
+          }),
+        ]),
+      }));
+      expect(Object.isFrozen(outcome.receipt)).toBe(true);
+      expect((await readBridgeState('project', opts)).state!.scopeOverrides).toEqual([
+        { kind: 'registration', targetId: GLOBAL_REG },
+      ]);
+    } finally {
+      releaseLock(lockFd, lockPath);
+    }
+  });
+
   it('suppresses the inherited subtree immediately and restores inheritance immediately after removal', async () => {
     const opts = { agentDir: env.agentDir, cwd: env.projectDir, projectTrusted: true };
     await createScopeOverride('registration', GLOBAL_REG, opts);
@@ -144,6 +187,42 @@ describe('Scope Override lifecycle', () => {
     expect(restored.registrations.map((r) => r.id)).toEqual([GLOBAL_REG]);
     expect(restored.installations.map((i) => i.installationState)).toEqual(['enabled']);
     expect(restored.suppressed).toEqual([]);
+  });
+
+  it('reports journal persistence failure when remove commits State but cannot append its Receipt', async () => {
+    const opts = { agentDir: env.agentDir, cwd: env.projectDir, projectTrusted: true };
+    const created = await createScopeOverride('registration', GLOBAL_REG, opts);
+    expect(created.status).toBe('completed');
+    const journalPath = getReceiptsJournalPath('project', opts);
+    const lockPath = `${journalPath}.lock`;
+    const lockFd = acquireLockSync(lockPath);
+
+    try {
+      const outcome = await removeScopeOverride('registration', GLOBAL_REG, {
+        ...opts,
+        journalLockTimeoutMs: 1,
+      });
+
+      expect(outcome).toEqual(expect.objectContaining({
+        status: 'journal-persistence-failed',
+        receiptPersisted: false,
+        stateCommitted: true,
+        isIndeterminate: true,
+        newRevision: '2',
+      }));
+      expect(outcome.receipt).toEqual(expect.objectContaining({
+        operation: 'Registration Override Removal',
+        summary: 'Completed',
+        durableOutcome: 'committed',
+        observedStateRevision: '2',
+        findings: expect.arrayContaining([
+          expect.objectContaining({ code: 'RECEIPT_PERSISTENCE_FAILED' }),
+        ]),
+      }));
+      expect((await readBridgeState('project', opts)).state!.scopeOverrides).toEqual([]);
+    } finally {
+      releaseLock(lockFd, lockPath);
+    }
   });
 
   it('blocks suppressing a target that does not exist in the inherited Global Scope', async () => {
@@ -176,6 +255,131 @@ describe('Scope Override lifecycle', () => {
     expect(outcome.status).toBe('blocked');
     if (outcome.status !== 'blocked') return;
     expect(outcome.findings[0]?.code).toBe('PROJECT_TRUST_DENIED');
+  });
+
+  it('reports journal persistence failure when a pre-commit Blocked Receipt cannot be appended', async () => {
+    const opts = { agentDir: env.agentDir, cwd: env.projectDir, projectTrusted: false };
+    const journalPath = getReceiptsJournalPath('project', opts);
+    const lockPath = `${journalPath}.lock`;
+    const lockFd = acquireLockSync(lockPath);
+
+    try {
+      const outcome = await createScopeOverride('registration', GLOBAL_REG, {
+        ...opts,
+        journalLockTimeoutMs: 1,
+      });
+
+      expect(outcome).toEqual(expect.objectContaining({
+        status: 'journal-persistence-failed',
+        receiptPersisted: false,
+        stateCommitted: false,
+        isIndeterminate: false,
+        error: expect.stringContaining('Failed to acquire lock'),
+      }));
+      expect(outcome.receipt).toEqual(expect.objectContaining({
+        summary: 'Blocked',
+        durableOutcome: 'unchanged',
+        stateChanged: false,
+        findings: expect.arrayContaining([
+          expect.objectContaining({ code: 'PROJECT_TRUST_DENIED' }),
+          expect.objectContaining({ code: 'RECEIPT_PERSISTENCE_FAILED' }),
+        ]),
+      }));
+      expect((await readBridgeState('project', opts)).state!.scopeOverrides).toEqual([]);
+    } finally {
+      releaseLock(lockFd, lockPath);
+    }
+  });
+
+  it('rejects the sheet-bound revision when Project state already moved before domain admission', async () => {
+    const opts = { agentDir: env.agentDir, cwd: env.projectDir, projectTrusted: true };
+    const presentedRevision = (await readBridgeState('project', opts)).state!.stateRevision;
+    await commitBridgeState('project', (state) => ({ ...state }), opts);
+
+    const outcome = await createScopeOverride('registration', GLOBAL_REG, {
+      ...opts,
+      expectedStateRevision: presentedRevision,
+    });
+
+    expect(outcome.status).toBe('rejected-as-stale');
+    expect(outcome.receipt).toEqual(expect.objectContaining({
+      expectedStateRevision: presentedRevision,
+      observedStateRevision: '1',
+      summary: 'Rejected as Stale',
+    }));
+    expect((await readBridgeState('project', opts)).state!.scopeOverrides).toEqual([]);
+  });
+
+  it('reports journal persistence failure when a pre-commit Stale Receipt cannot be appended', async () => {
+    const opts = { agentDir: env.agentDir, cwd: env.projectDir, projectTrusted: true };
+    const presentedRevision = (await readBridgeState('project', opts)).state!.stateRevision;
+    await commitBridgeState('project', (state) => ({ ...state }), opts);
+    const journalPath = getReceiptsJournalPath('project', opts);
+    const lockPath = `${journalPath}.lock`;
+    const lockFd = acquireLockSync(lockPath);
+
+    try {
+      const outcome = await createScopeOverride('registration', GLOBAL_REG, {
+        ...opts,
+        expectedStateRevision: presentedRevision,
+        journalLockTimeoutMs: 1,
+      });
+
+      expect(outcome).toEqual(expect.objectContaining({
+        status: 'journal-persistence-failed',
+        receiptPersisted: false,
+        stateCommitted: false,
+        isIndeterminate: false,
+      }));
+      expect(outcome.receipt).toEqual(expect.objectContaining({
+        summary: 'Rejected as Stale',
+        durableOutcome: 'unchanged',
+        expectedStateRevision: presentedRevision,
+        observedStateRevision: '1',
+        findings: expect.arrayContaining([
+          expect.objectContaining({ code: 'REJECTED_AS_STALE' }),
+          expect.objectContaining({ code: 'RECEIPT_PERSISTENCE_FAILED' }),
+        ]),
+      }));
+      expect((await readBridgeState('project', opts)).state!.scopeOverrides).toEqual([]);
+    } finally {
+      releaseLock(lockFd, lockPath);
+    }
+  });
+
+  it('preserves State indeterminacy when its Persistence Receipt also cannot be appended', async () => {
+    const opts = { agentDir: env.agentDir, cwd: env.projectDir, projectTrusted: true };
+    await commitBridgeState('project', (state) => ({ ...state }), opts);
+    writeFileSync(getStatePath('project', opts), '{ corrupted Project State', 'utf-8');
+    const journalPath = getReceiptsJournalPath('project', opts);
+    const lockPath = `${journalPath}.lock`;
+    const lockFd = acquireLockSync(lockPath);
+
+    try {
+      const outcome = await createScopeOverride('registration', GLOBAL_REG, {
+        ...opts,
+        expectedStateRevision: '1',
+        journalLockTimeoutMs: 1,
+      });
+
+      expect(outcome).toEqual(expect.objectContaining({
+        status: 'journal-persistence-failed',
+        receiptPersisted: false,
+        stateCommitted: false,
+        isIndeterminate: true,
+      }));
+      expect(outcome.receipt).toEqual(expect.objectContaining({
+        summary: 'Persistence Indeterminate',
+        durableOutcome: 'indeterminate',
+        expectedStateRevision: '1',
+        findings: expect.arrayContaining([
+          expect.objectContaining({ code: 'PERSISTENCE_INDETERMINATE' }),
+          expect.objectContaining({ code: 'RECEIPT_PERSISTENCE_FAILED' }),
+        ]),
+      }));
+    } finally {
+      releaseLock(lockFd, lockPath);
+    }
   });
 
   it('rejects as stale when the project State Revision moves between admission and commit', async () => {

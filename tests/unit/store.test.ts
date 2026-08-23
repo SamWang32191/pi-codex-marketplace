@@ -1,16 +1,36 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import {
   commitBridgeState,
   readBridgeState,
   readBridgeStateSync,
+  withBridgeStateLock,
   writeBridgeState,
 } from '../../src/bridge-state/store.js';
 import { getGlobalStatePath, getProjectStatePath, getAgentDir } from '../../src/bridge-state/paths.js';
 import { CURRENT_SCHEMA_VERSION, createEmptyState, nextRevision } from '../../src/bridge-state/types.js';
+
+const EXITING_LOCK_OWNER = String.raw`
+  const { closeSync, fsyncSync, openSync, writeFileSync } = require('node:fs');
+  const { randomUUID } = require('node:crypto');
+  const { hostname } = require('node:os');
+  const lockPath = process.argv[1];
+  const fd = openSync(lockPath, 'wx', 0o600);
+  writeFileSync(fd, JSON.stringify({
+    version: 1,
+    pid: process.pid,
+    processStartIdentity: 'child:' + process.pid + ':' + Date.now(),
+    hostname: hostname(),
+    token: randomUUID(),
+    acquiredAt: new Date().toISOString(),
+  }) + '\n');
+  fsyncSync(fd);
+  closeSync(fd);
+`;
 
 function makeTempEnv() {
   const tmpRoot = mkdtempSync(join(tmpdir(), 'bridge-store-test-'));
@@ -42,6 +62,108 @@ describe('Bridge State store — dual documents, atomicity, corruption', () => {
     expect(g.state!.registrations).toEqual([]);
     expect(p.status).toBe('missing');
     expect(p.state!.stateRevision).toBe('0');
+  });
+
+  it('replays a pending WAL after reclaiming an exited state-lock owner', async () => {
+    const statePath = getGlobalStatePath(env.agentDir);
+    const lockPath = `${statePath}.lock`;
+    const walPath = `${statePath}.wal`;
+    const targetState = {
+      ...createEmptyState(),
+      stateRevision: '7',
+    };
+    mkdirSync(dirname(statePath), { recursive: true });
+    writeFileSync(walPath, JSON.stringify({
+      fromVersion: CURRENT_SCHEMA_VERSION,
+      toVersion: CURRENT_SCHEMA_VERSION,
+      fromRevision: '0',
+      targetState,
+      createdAt: new Date().toISOString(),
+    }), 'utf-8');
+    execFileSync(process.execPath, ['-e', EXITING_LOCK_OWNER, lockPath]);
+
+    const recovered = await readBridgeState('global', {
+      agentDir: env.agentDir,
+      cwd: env.projectDir,
+    });
+
+    expect(recovered.status).toBe('ok');
+    expect(recovered.state?.stateRevision).toBe('7');
+    expect(existsSync(lockPath)).toBe(false);
+    expect(existsSync(walPath)).toBe(false);
+  });
+
+  it('holds the state lock across an async callback and queues a direct writer', async () => {
+    const opts = { agentDir: env.agentDir, cwd: env.projectDir };
+    let releaseAction!: () => void;
+    const actionCanFinish = new Promise<void>((resolve) => { releaseAction = resolve; });
+    let signalActionStarted!: () => void;
+    const actionStarted = new Promise<void>((resolve) => { signalActionStarted = resolve; });
+
+    const lockedRead = withBridgeStateLock('global', opts, async (read) => {
+      signalActionStarted();
+      await actionCanFinish;
+      return read;
+    });
+    await actionStarted;
+
+    let writerSettled = false;
+    const writer = commitBridgeState('global', (current) => ({ ...current }), opts);
+    void writer.then(
+      () => { writerSettled = true; },
+      () => { writerSettled = true; },
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(writerSettled).toBe(false);
+    releaseAction();
+    expect((await lockedRead).state?.stateRevision).toBe('0');
+    expect(await writer).toEqual(expect.objectContaining({ success: true, newRevision: '1' }));
+  });
+
+  it('recovers a pending WAL while the callback already holds the state lock', async () => {
+    const statePath = getGlobalStatePath(env.agentDir);
+    const walPath = `${statePath}.wal`;
+    const targetState = {
+      ...createEmptyState(),
+      stateRevision: '7',
+    };
+    mkdirSync(dirname(statePath), { recursive: true });
+    writeFileSync(walPath, JSON.stringify({
+      fromVersion: CURRENT_SCHEMA_VERSION,
+      toVersion: CURRENT_SCHEMA_VERSION,
+      fromRevision: '0',
+      targetState,
+      createdAt: new Date().toISOString(),
+    }), 'utf-8');
+
+    const recovered = await withBridgeStateLock(
+      'global',
+      { agentDir: env.agentDir, cwd: env.projectDir, stateLockTimeoutMs: 100 },
+      (read) => read,
+    );
+
+    expect(recovered.status).toBe('ok');
+    expect(recovered.state?.stateRevision).toBe('7');
+    expect(existsSync(walPath)).toBe(false);
+  });
+
+  it('classifies non-object JSON under the state lock instead of throwing before schema validation', async () => {
+    const statePath = getGlobalStatePath(env.agentDir);
+    mkdirSync(dirname(statePath), { recursive: true });
+    writeFileSync(statePath, 'null\n', 'utf-8');
+
+    const read = await withBridgeStateLock(
+      'global',
+      { agentDir: env.agentDir, cwd: env.projectDir },
+      (observed) => observed,
+    );
+
+    expect(read).toEqual(expect.objectContaining({
+      status: 'corrupted',
+      error: expect.stringContaining('Invalid Bridge State'),
+    }));
   });
 
   it('global and project are isolated documents with independent revisions', async () => {

@@ -272,12 +272,54 @@ describe('Receipt Journal — Storage & Bounded Retention', () => {
     expect(journal.activeChains[0]?.rootReceiptId).toBe(PENDING_RECEIPT);
   });
 
+  it('fails closed without rewriting when the journal cannot be read during prune', async () => {
+    const opts = { agentDir, cwd: projectDir };
+    const journalPath = getReceiptsJournalPath('global', opts);
+    const historical = createReceipt({
+      id: RECEIPT_1,
+      operation: 'Inspect',
+      scope: 'global',
+      trigger: 'inspect',
+      expectedStateRevision: '0',
+      summary: 'Completed',
+    });
+    await appendReceipt('global', historical, opts);
+    const originalBytes = readFileSync(journalPath);
+
+    await expect(pruneReceiptJournal('global', 0, {
+      ...opts,
+      testHooks: {
+        beforeJournalRead: () => {
+          throw new Error('injected journal read failure');
+        },
+      },
+    })).rejects.toThrow('injected journal read failure');
+
+    expect(readFileSync(journalPath)).toEqual(originalBytes);
+  });
+
   it('rejects prune when the atomic journal replacement fails', async () => {
     const opts = { agentDir, cwd: projectDir };
     const journalPath = getReceiptsJournalPath('global', opts);
-    mkdirSync(journalPath, { recursive: true });
+    const historical = createReceipt({
+      id: RECEIPT_1,
+      operation: 'Inspect',
+      scope: 'global',
+      trigger: 'inspect',
+      expectedStateRevision: '0',
+      summary: 'Completed',
+    });
+    await appendReceipt('global', historical, opts);
 
-    await expect(pruneReceiptJournal('global', 0, opts)).rejects.toThrow(
+    await expect(pruneReceiptJournal('global', 0, {
+      ...opts,
+      testHooks: {
+        beforePruneRewrite: () => {
+          rmSync(journalPath);
+          mkdirSync(journalPath);
+        },
+      },
+    })).rejects.toThrow(
       'Failed to atomically replace Receipt Journal',
     );
     expect(existsSync(`${journalPath}.lock`)).toBe(false);

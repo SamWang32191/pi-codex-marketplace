@@ -126,6 +126,7 @@ function snapshot(): BridgeLedgerSnapshot {
         registrationId: globalRegistration.id,
         entryPointer: '/plugins/0',
         marketplaceEntryId: globalMarketplaceEntryId,
+        validationSnapshot: 'snapshot-global-entry',
         name: 'global-tool',
         classification: 'compatible',
         plugin: {
@@ -147,6 +148,7 @@ function snapshot(): BridgeLedgerSnapshot {
         registrationId: projectRegistration.id,
         entryPointer: '/plugins/0',
         marketplaceEntryId: projectMarketplaceEntryId,
+        validationSnapshot: 'snapshot-project-entry',
         name: 'project-tool',
         classification: 'incompatible',
         findings: [{
@@ -248,6 +250,7 @@ describe('Bridge Ledger presentation model', () => {
         targetKind: 'marketplace-entry',
         targetId: '11111111-1111-4111-8111-111111111111/global-market/plugins/0',
         stateRevision: '12',
+        validationSnapshot: 'snapshot-global-entry',
       }),
       expect.objectContaining({
         actionId: 'install-and-enable',
@@ -257,6 +260,54 @@ describe('Bridge Ledger presentation model', () => {
     expect(incompatible?.detail).toMatch(/incompatible/i);
     expect(incompatible?.actions.every((entry) => !entry.enabled)).toBe(true);
     expect(incompatible?.actions[0]?.disabledReason).toContain('unsupported active component');
+  });
+
+  it('fails closed when a compatible Marketplace Entry has no presentation Validation Snapshot', () => {
+    const unbound = snapshot();
+    unbound.global.state!.installations = [];
+    const entry = unbound.marketplaceEntries.global[0]!;
+    if (!('marketplaceEntryId' in entry)) throw new Error('fixture requires a Marketplace Entry');
+    delete entry.validationSnapshot;
+
+    const row = buildBridgeLedgerModel(unbound).sections
+      .find((section) => section.id === 'plugins')?.rows
+      .find((candidate) => candidate.id === `marketplace-entry:global:${entry.marketplaceEntryId}`);
+
+    expect(row?.actions).toEqual([
+      expect.objectContaining({
+        enabled: false,
+        disabledReason: expect.stringContaining('Validation Snapshot'),
+      }),
+      expect.objectContaining({
+        enabled: false,
+        disabledReason: expect.stringContaining('Validation Snapshot'),
+      }),
+    ]);
+  });
+
+  it('maps the presentation inspection fingerprint into Marketplace Entry intents', () => {
+    const value = snapshot();
+    const registration = value.global.state!.registrations[0]!;
+    const fixture = value.marketplaceEntries.global[0]!;
+    if (!('marketplaceEntryId' in fixture) || !fixture.plugin) {
+      throw new Error('fixture requires a compatible Marketplace Entry');
+    }
+    const mapped = mapMarketplaceInspectionToLedgerItems('global', registration, {
+      marketplaceId: `${registration.id}/global-market`,
+      snapshot: { fingerprint: 'fresh-presentation-snapshot' } as never,
+      entries: [{
+        entry: { ordinal: 0, entryId: '/plugins/0', name: 'global-tool', available: true, type: 'local' },
+        classification: 'compatible',
+        plugin: fixture.plugin,
+        findings: [],
+      }],
+      findings: [],
+    });
+
+    expect(mapped[0]).toEqual(expect.objectContaining({
+      marketplaceEntryId: fixture.marketplaceEntryId,
+      validationSnapshot: 'fresh-presentation-snapshot',
+    }));
   });
 
   it.each([
@@ -739,10 +790,15 @@ describe('Bridge Ledger presentation model', () => {
     expect(repair).toMatchObject({ enabled: true });
   });
 
-  it('loads both authoritative states, both journals, barrier, and derived Effective State', async () => {
+  it('loads Plugin inspections lazily once per snapshot and refreshes them on reload', async () => {
     const root = mkdtempSync(join(tmpdir(), 'bridge-ledger-'));
     const agentDir = join(root, 'agent');
     const cwd = join(root, 'project');
+    const inspections: string[] = [];
+    const inspector = (registration: { id: string }, scope: 'global' | 'project') => {
+      inspections.push(`${scope}:${registration.id}`);
+      return { entries: [], findings: [] };
+    };
     try {
       const globalDir = join(agentDir, 'codex-marketplace');
       const projectDir = join(cwd, '.pi', 'codex-marketplace');
@@ -763,7 +819,12 @@ describe('Bridge Ledger presentation model', () => {
         scopeOverrides: [],
       }));
 
-      const loaded = await loadBridgeLedgerSnapshot({ cwd, agentDir, projectTrusted: true });
+      const loaded = await loadBridgeLedgerSnapshot({
+        cwd,
+        agentDir,
+        projectTrusted: true,
+        inspectMarketplaceEntries: inspector,
+      });
 
       expect(loaded.global.state?.stateRevision).toBe('3');
       expect(loaded.project.state?.stateRevision).toBe('4');
@@ -771,6 +832,39 @@ describe('Bridge Ledger presentation model', () => {
       expect(loaded.journals.project.receipts).toEqual([]);
       expect(loaded.barrier.active).toBe(false);
       expect(loaded.effective?.registrations.map((registration) => registration.sourceScope)).toEqual(['global', 'project']);
+      expect(inspections).toEqual([]);
+
+      const first = component(buildBridgeLedgerModel(loaded));
+      first.instance.render(80); // Observe
+      expect(inspections).toEqual([]);
+      first.instance.handleInput('\x1b[C'); // Sources
+      first.instance.render(80);
+      expect(inspections).toEqual([]);
+      first.instance.handleInput('\x1b[C'); // Plugins
+      first.instance.render(80);
+      expect(inspections).toEqual([
+        'global:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        'project:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      ]);
+
+      first.instance.render(80);
+      buildBridgeLedgerModel(loaded).sections.find((section) => section.id === 'plugins')!.rows;
+      expect(inspections).toHaveLength(2);
+
+      const reloaded = await loadBridgeLedgerSnapshot({
+        cwd,
+        agentDir,
+        projectTrusted: true,
+        inspectMarketplaceEntries: inspector,
+      });
+      expect(inspections).toHaveLength(2);
+      buildBridgeLedgerModel(reloaded).sections.find((section) => section.id === 'plugins')!.rows;
+      expect(inspections).toEqual([
+        'global:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        'project:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        'global:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        'project:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      ]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

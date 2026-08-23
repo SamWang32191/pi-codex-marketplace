@@ -12,12 +12,12 @@ import type { ExtensionCommandContext, ExtensionUIContext } from '@earendil-work
 
 import { readBridgeState } from '../../src/bridge-state/store.js';
 import type { BridgeState } from '../../src/bridge-state/types.js';
-import { appendReceipt } from '../../src/journal/journal.js';
 import { computeEffectiveState, type EffectiveState } from '../../src/projection/effective-state.js';
 import { createScopeOverride, removeScopeOverride, type OverrideKind } from '../../src/projection/overrides.js';
 import { projectEffectiveState } from '../../src/projection/project.js';
 import { createReceipt } from '../../src/registration/receipt.js';
 import { reportOutcome, validationDisclosureLines } from './registration.js';
+import { appendAndReportReceipt } from './journal.js';
 import { quoteTerminalText } from './terminal-presentation.js';
 import { openTransactionSheet, type TransactionSheetModel } from './transaction-sheet.js';
 
@@ -110,6 +110,7 @@ async function readBoth(ctx: { cwd?: string; agentDir?: string }): Promise<{ ok:
 export interface ScopeOverrideTarget {
   targetKind?: OverrideKind;
   targetId?: string;
+  expectedStateRevision?: string;
 }
 
 async function showTransactionStep(ctx: ExtensionCommandContext, model: TransactionSheetModel): Promise<boolean> {
@@ -128,8 +129,7 @@ async function reportDeclinedOverride(
     summary: 'Declined',
     stateChanged: false,
   });
-  await appendReceipt('project', receipt, { cwd: ctx.cwd });
-  await reportOutcome(ctx, { receipt });
+  await appendAndReportReceipt(ctx, receipt);
 }
 
 async function pickInheritedRow(
@@ -170,9 +170,15 @@ export async function runScopeOverrideFlow(
   target: ScopeOverrideTarget = {},
 ): Promise<void> {
   const ui: ExtensionUIContext = ctx.ui;
-  const opts = { cwd: ctx.cwd, agentDir: undefined, projectTrusted: ctx.isProjectTrusted() };
   const docs = await readBoth({ cwd: ctx.cwd });
   if (!docs.ok) return void ui.notify(`Bridge State 不可讀：${quote(docs.error ?? 'Persistence Indeterminate')}`, 'error');
+  const expectedStateRevision = target.expectedStateRevision ?? docs.project!.stateRevision;
+  const opts = {
+    cwd: ctx.cwd,
+    agentDir: undefined,
+    projectTrusted: ctx.isProjectTrusted(),
+    expectedStateRevision,
+  };
 
   const rows = inheritedRecordRows(docs.global!, docs.project!, ctx.isProjectTrusted());
   const row = await pickInheritedRow(ui, rows, target);
@@ -182,7 +188,7 @@ export async function runScopeOverrideFlow(
     actionLabel: 'Scope Override Creation',
     authority: 'project' as const,
     target: row.targetId,
-    stateRevision: docs.project!.stateRevision,
+    stateRevision: expectedStateRevision,
   } satisfies Omit<TransactionSheetModel, 'step'>;
   if (!await showTransactionStep(ctx, {
     ...model,
@@ -237,9 +243,15 @@ export async function runRemoveScopeOverrideFlow(
   targetOptions: ScopeOverrideTarget = {},
 ): Promise<void> {
   const ui: ExtensionUIContext = ctx.ui;
-  const opts = { cwd: ctx.cwd, agentDir: undefined, projectTrusted: ctx.isProjectTrusted() };
   const docs = await readBoth({ cwd: ctx.cwd });
   if (!docs.ok) return void ui.notify(`Bridge State 不可讀：${quote(docs.error ?? 'Persistence Indeterminate')}`, 'error');
+  const expectedStateRevision = targetOptions.expectedStateRevision ?? docs.project!.stateRevision;
+  const opts = {
+    cwd: ctx.cwd,
+    agentDir: undefined,
+    projectTrusted: ctx.isProjectTrusted(),
+    expectedStateRevision,
+  };
   const overrides = docs.project!.scopeOverrides;
   if (overrides.length === 0) return void ui.notify('Project Scope 目前沒有任何 Scope Override。', 'info');
 
@@ -250,7 +262,7 @@ export async function runRemoveScopeOverrideFlow(
     actionLabel: 'Scope Override Removal',
     authority: 'project' as const,
     target: target.targetId,
-    stateRevision: docs.project!.stateRevision,
+    stateRevision: expectedStateRevision,
   } satisfies Omit<TransactionSheetModel, 'step'>;
   if (!await showTransactionStep(ctx, {
     ...model,

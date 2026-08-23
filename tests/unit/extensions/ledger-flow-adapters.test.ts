@@ -2,9 +2,10 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { getFencePath, getGlobalStatePath } from '../../../src/bridge-state/paths.js';
+import { acquireLockSync, releaseLock } from '../../../src/bridge-state/atomic.js';
+import { getFencePath, getGlobalStatePath, getReceiptsJournalPath } from '../../../src/bridge-state/paths.js';
 import { commitBridgeState, readBridgeState } from '../../../src/bridge-state/store.js';
 import { appendReceipt, readReceiptJournal } from '../../../src/journal/journal.js';
 import type { UpdateCandidate } from '../../../src/lifecycle/refresh.js';
@@ -42,6 +43,7 @@ interface UiHarnessOptions {
 function makeUiHarness(options: UiHarnessOptions = {}) {
   const selects: string[] = [];
   const confirms: string[] = [];
+  const notifications: string[] = [];
   const sheets: string[] = [];
   const renders: string[] = [];
   let cancellationUsed = false;
@@ -56,7 +58,7 @@ function makeUiHarness(options: UiHarnessOptions = {}) {
       confirms.push(title);
       return options.confirm ?? true;
     },
-    notify: () => {},
+    notify: (message: string) => { notifications.push(message); },
     custom: async (factory: Function) => {
       let resolveSheet!: (value: unknown) => void;
       const completed = new Promise((resolve) => { resolveSheet = resolve; });
@@ -80,7 +82,7 @@ function makeUiHarness(options: UiHarnessOptions = {}) {
     },
   };
 
-  return { ui, selects, confirms, sheets, renders };
+  return { ui, selects, confirms, notifications, sheets, renders };
 }
 
 function updateCandidate(registrationId: string, pluginId: string, stateRevision: string): UpdateCandidate {
@@ -337,6 +339,42 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
     }]);
   });
 
+  it('rejects a Scope Override when Project state drifts after its sheet was presented', async () => {
+    await commitBridgeState('global', (state) => ({
+      ...state,
+      registrations: [{ id: SECOND_REGISTRATION_ID, alias: 'inherited' }],
+    }), { cwd, agentDir });
+    const harness = makeUiHarness({
+      onStep: async (step) => {
+        if (step === 'Commit') {
+          await commitBridgeState('project', (state) => ({ ...state }), { cwd, agentDir });
+        }
+      },
+    });
+    const ctx = {
+      cwd,
+      mode: 'tui',
+      hasUI: true,
+      isProjectTrusted: () => true,
+      ui: harness.ui,
+    };
+
+    await runScopeOverrideFlow(ctx as never, {
+      targetKind: 'registration',
+      targetId: SECOND_REGISTRATION_ID,
+    });
+
+    expect((await readBridgeState('project', { cwd, agentDir })).state?.scopeOverrides).toEqual([]);
+    expect((await readReceiptJournal('project', { cwd, agentDir })).receipts.at(-1)).toEqual(
+      expect.objectContaining({
+        operation: 'Registration Override Creation',
+        expectedStateRevision: '0',
+        observedStateRevision: '1',
+        summary: 'Rejected as Stale',
+      }),
+    );
+  });
+
   it('records and presents a Declined Receipt when Scope Override consent stays at Default No', async () => {
     await commitBridgeState('global', (state) => ({
       ...state,
@@ -361,6 +399,44 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
     expect((await readReceiptJournal('project', { cwd, agentDir })).receipts.at(-1)).toEqual(
       expect.objectContaining({ operation: 'Scope Override Creation', summary: 'Declined' }),
     );
+  });
+
+  it('reports Receipt persistence failure when a declined Scope Override Receipt cannot be appended', async () => {
+    await commitBridgeState('global', (state) => ({
+      ...state,
+      registrations: [{ id: SECOND_REGISTRATION_ID, alias: 'inherited' }],
+    }), { cwd, agentDir });
+    const journalPath = getReceiptsJournalPath('project', { cwd, agentDir });
+    const lockPath = `${journalPath}.lock`;
+    const lockFd = acquireLockSync(lockPath);
+    const harness = makeUiHarness({ confirm: false });
+    const ctx = {
+      cwd,
+      mode: 'tui',
+      hasUI: true,
+      isProjectTrusted: () => true,
+      ui: harness.ui,
+    };
+    vi.useFakeTimers();
+
+    try {
+      const flow = runScopeOverrideFlow(ctx as never, {
+        targetKind: 'registration',
+        targetId: SECOND_REGISTRATION_ID,
+      });
+      await vi.advanceTimersByTimeAsync(5_100);
+      await flow;
+
+      const receiptSheet = harness.renders.at(-1) ?? '';
+      expect(harness.notifications.at(-1)).toContain('Attempt Summary: Persistence Failed');
+      expect(receiptSheet).toMatch(/Attempt Summary:\s*"Persistence Failed"/s);
+      expect(receiptSheet).toMatch(/RECEIPT_PERSISTENCE_FAILED.*JOURNAL-01/s);
+      expect(receiptSheet).toContain('Scope Override Creation');
+      expect((await readReceiptJournal('project', { cwd, agentDir })).receipts).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      releaseLock(lockFd, lockPath);
+    }
   });
 
   it('opens the exact structured Receipt ID without a scope or truncated-label selector', async () => {
@@ -426,6 +502,67 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
     }));
   });
 
+  it('rejects Repair State when State Revision drifts after its sheet was presented', async () => {
+    const harness = makeUiHarness({
+      onStep: async (step) => {
+        if (step === 'Commit') {
+          await commitBridgeState('project', (state) => ({ ...state }), { cwd, agentDir });
+        }
+      },
+    });
+    const ctx = {
+      cwd,
+      mode: 'tui',
+      hasUI: true,
+      isProjectTrusted: () => true,
+      ui: harness.ui,
+    };
+
+    await runRepairStateFlow(ctx as never, { scope: 'project' });
+
+    expect((await readBridgeState('project', { cwd, agentDir })).state?.stateRevision).toBe('1');
+    expect((await readReceiptJournal('project', { cwd, agentDir })).receipts.at(-1)).toEqual(
+      expect.objectContaining({
+        operation: 'Repair State',
+        expectedStateRevision: '0',
+        observedStateRevision: '1',
+        summary: 'Rejected as Stale',
+      }),
+    );
+  });
+
+  it('rejects Repair State when the Journal observation drifts after its sheet was presented', async () => {
+    const concurrent = createReceipt({
+      id: 'rcpt_33333333-3333-4333-8333-333333333339',
+      operation: 'Concurrent Inspection',
+      scope: 'project',
+      trigger: 'concurrent inspection',
+      expectedStateRevision: '0',
+      summary: 'Completed',
+    });
+    const harness = makeUiHarness({
+      onStep: async (step) => {
+        if (step === 'Commit') await appendReceipt('project', concurrent, { cwd, agentDir });
+      },
+    });
+    const ctx = {
+      cwd,
+      mode: 'tui',
+      hasUI: true,
+      isProjectTrusted: () => true,
+      ui: harness.ui,
+    };
+
+    await runRepairStateFlow(ctx as never, { scope: 'project' });
+
+    const journal = await readReceiptJournal('project', { cwd, agentDir });
+    expect(journal.receipts.map((receipt) => receipt.id)).toContain(concurrent.id);
+    expect(journal.receipts.at(-1)).toEqual(expect.objectContaining({
+      operation: 'Repair State',
+      summary: 'Rejected as Stale',
+    }));
+  });
+
   it('records and presents a Declined Receipt when State Repair consent stays at Default No', async () => {
     const harness = makeUiHarness({ confirm: false });
     const ctx = {
@@ -445,6 +582,74 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
     expect((await readReceiptJournal('global', { cwd, agentDir })).receipts.at(-1)).toEqual(
       expect.objectContaining({ kind: 'State Repair', operation: 'Repair State', summary: 'Declined' }),
     );
+  });
+
+  it('reports Receipt persistence failure when a declined State Repair Receipt cannot be appended', async () => {
+    const journalPath = getReceiptsJournalPath('global', { cwd, agentDir });
+    const lockPath = `${journalPath}.lock`;
+    const lockFd = acquireLockSync(lockPath);
+    const harness = makeUiHarness({ confirm: false });
+    const ctx = {
+      cwd,
+      mode: 'tui',
+      hasUI: true,
+      isProjectTrusted: () => true,
+      ui: harness.ui,
+    };
+    vi.useFakeTimers();
+
+    try {
+      const flow = runRepairStateFlow(ctx as never, { scope: 'global' });
+      await vi.advanceTimersByTimeAsync(5_100);
+      await flow;
+
+      const receiptSheet = harness.renders.at(-1) ?? '';
+      expect(harness.notifications.at(-1)).toContain('Attempt Summary: Persistence Failed');
+      expect(receiptSheet).toMatch(/Attempt Summary:\s*"Persistence Failed"/s);
+      expect(receiptSheet).toMatch(/RECEIPT_PERSISTENCE_FAILED.*JOURNAL-01/s);
+      expect(receiptSheet).toContain('Repair State');
+      expect((await readReceiptJournal('global', { cwd, agentDir })).receipts).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      releaseLock(lockFd, lockPath);
+    }
+  });
+
+  it('preserves Retry terminal findings while reporting its Receipt persistence failure', async () => {
+    const missingReceiptId = 'rcpt_44444444-4444-4444-8444-444444444449';
+    const journalPath = getReceiptsJournalPath('global', { cwd, agentDir });
+    const lockPath = `${journalPath}.lock`;
+    const lockFd = acquireLockSync(lockPath);
+    const harness = makeUiHarness();
+    const ctx = {
+      cwd,
+      mode: 'tui',
+      hasUI: true,
+      isProjectTrusted: () => true,
+      reload: async () => {},
+      ui: harness.ui,
+    };
+    vi.useFakeTimers();
+
+    try {
+      const flow = runRetryApplicationFlow(ctx as never, {
+        scope: 'global',
+        receiptId: missingReceiptId,
+      });
+      await vi.advanceTimersByTimeAsync(5_100);
+      await flow;
+
+      const receiptSheet = harness.renders.at(-1) ?? '';
+      expect(harness.notifications.at(-1)).toContain('Attempt Summary: Persistence Failed');
+      expect(receiptSheet).toMatch(/Attempt Summary:\s*"Persistence Failed"/s);
+      expect(receiptSheet).toMatch(/REJECTED_AS_STALE.*STALE-01/s);
+      expect(receiptSheet).toMatch(/RECEIPT_PERSISTENCE_FAILED.*JOURNAL-01/s);
+      expect(receiptSheet).toContain(missingReceiptId);
+      expect((await readReceiptJournal('global', { cwd, agentDir })).receipts).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      releaseLock(lockFd, lockPath);
+    }
   });
 
   it('retries the exact Pending Application chain and resolves it through a host reload', async () => {

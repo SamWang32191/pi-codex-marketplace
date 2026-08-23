@@ -86,6 +86,8 @@ export interface LedgerActionIntent {
   desiredInstallationState?: 'disabled' | 'enabled';
   /** Revision visible when the mutation was selected; domain flows must still revalidate. */
   stateRevision?: string;
+  /** Exact presentation inspection fingerprint bound when a Marketplace Entry action is selected. */
+  validationSnapshot?: string;
 }
 
 export interface LedgerActionRow {
@@ -145,6 +147,7 @@ export interface LedgerMarketplaceEntry {
   registrationId: string;
   entryPointer: string;
   marketplaceEntryId: string;
+  validationSnapshot?: string;
   name: string;
   classification: PluginClassification | 'unavailable';
   plugin?: CompatiblePlugin;
@@ -179,6 +182,7 @@ export interface LoadBridgeLedgerSnapshotOptions {
   cwd: string;
   agentDir?: string;
   projectTrusted: boolean;
+  inspectMarketplaceEntries?: typeof inspectMarketplaceEntries;
 }
 
 export async function loadBridgeLedgerSnapshot(
@@ -198,17 +202,30 @@ export async function loadBridgeLedgerSnapshot(
         projectTrusted: options.projectTrusted,
       })
     : undefined;
-  const marketplaceEntries = {
-    global: inspectLedgerEntries('global', globalReadable, options.agentDir),
-    project: inspectLedgerEntries('project', projectReadable, options.agentDir),
-  } satisfies Record<Scope, LedgerMarketplaceItem[]>;
+  let marketplaceEntries: Record<Scope, LedgerMarketplaceItem[]> | undefined;
 
   return {
     ...states,
     projectTrusted: options.projectTrusted,
     barrier,
     journals: { global: globalJournal, project: projectJournal },
-    marketplaceEntries,
+    get marketplaceEntries() {
+      marketplaceEntries ??= {
+        global: inspectLedgerEntries(
+          'global',
+          globalReadable,
+          options.agentDir,
+          options.inspectMarketplaceEntries,
+        ),
+        project: inspectLedgerEntries(
+          'project',
+          projectReadable,
+          options.agentDir,
+          options.inspectMarketplaceEntries,
+        ),
+      };
+      return marketplaceEntries;
+    },
     effective,
   };
 }
@@ -217,9 +234,10 @@ function inspectLedgerEntries(
   scope: Scope,
   state: BridgeState | undefined,
   agentDir?: string,
+  inspector = inspectMarketplaceEntries,
 ): LedgerMarketplaceItem[] {
   return (state?.registrations ?? []).flatMap((registration) => {
-    const inspection = inspectMarketplaceEntries(registration, scope, { agentDir });
+    const inspection = inspector(registration, scope, { agentDir });
     return mapMarketplaceInspectionToLedgerItems(scope, registration, inspection);
   });
 }
@@ -236,6 +254,7 @@ export function mapMarketplaceInspectionToLedgerItems(
     marketplaceEntryId: inspection.marketplaceId
       ? `${inspection.marketplaceId}${item.entry.entryId}`
       : `${registration.id}${item.entry.entryId}`,
+    validationSnapshot: inspection.snapshot?.fingerprint,
     name: item.entry.name ?? item.plugin?.manifestName ?? item.entry.entryId,
     classification: item.classification ?? (item.plugin ? 'compatible' : 'unavailable'),
     plugin: item.plugin,
@@ -470,7 +489,10 @@ function pluginRows(
       : 'skills none';
     const unavailableReason = installed
       ? 'this Marketplace Entry already has a scope-local Installation'
-      : entry.unavailableReason ?? (entry.classification === 'compatible' ? undefined : `${entry.classification} Marketplace Entry`);
+      : entry.unavailableReason
+        ?? (entry.classification === 'compatible' && !entry.validationSnapshot
+          ? 'Validation Snapshot is unavailable; reopen Plugins after source inspection'
+          : entry.classification === 'compatible' ? undefined : `${entry.classification} Marketplace Entry`);
     const installAction = (
       actionId: 'install-disabled' | 'install-and-enable',
       desiredInstallationState: 'disabled' | 'enabled',
@@ -484,6 +506,7 @@ function pluginRows(
         registrationId: entry.registrationId,
         entryPointer: entry.entryPointer,
         desiredInstallationState,
+        validationSnapshot: entry.validationSnapshot,
       });
       return unavailableReason && candidate.enabled
         ? { ...candidate, enabled: false, disabledReason: unavailableReason }
@@ -664,14 +687,18 @@ export function buildBridgeLedgerModel(snapshot: BridgeLedgerSnapshot): BridgeLe
       ...scopeRegistrationRows('project', projectState, snapshot),
     ],
   };
+  let pluginRowCache: LedgerObjectRow[] | undefined;
   const plugins: LedgerSection = {
     id: 'plugins',
     label: 'Plugins',
     description: 'Compatible candidates and scope-local Installation state',
-    rows: [
-      ...pluginRows('global', globalState, snapshot),
-      ...pluginRows('project', projectState, snapshot),
-    ],
+    get rows() {
+      pluginRowCache ??= [
+        ...pluginRows('global', globalState, snapshot),
+        ...pluginRows('project', projectState, snapshot),
+      ];
+      return pluginRowCache;
+    },
   };
   const inheritance: LedgerSection = {
     id: 'scope-inheritance',

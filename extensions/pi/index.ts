@@ -69,9 +69,16 @@ function requiredTarget(intent: LedgerActionIntent): string {
   throw new Error(`Ledger action ${intent.actionId} requires a stable target identity`);
 }
 
+function requiredStateRevision(intent: LedgerActionIntent): string {
+  if (intent.stateRevision) return intent.stateRevision;
+  throw new Error(`Ledger action ${intent.actionId} requires a selected State Revision`);
+}
+
 function requiredMarketplaceEntryTarget(intent: LedgerActionIntent): {
   registrationId: string;
   entryPointer: string;
+  marketplaceEntryId: string;
+  validationSnapshot: string;
 } {
   if (
     intent.targetKind === 'marketplace-entry'
@@ -79,9 +86,14 @@ function requiredMarketplaceEntryTarget(intent: LedgerActionIntent): {
     && intent.entryPointer
     && intent.targetId
   ) {
+    if (!intent.validationSnapshot) {
+      throw new Error(`Ledger action ${intent.actionId} requires a bound Validation Snapshot`);
+    }
     return {
       registrationId: intent.registrationId,
       entryPointer: intent.entryPointer,
+      marketplaceEntryId: intent.targetId,
+      validationSnapshot: intent.validationSnapshot,
     };
   }
   throw new Error(`Ledger action ${intent.actionId} requires a stable Marketplace Entry identity`);
@@ -90,10 +102,12 @@ function requiredMarketplaceEntryTarget(intent: LedgerActionIntent): {
 function overrideTarget(intent: LedgerActionIntent): {
   targetKind: 'registration' | 'installation';
   targetId: string;
+  expectedStateRevision: string;
 } {
   const target = requiredTarget(intent);
+  const expectedStateRevision = requiredStateRevision(intent);
   if (intent.targetKind === 'registration' || intent.targetKind === 'installation') {
-    return { targetKind: intent.targetKind, targetId: target };
+    return { targetKind: intent.targetKind, targetId: target, expectedStateRevision };
   }
   const separator = target.indexOf('/');
   const kind = target.slice(0, separator);
@@ -101,7 +115,7 @@ function overrideTarget(intent: LedgerActionIntent): {
   if ((kind !== 'registration' && kind !== 'installation') || separator < 1 || !targetId) {
     throw new Error(`Ledger action ${intent.actionId} has an invalid Scope Override target`);
   }
-  return { targetKind: kind, targetId };
+  return { targetKind: kind, targetId, expectedStateRevision };
 }
 
 /** Dispatches only by stable semantic identity; display labels never select behavior. */
@@ -154,7 +168,10 @@ export async function dispatchLedgerAction(
         scope: requiredScope(intent),
         registrationId: entry.registrationId,
         entryPointer: entry.entryPointer,
+        marketplaceEntryId: entry.marketplaceEntryId,
         targetState: intent.actionId === 'install-and-enable' ? 'enabled' : 'disabled',
+        expectedStateRevision: requiredStateRevision(intent),
+        expectedValidationSnapshot: entry.validationSnapshot,
       });
       return;
     }
@@ -164,7 +181,7 @@ export async function dispatchLedgerAction(
         scope: requiredScope(intent),
         installationId: requiredTarget(intent),
         desiredState: intent.actionId === 'enable-installation' ? 'enabled' : 'disabled',
-        expectedStateRevision: intent.stateRevision,
+        expectedStateRevision: requiredStateRevision(intent),
       });
       return;
     case 'remove-installation':
@@ -194,7 +211,10 @@ export async function dispatchLedgerAction(
       });
       return;
     case 'repair-state':
-      await runRepairStateFlow(ctx, { scope: requiredScope(intent) });
+      await runRepairStateFlow(ctx, {
+        scope: requiredScope(intent),
+        expectedStateRevision: intent.stateRevision,
+      });
       return;
     case 'retry-application':
       await runRetryApplicationFlow(ctx, {
