@@ -47,6 +47,8 @@ export interface ProjectionOptions {
 export interface RuntimeApplicationInput {
   /** Exact State Revision the runtime is expected to re-enter at. */
   stateRevision?: string;
+  /** Exact Validation Snapshot the runtime application is bound to, when available. */
+  validationSnapshot?: string;
   scope?: Scope;
   /** Whole-Plugin Blocking Findings from projection; any one of them denies Applied. */
   wholePluginFindings?: ValidationFinding[];
@@ -323,6 +325,7 @@ export async function requestRuntimeApplication(
       scope,
       trigger: 'reload projected Effective State',
       expectedStateRevision: stateRevision,
+      validationSnapshot: input.validationSnapshot,
       durableOutcome: 'unchanged',
       runtimeOutcome: 'pending-application',
       summary: 'Pending Application',
@@ -343,6 +346,7 @@ export async function requestRuntimeApplication(
     scope,
     trigger: 'reload projected Effective State',
     expectedStateRevision: stateRevision,
+    validationSnapshot: input.validationSnapshot,
     observedStateRevision: applied ? stateRevision : undefined,
     durableOutcome: 'unchanged',
     runtimeOutcome: applied ? 'applied' : 'pending-application',
@@ -356,4 +360,3 @@ export async function requestRuntimeApplication(
     receipt,
   };
 }
-

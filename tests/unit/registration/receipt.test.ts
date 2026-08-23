@@ -133,7 +133,7 @@ describe('Attempt Receipt — Three Orthogonal Axes & Derivations', () => {
       runtimeOutcome: 'applied',
     });
 
-    expect(rcpt.id).toMatch(/^rcpt_/);
+    expect(rcpt.id).toMatch(/^rcpt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     expect(rcpt.summary).toBe('Completed');
     expect(rcpt.recoveryActions).toEqual([]);
     expect(rcpt.stateChanged).toBe(true);

@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, appendFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, appendFileSync, existsSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { preflightLocalRegistration, confirmLocalRegistration } from '../../src/registration/flow.js';
 import { checkGlobalPendingBarrier } from '../../src/barrier/global-barrier.js';
@@ -9,6 +10,30 @@ import { appendReceipt, readReceiptJournal, pruneReceiptJournal } from '../../sr
 import { repairBridgeState } from '../../src/bridge-state/repair.js';
 import { createReceipt } from '../../src/registration/receipt.js';
 import { getReceiptsJournalPath, getStatePath } from '../../src/bridge-state/paths.js';
+
+const PENDING_RECEIPT = 'rcpt_10000000-0000-4000-8000-000000000001';
+const VALID_RECEIPT_1 = 'rcpt_10000000-0000-4000-8000-000000000002';
+const VALID_RECEIPT_2 = 'rcpt_10000000-0000-4000-8000-000000000003';
+const ORPHAN_RECOVERY_RECEIPT = 'rcpt_10000000-0000-4000-8000-000000000004';
+
+const HOLDING_LOCK_OWNER = String.raw`
+  const { fsyncSync, openSync, writeFileSync } = require('node:fs');
+  const { randomUUID } = require('node:crypto');
+  const { hostname } = require('node:os');
+  const lockPath = process.argv[1];
+  const fd = openSync(lockPath, 'wx', 0o600);
+  writeFileSync(fd, JSON.stringify({
+    version: 1,
+    pid: process.pid,
+    processStartIdentity: 'child:' + process.pid + ':' + Date.now(),
+    hostname: hostname(),
+    token: randomUUID(),
+    acquiredAt: new Date().toISOString(),
+  }) + '\n');
+  fsyncSync(fd);
+  process.stdout.write('ready\n');
+  setInterval(() => {}, 1000);
+`;
 
 function makeMarketplace(root: string, name = 'test-market') {
   mkdirSync(join(root, '.agents', 'plugins'), { recursive: true });
@@ -65,7 +90,7 @@ describe('Integration — Journal, Fence, and Global Barrier', () => {
 
     // 2. Append a Pending Application receipt into the journal
     const pendingRcpt = createReceipt({
-      id: 'rcpt_pending_app_1',
+      id: PENDING_RECEIPT,
       operation: 'Plugin Installation',
       scope: 'global',
       trigger: 'install weather',
@@ -81,7 +106,7 @@ describe('Integration — Journal, Fence, and Global Barrier', () => {
     // 3. Append 15 resolved receipts to trigger pruning threshold
     for (let i = 0; i < 15; i++) {
       const resolvedRcpt = createReceipt({
-        id: `rcpt_resolved_${i}`,
+        id: `rcpt_20000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
         operation: 'Inspect Marketplace',
         scope: 'global',
         trigger: 'inspect',
@@ -93,7 +118,7 @@ describe('Integration — Journal, Fence, and Global Barrier', () => {
 
     journal = await readReceiptJournal('global', opts);
     expect(journal.activeChains).toHaveLength(1);
-    expect(journal.activeChains[0].rootReceiptId).toBe('rcpt_pending_app_1');
+    expect(journal.activeChains[0].rootReceiptId).toBe(PENDING_RECEIPT);
 
     // Prune with maxReceipts = 5
     await pruneReceiptJournal('global', 5, opts);
@@ -101,8 +126,8 @@ describe('Integration — Journal, Fence, and Global Barrier', () => {
     journal = await readReceiptJournal('global', opts);
     // Active chain MUST be retained!
     expect(journal.activeChains).toHaveLength(1);
-    expect(journal.activeChains[0].rootReceiptId).toBe('rcpt_pending_app_1');
-    const hasPending = journal.receipts.some((r) => r.id === 'rcpt_pending_app_1');
+    expect(journal.activeChains[0].rootReceiptId).toBe(PENDING_RECEIPT);
+    const hasPending = journal.receipts.some((r) => r.id === PENDING_RECEIPT);
     expect(hasPending).toBe(true);
   });
 
@@ -110,7 +135,7 @@ describe('Integration — Journal, Fence, and Global Barrier', () => {
     const opts = { cwd: projectDir, agentDir, projectTrusted: true };
 
     const validRcpt = createReceipt({
-      id: 'rcpt_valid_1',
+      id: VALID_RECEIPT_1,
       operation: 'Marketplace Registration',
       scope: 'global',
       trigger: 'register',
@@ -125,7 +150,7 @@ describe('Integration — Journal, Fence, and Global Barrier', () => {
 
     // Append another valid receipt
     const validRcpt2 = createReceipt({
-      id: 'rcpt_valid_2',
+      id: VALID_RECEIPT_2,
       operation: 'Inspect',
       scope: 'global',
       trigger: 'inspect',
@@ -141,6 +166,53 @@ describe('Integration — Journal, Fence, and Global Barrier', () => {
     expect(journal.findings).toHaveLength(1);
     expect(journal.findings[0].code).toBe('RECEIPT_CORRUPT');
     expect(journal.findings[0].classification).toBe('notice');
+  });
+
+  it('recovers journal append after a lock owner is killed', async () => {
+    const opts = { cwd: projectDir, agentDir, projectTrusted: true, journalLockTimeoutMs: 250 };
+    const journalPath = getReceiptsJournalPath('global', opts);
+    const lockPath = `${journalPath}.lock`;
+    mkdirSync(dirname(lockPath), { recursive: true });
+
+    const child = spawn(process.execPath, ['-e', HOLDING_LOCK_OWNER, lockPath], {
+      stdio: ['ignore', 'pipe', 'inherit'],
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('child lock owner did not become ready')), 1000);
+        child.once('error', (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        });
+        child.stdout.once('data', () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+      });
+
+      const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+      child.kill('SIGKILL');
+      await exited;
+      expect(existsSync(lockPath)).toBe(true);
+
+      const receipt = createReceipt({
+        id: ORPHAN_RECOVERY_RECEIPT,
+        operation: 'Inspect',
+        scope: 'global',
+        trigger: 'recover orphan journal lock',
+        expectedStateRevision: '0',
+        summary: 'Completed',
+      });
+      const append = await appendReceipt('global', receipt, opts);
+
+      expect(append.success).toBe(true);
+      expect(existsSync(lockPath)).toBe(false);
+      expect((await readReceiptJournal('global', opts)).receipts.map((item) => item.id)).toEqual([
+        ORPHAN_RECOVERY_RECEIPT,
+      ]);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    }
   });
 
   it('Global Pending Barrier blocks Project mutation when Global has active recovery, and clears upon repair', async () => {

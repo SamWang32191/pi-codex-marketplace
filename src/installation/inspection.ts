@@ -9,7 +9,11 @@ import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { classifyPlugin, type CompatiblePlugin } from '../compatibility/profile.js';
+import {
+  classifyPlugin,
+  type CompatiblePlugin,
+  type PluginClassification,
+} from '../compatibility/profile.js';
 import type { Registration, Scope } from '../bridge-state/types.js';
 import type { MarketplaceEntry } from '../registration/catalog.js';
 import { parseCatalog } from '../registration/catalog.js';
@@ -22,6 +26,8 @@ import { BUDGET } from '../registration/budget.js';
 
 export interface InspectedMarketplaceEntry {
   entry: MarketplaceEntry;
+  /** Read-only Compatibility Profile result retained for the Plugins ledger IA. */
+  classification?: PluginClassification;
   plugin?: CompatiblePlugin;
   findings: ValidationFinding[];
   unavailableReason?: string;
@@ -167,7 +173,13 @@ export function inspectMarketplaceEntries(registration: Registration, scope: Sco
       ? { ...baseClassification, plugin: { ...baseClassification.plugin, marketplaceEntryId: `${marketplaceId}${entry.entryId}` } }
       : baseClassification;
     material.update(`entry:${entry.entryId}\u001f`).update(classification.captureFingerprint).update('\u001e');
-    return { entry, plugin: classification.plugin, identity: classification.identity, findings: classification.findings };
+    return {
+      entry,
+      classification: classification.classification,
+      plugin: classification.plugin,
+      identity: classification.identity,
+      findings: classification.findings,
+    };
   });
   const snapshot = bindCapturedMaterial(snapshotResult.snapshot!, material.digest('hex'));
   const identities = new Map<string, number>();
@@ -180,7 +192,13 @@ export function inspectMarketplaceEntries(registration: Registration, scope: Sco
     const findings = sortFindings([...catalogFindings, ...item.findings, ...collision, ...drift, ...snapshotResult.findings]);
     const unavailableReason = item.unavailableReason
       ?? (hasBlocking(findings) || !item.plugin ? findings.find((finding) => finding.classification === 'blocking')?.outcome ?? 'incompatible' : undefined);
-    return { entry: item.entry, plugin: item.plugin, findings, unavailableReason };
+    return {
+      entry: item.entry,
+      classification: item.classification,
+      plugin: item.plugin,
+      findings,
+      unavailableReason,
+    };
   });
   return { entries, findings: sortFindings([...parsed.findings, ...drift, ...snapshotResult.findings]), marketplaceId, snapshot, treeFingerprint: snapshotResult.snapshot!.fingerprint };
 }

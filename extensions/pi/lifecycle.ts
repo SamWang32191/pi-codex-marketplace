@@ -10,7 +10,8 @@
 import type { ExtensionCommandContext, ExtensionUIContext } from '@earendil-works/pi-coding-agent';
 
 import { readBridgeState } from '../../src/bridge-state/store.js';
-import type { Installation, Registration, Scope } from '../../src/bridge-state/types.js';
+import type { Installation, Scope } from '../../src/bridge-state/types.js';
+import { appendReceipt } from '../../src/journal/journal.js';
 import {
   applyUpdate,
   preflightRebind,
@@ -26,9 +27,17 @@ import {
   type UpdateCandidate,
 } from '../../src/lifecycle/index.js';
 import { buildUpdatePlan, compatibleCandidateIds, type InstallationChoice } from '../../src/lifecycle/update-plan.js';
+import { createReceipt, type AttemptReceipt } from '../../src/registration/receipt.js';
+import {
+  fullValidationDisclosureLines,
+  reportOutcome,
+  validationDisclosureLines,
+} from './registration.js';
+import { quoteTerminalText } from './terminal-presentation.js';
+import { openTransactionSheet, type TransactionSheetModel } from './transaction-sheet.js';
 
 function quote(value: string): string {
-  return JSON.stringify(value);
+  return quoteTerminalText(value);
 }
 
 /** Pure helper: per-installation choice options, 'update' only when a Compatible candidate exists. */
@@ -49,6 +58,24 @@ export function planChoicesFor(
 
 /** Pure helper: candidate disclosure summary for the checklist surface. */
 export function candidateSummary(candidate: UpdateCandidate): string {
+  const findings = [...new Map(
+    [
+      ...candidate.inspection.findings,
+      ...candidate.inspection.entries.flatMap((entry) => entry.findings),
+    ].map((finding) => [
+      [
+        finding.classification,
+        finding.scope,
+        finding.phase,
+        finding.target,
+        finding.pointer,
+        finding.code,
+        finding.rule,
+        finding.outcome,
+      ].join('\u001f'),
+      finding,
+    ]),
+  ).values()];
   const lines = [
     `Scope: ${candidate.scope}`,
     `Registration: ${candidate.registrationId.slice(0, 8)}…`,
@@ -61,52 +88,81 @@ export function candidateSummary(candidate: UpdateCandidate): string {
   }
   const available = candidate.inspection.entries.filter((item) => item.plugin && !item.unavailableReason).length;
   lines.push(`Entries: ${candidate.inspection.entries.length}（${available} 可安裝）`);
-  const blocking = candidate.inspection.findings.filter((f) => f.classification === 'blocking');
-  lines.push(`Findings: ${blocking.length} blocking`);
+  lines.push(...fullValidationDisclosureLines(findings));
   for (const entry of candidate.inspection.entries) {
-    lines.push(`  ${entry.entry.entryId} ${entry.plugin ? `· ${quote(entry.plugin.manifestName)} ` : ''}— ${entry.unavailableReason ? `unavailable (${entry.unavailableReason})` : '可安裝'}`);
+    lines.push(`  ${quote(entry.entry.entryId)} ${entry.plugin ? `· ${quote(entry.plugin.manifestName)} ` : ''}— ${entry.unavailableReason ? `unavailable (${quote(entry.unavailableReason)})` : '可安裝'}`);
   }
   return lines.join('\n');
 }
 
-export function attemptReport(ctx: ExtensionCommandContext, outcome: { status: string; receipt?: { id: string; summary: string }; newRevision?: string; isIndeterminate?: boolean; findings?: { code: string; outcome: string }[] }): void {
-  if (outcome.status === 'completed') {
-    ctx.ui.notify(`Attempt Summary: ${outcome.receipt?.summary ?? 'Completed'} · State Revision ${outcome.newRevision}\nReceipt ${outcome.receipt?.id} — immutable, non-authoritative.`, 'info');
-  } else if (outcome.status === 'declined') {
-    ctx.ui.notify(`Attempt Summary: Declined — state unchanged. Receipt ${outcome.receipt?.id}`, 'info');
-  } else if (outcome.status === 'rejected-as-stale') {
-    ctx.ui.notify('Attempt Summary: Rejected as Stale — 重新執行 Refresh 與確認；不自動合併。', 'warning');
-  } else if (outcome.status === 'persistence-failed') {
-    ctx.ui.notify(`Attempt Summary: ${outcome.isIndeterminate ? 'Persistence Indeterminate' : 'Persistence Failed'} — Bridge State 未變更。`, 'error');
-  } else {
-    const first = outcome.findings?.[0];
-    ctx.ui.notify(`Attempt Summary: Blocked — ${first?.code ?? '?'}: ${first?.outcome ?? ''}`, 'error');
+export async function attemptReport(
+  ctx: ExtensionCommandContext,
+  outcome: { receipt: AttemptReceipt },
+): Promise<void> {
+  const journal = await appendReceipt(outcome.receipt.scope, outcome.receipt, { cwd: ctx.cwd });
+  await reportOutcome(ctx, outcome);
+  if (!journal.success) {
+    ctx.ui.notify(`Receipt Journal 寫入失敗：${quote(journal.error ?? 'unknown error')}`, 'warning');
   }
+}
+
+async function showTransactionStep(ctx: ExtensionCommandContext, model: TransactionSheetModel): Promise<boolean> {
+  return await openTransactionSheet(ctx, model) === 'continue';
+}
+
+function lifecycleOptions(ctx: ExtensionCommandContext): LifecycleFlowOptions {
+  return { cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() };
 }
 
 async function pickScope(ui: ExtensionUIContext): Promise<Scope | undefined> {
-  const choice = await ui.select('選擇 Scope', ['Global Scope', 'Project Scope']);
-  if (!choice) return undefined;
-  return choice.startsWith('Global') ? 'global' : 'project';
+  const labels = new Map<string, Scope>([
+    ['Global Scope', 'global'],
+    ['Project Scope', 'project'],
+  ]);
+  const choice = await ui.select('選擇 Scope', [...labels.keys()]);
+  return choice ? labels.get(choice) : undefined;
 }
 
-async function pickRegistration(ctx: ExtensionCommandContext, scope: Scope): Promise<{ registration: Registration; opts: LifecycleFlowOptions } | undefined> {
+async function pickRegistration(
+  ctx: ExtensionCommandContext,
+  scope: Scope,
+  registrationId?: string,
+): Promise<{
+  registrationId: string;
+  stateRevision: string;
+  validationSnapshot?: string;
+  opts: LifecycleFlowOptions;
+} | undefined> {
   const ui = ctx.ui;
-  const opts: LifecycleFlowOptions = { cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() };
+  const opts = lifecycleOptions(ctx);
   const state = await readBridgeState(scope, opts);
   if (state.status !== 'ok' && state.status !== 'missing') {
-    ui.notify(`Bridge State 不可讀：${state.error ?? 'Persistence Indeterminate'}`, 'error');
+    ui.notify(`Bridge State 不可讀：${quote(state.error ?? 'Persistence Indeterminate')}`, 'error');
     return undefined;
   }
   const registrations = state.state?.registrations ?? [];
+  if (registrationId) {
+    return {
+      registrationId,
+      stateRevision: state.state?.stateRevision ?? '?',
+      validationSnapshot: registrations.find((registration) => registration.id === registrationId)?.validationSnapshot,
+      opts,
+    };
+  }
   if (registrations.length === 0) {
     ui.notify('此 Scope 尚無 Marketplace Registration。', 'info');
     return undefined;
   }
-  const labels = registrations.map((r) => `${r.alias ?? r.marketplaceName ?? r.id} · ${r.sourceKind ?? '?'} · ${r.id}`);
+  const labels = registrations.map((r) => `${quote(r.alias ?? r.marketplaceName ?? r.id)} · ${r.sourceKind ?? '?'} · ${r.id}`);
   const chosen = await ui.select('選擇 Marketplace Registration', labels);
   if (!chosen) return undefined;
-  return { registration: registrations[labels.indexOf(chosen)]!, opts };
+  const registration = registrations[labels.indexOf(chosen)]!;
+  return {
+    registrationId: registration.id,
+    stateRevision: state.state!.stateRevision,
+    validationSnapshot: registration.validationSnapshot,
+    opts,
+  };
 }
 
 /**
@@ -121,24 +177,91 @@ export async function runUpdatePlanChecklist(
   stateRevision: string,
   kind: 'apply-update' | 'rebind',
   rebindSource?: Parameters<typeof buildUpdatePlan>[3] extends never ? never : NonNullable<Parameters<typeof buildUpdatePlan>[3]['rebindSource']>,
+  transaction: { intentShown?: boolean } = {},
 ): Promise<void> {
   const ui = ctx.ui;
-  const opts: LifecycleFlowOptions = { cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() };
+  const opts = lifecycleOptions(ctx);
   const state = await readBridgeState(scope, opts);
-  if (state.status !== 'ok' && state.status !== 'missing') return void ui.notify(`Bridge State 不可讀：${state.error ?? 'Persistence Indeterminate'}`, 'error');
+  if (state.status !== 'ok' && state.status !== 'missing') return void ui.notify(`Bridge State 不可讀：${quote(state.error ?? 'Persistence Indeterminate')}`, 'error');
 
   // Strictly this Registration's own scope-local Installations — independent Registrations and
   // Installations are never combined into a batch (CONTEXT.md: Lifecycle Operation).
   const installations = (state.state?.installations ?? []).filter((i) => i.registrationId === candidate.registrationId);
 
+  const actionLabel = kind === 'rebind' ? 'Registration Rebind' : 'Apply Update';
+  const commonModel = {
+    actionLabel,
+    authority: scope,
+    target: candidate.registrationId,
+    stateRevision,
+    validationSnapshot: candidate.snapshot.fingerprint,
+  } satisfies Omit<TransactionSheetModel, 'step'>;
+
+  const concludeWithoutCommit = async (
+    summary: 'Declined' | 'Blocked',
+    findings: AttemptReceipt['findings'] = [],
+  ): Promise<void> => {
+    await attemptReport(ctx, {
+      receipt: createReceipt({
+        operation: actionLabel,
+        scope,
+        trigger: `${kind} ${candidate.registrationId}`,
+        expectedStateRevision: stateRevision,
+        validationSnapshot: candidate.snapshot.fingerprint,
+        summary,
+        findings,
+        stateChanged: false,
+      }),
+    });
+  };
+
+  if (!transaction.intentShown && !await showTransactionStep(ctx, {
+    ...commonModel,
+    step: 'Intent',
+    details: [kind === 'rebind' ? 'Replace the Registration source while preserving its canonical ID' : 'Apply the exact Update Candidate in one Lifecycle Operation'],
+  })) {
+    await concludeWithoutCommit('Declined');
+    return;
+  }
+
+  if (!await showTransactionStep(ctx, {
+    ...commonModel,
+    step: 'Validation',
+    details: candidateSummary(candidate).split('\n'),
+  })) {
+    await concludeWithoutCommit('Declined');
+    return;
+  }
+
   ui.notify(`Validation Disclosure（新快照）：\n${candidateSummary(candidate)}`, 'info');
+
+  if (!await showTransactionStep(ctx, {
+    ...commonModel,
+    step: 'Consent',
+    details: ['Registration Confirmation and every required Activation Confirmation remain separate Default No decisions'],
+  })) {
+    await concludeWithoutCommit('Declined');
+    return;
+  }
 
   // Fresh Registration Confirmation — Default No, bound to the candidate snapshot + revision.
   const registrationConfirmed = await ui.confirm(
     'Registration Confirmation — 預設 No（綁定新 Validation Snapshot + State Revision）',
     `接受此新的 Validation Snapshot 作為 Registration ${candidate.registrationId.slice(0, 8)}… 的授權來源？`,
   );
-  if (!registrationConfirmed) return void ui.notify('Attempt Summary: Declined — 未取得 Registration Confirmation，狀態未變更。', 'info');
+  if (!registrationConfirmed) {
+    await concludeWithoutCommit('Declined');
+    return;
+  }
+
+  if (!await showTransactionStep(ctx, {
+    ...commonModel,
+    step: 'Plan',
+    details: [`Installations requiring an explicit outcome: ${installations.length}`],
+  })) {
+    await concludeWithoutCommit('Declined');
+    return;
+  }
 
   // One explicit outcome per existing Installation — never batched, no default.
   const choices: Record<string, InstallationChoice> = {};
@@ -146,10 +269,13 @@ export async function runUpdatePlanChecklist(
   for (const { installation, options } of planChoicesFor(installations, candidate)) {
     const selectable = options.filter((o) => o.enabled);
     const picked = await ui.select(
-      `Installation ${installation.manifestName ?? installation.pluginId}（${installation.installationState}）— 選擇更新結果`,
+      `Installation ${quote(installation.manifestName ?? installation.pluginId)}（${installation.installationState}）— 選擇更新結果`,
       selectable.map((o) => o.label),
     );
-    if (!picked) return void ui.notify('已取消 — Update Plan 放棄（每個 Installation 皆需明確抉擇）。', 'info');
+    if (!picked) {
+      await concludeWithoutCommit('Declined');
+      return;
+    }
     choices[installation.id] = selectable.find((o) => o.label === picked)!.value;
   }
 
@@ -159,9 +285,13 @@ export async function runUpdatePlanChecklist(
     if (!willStayEnabled) continue;
     const confirmed = await ui.confirm(
       'Activation Confirmation — 預設 No（舊同意不沿用）',
-      `啟用的 ${installation.manifestName ?? installation.pluginId} 將在新快照下保持啟用。確認其 Activation？`,
+      `啟用的 ${quote(installation.manifestName ?? installation.pluginId)} 將在新快照下保持啟用。確認其 Activation？`,
     );
     activationConfirmations[installation.id] = confirmed;
+    if (!confirmed) {
+      await concludeWithoutCommit('Declined');
+      return;
+    }
   }
 
   const plan = buildUpdatePlan(candidate, installations, stateRevision, {
@@ -172,38 +302,87 @@ export async function runUpdatePlanChecklist(
     activationConfirmations,
   });
   if (!plan.ok) {
-    return void ui.notify(`Update Plan 無法成立（放棄提交）：\n${plan.problems.map((p) => `- [${p.code}] ${p.outcome}`).join('\n')}`, 'warning');
+    await concludeWithoutCommit('Blocked', plan.problems);
+    return;
   }
 
   // Final checklist review before the single atomic commit.
   const checklist = plan.plan.entries
     .map((entry) => `· ${entry.installationId.slice(0, 16)}… → ${entry.choice}${entry.choice === 'update' ? `（${entry.installationState}）` : ''}`)
     .join('\n');
+
+  if (!await showTransactionStep(ctx, {
+    ...commonModel,
+    step: 'Commit',
+    details: [
+      'The complete Update Plan will commit atomically after the final Default No confirmation',
+      ...(checklist ? checklist.split('\n') : ['No existing Installation consequences']),
+    ],
+  })) {
+    await concludeWithoutCommit('Declined');
+    return;
+  }
+
   const proceed = await ui.confirm(
     kind === 'rebind' ? 'Apply Rebind — 單次原子提交' : 'Apply Update — 單次原子提交',
     `將以單一 Lifecycle Operation 原子替換快照並套用所有披露後果：\n${checklist || '（無既有 Installation）'}\n\n確認提交？`,
   );
-  if (!proceed) return void ui.notify('Attempt Summary: Declined — 未提交。', 'info');
+  if (!proceed) {
+    await concludeWithoutCommit('Declined');
+    return;
+  }
 
-  attemptReport(ctx, await applyUpdate(plan.plan, opts));
+  await attemptReport(ctx, await applyUpdate(plan.plan, opts));
 }
 
 /** Marketplace Refresh on a single Registration — non-mutating; produces an Update Candidate or reports no change. */
-export async function runRefreshFlow(ctx: ExtensionCommandContext): Promise<void> {
+export async function runRefreshFlow(
+  ctx: ExtensionCommandContext,
+  target: { scope?: Scope; registrationId?: string } = {},
+): Promise<void> {
   const ui = ctx.ui;
-  const scope = await pickScope(ui);
+  const scope = target.scope ?? await pickScope(ui);
   if (!scope) return;
-  const picked = await pickRegistration(ctx, scope);
+  const picked = await pickRegistration(ctx, scope, target.registrationId);
   if (!picked) return;
 
-  const outcome = await refreshRegistration(scope, picked.registration.id, picked.opts);
+  const model = {
+    actionLabel: 'Marketplace Refresh',
+    authority: scope,
+    target: picked.registrationId,
+    stateRevision: picked.stateRevision,
+    validationSnapshot: picked.validationSnapshot,
+  } satisfies Omit<TransactionSheetModel, 'step'>;
+  if (!await showTransactionStep(ctx, {
+    ...model,
+    step: 'Intent',
+    details: [
+      'Run an explicit non-mutating inspection for this Registration only',
+      'Bridge State will not be written by Marketplace Refresh',
+    ],
+  })) return;
+
+  const outcome = await refreshRegistration(scope, picked.registrationId, picked.opts);
+  const validationDetails = outcome.status === 'update-candidate'
+    ? candidateSummary(outcome.candidate).split('\n')
+    : [
+        `Refresh outcome: ${outcome.status}`,
+        ...fullValidationDisclosureLines(outcome.receipt.findings),
+      ];
+  const validationContinued = await showTransactionStep(ctx, {
+    ...model,
+    stateRevision: outcome.receipt.expectedStateRevision,
+    validationSnapshot: outcome.receipt.validationSnapshot,
+    step: 'Validation',
+    details: validationDetails,
+  });
+  await attemptReport(ctx, outcome);
+  if (!validationContinued) return;
   if (outcome.status === 'no-change') {
-    ui.notify(`Attempt Summary: Completed — 無變更（recorded snapshot 仍為權威）。\nReceipt ${outcome.receipt.id}`, 'info');
     return;
   }
   if (outcome.status === 'blocked') {
-    const first = outcome.findings[0];
-    return void ui.notify(`Attempt Summary: Blocked — ${first?.code}: ${first?.outcome}`, 'error');
+    return;
   }
   ui.notify('Update Candidate 已產生（非變異檢查，Bridge State 未寫入）。', 'info');
   // Bind the plan to the exact State Revision the candidate was validated against.
@@ -211,18 +390,35 @@ export async function runRefreshFlow(ctx: ExtensionCommandContext): Promise<void
 }
 
 /** Registration Rebind — replace locator/selector under the preserved Registration ID. */
-export async function runRebindFlow(ctx: ExtensionCommandContext): Promise<void> {
+export async function runRebindFlow(
+  ctx: ExtensionCommandContext,
+  targetOptions: { scope?: Scope; registrationId?: string } = {},
+): Promise<void> {
   const ui = ctx.ui;
-  const scope = await pickScope(ui);
+  const scope = targetOptions.scope ?? await pickScope(ui);
   if (!scope) return;
-  const picked = await pickRegistration(ctx, scope);
+  const picked = await pickRegistration(ctx, scope, targetOptions.registrationId);
   if (!picked) return;
 
-  const kindChoice = await ui.select('新來源型別', ['本地目錄（local path）', 'Git 倉庫（locator + selector）']);
+  if (!await showTransactionStep(ctx, {
+    step: 'Intent',
+    actionLabel: 'Registration Rebind',
+    authority: scope,
+    target: picked.registrationId,
+    details: ['Replace the source locator or Git selector while preserving the canonical Registration ID'],
+  })) return;
+
+  const sourceKinds = new Map<string, RebindTarget['kind']>([
+    ['本地目錄（local path）', 'local'],
+    ['Git 倉庫（locator + selector）', 'git'],
+  ]);
+  const kindChoice = await ui.select('新來源型別', [...sourceKinds.keys()]);
   if (!kindChoice) return;
+  const sourceKind = sourceKinds.get(kindChoice);
+  if (!sourceKind) return;
 
   let target: RebindTarget;
-  if (kindChoice.startsWith('本地')) {
+  if (sourceKind === 'local') {
     const rootPath = await ui.input('新的本地 Marketplace Root 路徑', '/path/to/marketplace');
     if (!rootPath) return void ui.notify('已取消 Rebind。', 'info');
     target = { kind: 'local', rootPath };
@@ -241,45 +437,195 @@ export async function runRebindFlow(ctx: ExtensionCommandContext): Promise<void>
     target = { kind: 'git', locator, selector };
   }
 
-  const pf = await preflightRebind(scope, picked.registration.id, target, picked.opts);
+  const pf = await preflightRebind(scope, picked.registrationId, target, picked.opts);
   if (!pf.ok) {
-    const first = pf.outcome.findings?.[0];
-    return void ui.notify(`Attempt Summary: Blocked — ${first?.code ?? '?'}: ${first?.outcome ?? ''}`, 'error');
+    await showTransactionStep(ctx, {
+      step: 'Validation',
+      actionLabel: 'Registration Rebind',
+      authority: scope,
+      target: picked.registrationId,
+      stateRevision: pf.outcome.receipt.expectedStateRevision,
+      validationSnapshot: pf.outcome.receipt.validationSnapshot,
+      details: fullValidationDisclosureLines(pf.outcome.receipt.findings),
+    });
+    await attemptReport(ctx, pf.outcome);
+    return;
   }
   ui.notify('替代來源已完成完整重驗證；需重新收集全部確認（舊 Activation 同意不沿用）。', 'info');
   // Rebind binds to the revision observed while validating the replacement source.
-  await runUpdatePlanChecklist(ctx, scope, pf.preflight.candidate, pf.preflight.stateRevision, 'rebind', pf.preflight.rebindSource);
+  await runUpdatePlanChecklist(
+    ctx,
+    scope,
+    pf.preflight.candidate,
+    pf.preflight.stateRevision,
+    'rebind',
+    pf.preflight.rebindSource,
+    { intentShown: true },
+  );
 }
 
 /** Removal flows with full cascade disclosure, Default No. */
-export async function runRemovalFlow(ctx: ExtensionCommandContext): Promise<void> {
+export async function runRemovalFlow(
+  ctx: ExtensionCommandContext,
+  target: {
+    scope?: Scope;
+    targetKind?: 'registration' | 'installation';
+    targetId?: string;
+  } = {},
+): Promise<void> {
   const ui = ctx.ui;
-  const scope = await pickScope(ui);
+  const scope = target.scope ?? await pickScope(ui);
   if (!scope) return;
-  const what = await ui.select('移除目標', ['整個 Registration（原子刪除同範圍所有 Installations）', '單一 Installation（保留 Registration）']);
-  if (!what) return;
   const opts = { cwd: ctx.cwd, agentDir: undefined as string | undefined, projectTrusted: ctx.isProjectTrusted() };
+  let targetKind = target.targetKind;
 
-  if (what.startsWith('整個')) {
-    const picked = await pickRegistration(ctx, scope);
+  if (!targetKind && target.targetId) {
+    const state = await readBridgeState(scope, opts);
+    if (state.status !== 'ok' && state.status !== 'missing') return void ui.notify(`Bridge State 不可讀：${quote(state.error ?? 'Persistence Indeterminate')}`, 'error');
+    if (state.state?.registrations.some((registration) => registration.id === target.targetId)) targetKind = 'registration';
+    if (state.state?.installations.some((installation) => installation.id === target.targetId)) targetKind = 'installation';
+    if (!targetKind) return void ui.notify(`找不到 canonical removal target ${quote(target.targetId)}。`, 'warning');
+  }
+
+  if (!targetKind) {
+    const removalKinds = new Map<string, 'registration' | 'installation'>([
+      ['整個 Registration（原子刪除同範圍所有 Installations）', 'registration'],
+      ['單一 Installation（保留 Registration）', 'installation'],
+    ]);
+    const what = await ui.select('移除目標', [...removalKinds.keys()]);
+    if (!what) return;
+    targetKind = removalKinds.get(what);
+    if (!targetKind) return;
+  }
+
+  if (targetKind === 'registration') {
+    const picked = await pickRegistration(ctx, scope, target.targetId);
     if (!picked) return;
-    const pf = await preflightRegistrationRemoval(scope, picked.registration.id, opts);
-    if (!pf.ok) return attemptReport(ctx, pf.outcome);
-    const proceed = await ui.confirm('Registration Removal — 預設 No', registrationRemovalDisclosure(pf.preflight));
-    attemptReport(ctx, await confirmRegistrationRemoval(pf.preflight, proceed, opts));
+
+    const model = {
+      actionLabel: 'Registration Removal',
+      authority: scope,
+      target: picked.registrationId,
+    } satisfies Omit<TransactionSheetModel, 'step'>;
+    if (!await showTransactionStep(ctx, {
+      ...model,
+      step: 'Intent',
+      details: ['Remove the Registration and all of its same-scope Installations atomically'],
+    })) return;
+
+    const pf = await preflightRegistrationRemoval(scope, picked.registrationId, opts);
+    if (!pf.ok) {
+      await showTransactionStep(ctx, {
+        ...model,
+        step: 'Validation',
+        stateRevision: pf.outcome.receipt.expectedStateRevision,
+        details: fullValidationDisclosureLines(pf.outcome.receipt.findings),
+      });
+      await attemptReport(ctx, pf.outcome);
+      return;
+    }
+
+    const boundModel = { ...model, stateRevision: pf.preflight.stateRevision };
+    const decline = async (): Promise<void> => {
+      await attemptReport(ctx, await confirmRegistrationRemoval(pf.preflight, false, opts));
+    };
+    if (!await showTransactionStep(ctx, {
+      ...boundModel,
+      step: 'Validation',
+      details: [
+        ...validationDisclosureLines([]),
+        ...registrationRemovalDisclosure(pf.preflight).split('\n'),
+      ],
+    })) return decline();
+    if (!await showTransactionStep(ctx, {
+      ...boundModel,
+      step: 'Consent',
+      details: ['Registration Removal confirmation remains a separate Default No decision'],
+    })) return decline();
+    const proceed = await ui.confirm(
+      'Registration Removal — 預設 No',
+      quote(registrationRemovalDisclosure(pf.preflight)),
+    );
+    if (!proceed) return decline();
+    if (!await showTransactionStep(ctx, {
+      ...boundModel,
+      step: 'Plan',
+      details: registrationRemovalDisclosure(pf.preflight).split('\n'),
+    })) return decline();
+    if (!await showTransactionStep(ctx, {
+      ...boundModel,
+      step: 'Commit',
+      details: ['Commit the disclosed cascade to this scope document under the held Attempt Fence'],
+    })) return decline();
+    await attemptReport(ctx, await confirmRegistrationRemoval(pf.preflight, true, opts));
     return;
   }
 
-  const state = await readBridgeState(scope, opts);
-  if (state.status !== 'ok' && state.status !== 'missing') return void ui.notify(`Bridge State 不可讀：${state.error ?? 'Persistence Indeterminate'}`, 'error');
-  const installations = state.state?.installations ?? [];
-  if (installations.length === 0) return void ui.notify('此 Scope 尚無 Installed Plugin。', 'info');
-  const labels = installations.map((i) => `${i.manifestName ?? i.pluginId} · ${i.installationState} · ${i.id}`);
-  const chosen = await ui.select('選擇要移除的 Installation', labels);
-  if (!chosen) return;
-  const installation = installations[labels.indexOf(chosen)]!;
-  const pf = await preflightInstallationRemoval(scope, installation.id, opts);
-  if (!pf.ok) return attemptReport(ctx, pf.outcome);
-  const proceed = await ui.confirm('Installation Removal — 預設 No', installationRemovalDisclosure(pf.preflight));
-  attemptReport(ctx, await confirmInstallationRemoval(pf.preflight, proceed, opts));
+  let installationId = target.targetId;
+  if (!installationId) {
+    const state = await readBridgeState(scope, opts);
+    if (state.status !== 'ok' && state.status !== 'missing') return void ui.notify(`Bridge State 不可讀：${quote(state.error ?? 'Persistence Indeterminate')}`, 'error');
+    const installations = state.state?.installations ?? [];
+    if (installations.length === 0) return void ui.notify('此 Scope 尚無 Installed Plugin。', 'info');
+    const labels = installations.map((installation) => `${quote(installation.manifestName ?? installation.pluginId)} · ${installation.installationState} · ${quote(installation.id)}`);
+    const chosen = await ui.select('選擇要移除的 Installation', labels);
+    if (!chosen) return;
+    installationId = installations[labels.indexOf(chosen)]!.id;
+  }
+
+  const model = {
+    actionLabel: 'Installation Removal',
+    authority: scope,
+    target: installationId,
+  } satisfies Omit<TransactionSheetModel, 'step'>;
+  if (!await showTransactionStep(ctx, {
+    ...model,
+    step: 'Intent',
+    details: ['Remove exactly one scope-local Installation while retaining its Registration'],
+  })) return;
+
+  const pf = await preflightInstallationRemoval(scope, installationId, opts);
+  if (!pf.ok) {
+    await showTransactionStep(ctx, {
+      ...model,
+      step: 'Validation',
+      stateRevision: pf.outcome.receipt.expectedStateRevision,
+      details: fullValidationDisclosureLines(pf.outcome.receipt.findings),
+    });
+    await attemptReport(ctx, pf.outcome);
+    return;
+  }
+  const boundModel = { ...model, stateRevision: pf.preflight.stateRevision };
+  const decline = async (): Promise<void> => {
+    await attemptReport(ctx, await confirmInstallationRemoval(pf.preflight, false, opts));
+  };
+  if (!await showTransactionStep(ctx, {
+    ...boundModel,
+    step: 'Validation',
+    details: [
+      ...validationDisclosureLines([]),
+      ...installationRemovalDisclosure(pf.preflight).split('\n'),
+    ],
+  })) return decline();
+  if (!await showTransactionStep(ctx, {
+    ...boundModel,
+    step: 'Consent',
+    details: ['Installation Removal confirmation remains a separate Default No decision'],
+  })) return decline();
+  const proceed = await ui.confirm(
+    'Installation Removal — 預設 No',
+    quote(installationRemovalDisclosure(pf.preflight)),
+  );
+  if (!proceed) return decline();
+  if (!await showTransactionStep(ctx, {
+    ...boundModel,
+    step: 'Plan',
+    details: installationRemovalDisclosure(pf.preflight).split('\n'),
+  })) return decline();
+  if (!await showTransactionStep(ctx, {
+    ...boundModel,
+    step: 'Commit',
+    details: ['Commit removal to this scope document under the held Attempt Fence'],
+  })) return decline();
+  await attemptReport(ctx, await confirmInstallationRemoval(pf.preflight, true, opts));
 }

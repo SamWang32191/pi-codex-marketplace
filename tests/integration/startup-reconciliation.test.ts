@@ -8,6 +8,9 @@ import { appendReceipt, readReceiptJournal } from '../../src/journal/journal.js'
 import { createReceipt } from '../../src/registration/receipt.js';
 import { getStatePath } from '../../src/bridge-state/paths.js';
 
+const GLOBAL_PENDING_RECEIPT = 'rcpt_40000000-0000-4000-8000-000000000001';
+const PROJECT_PENDING_RECEIPT = 'rcpt_40000000-0000-4000-8000-000000000002';
+
 describe('Integration — Startup Reconciliation & Multi-scope Lifecycle', () => {
   let tmpRoot: string;
   let agentDir: string;
@@ -58,7 +61,7 @@ describe('Integration — Startup Reconciliation & Multi-scope Lifecycle', () =>
       'utf-8',
     );
     const globalPending = createReceipt({
-      id: 'rcpt_g_pending',
+      id: GLOBAL_PENDING_RECEIPT,
       operation: 'Plugin Installation',
       scope: 'global',
       trigger: 'install weather',
@@ -86,7 +89,7 @@ describe('Integration — Startup Reconciliation & Multi-scope Lifecycle', () =>
       'utf-8',
     );
     const projPending = createReceipt({
-      id: 'rcpt_p_pending',
+      id: PROJECT_PENDING_RECEIPT,
       operation: 'Plugin Installation',
       scope: 'project',
       trigger: 'install tools',
@@ -107,11 +110,11 @@ describe('Integration — Startup Reconciliation & Multi-scope Lifecycle', () =>
 
     expect(res.globalReconciled).toBe(true);
     expect(res.globalReceipt?.summary).toBe('Completed');
-    expect(res.globalReceipt?.recoversReceiptId).toBe('rcpt_g_pending');
+    expect(res.globalReceipt?.recoversReceiptId).toBe(GLOBAL_PENDING_RECEIPT);
 
     expect(res.projectReconciled).toBe(true);
     expect(res.projectReceipt?.summary).toBe('Completed');
-    expect(res.projectReceipt?.recoversReceiptId).toBe('rcpt_p_pending');
+    expect(res.projectReceipt?.recoversReceiptId).toBe(PROJECT_PENDING_RECEIPT);
 
     const gj = await readReceiptJournal('global', opts);
     const pj = await readReceiptJournal('project', opts);

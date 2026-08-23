@@ -13,12 +13,16 @@ import type { ExtensionCommandContext, ExtensionUIContext } from '@earendil-work
 import { readBridgeState } from '../../src/bridge-state/store.js';
 import type { BridgeState } from '../../src/bridge-state/types.js';
 import { computeEffectiveState, type EffectiveState } from '../../src/projection/effective-state.js';
-import { createScopeOverride, removeScopeOverride, type OverrideKind, type OverrideOutcome } from '../../src/projection/overrides.js';
+import { createScopeOverride, removeScopeOverride, type OverrideKind } from '../../src/projection/overrides.js';
 import { projectEffectiveState } from '../../src/projection/project.js';
-import { reportOutcome } from './registration.js';
+import { createReceipt } from '../../src/registration/receipt.js';
+import { reportOutcome, validationDisclosureLines } from './registration.js';
+import { appendAndReportReceipt } from './journal.js';
+import { quoteTerminalText } from './terminal-presentation.js';
+import { openTransactionSheet, type TransactionSheetModel } from './transaction-sheet.js';
 
 function quote(value: string): string {
-  return JSON.stringify(value);
+  return quoteTerminalText(value);
 }
 
 /** One row of the inherited-Global listing shown before creating an override. */
@@ -103,55 +107,200 @@ async function readBoth(ctx: { cwd?: string; agentDir?: string }): Promise<{ ok:
   return { ok: true, global: globalRead.state!, project: projectRead.state! };
 }
 
-/** Create fine-grained Scope Overrides against inherited Global registrations / installations. */
-export async function runScopeOverrideFlow(ctx: ExtensionCommandContext): Promise<void> {
-  const ui: ExtensionUIContext = ctx.ui;
-  const opts = { cwd: ctx.cwd, agentDir: undefined, projectTrusted: ctx.isProjectTrusted() };
-  const docs = await readBoth({ cwd: ctx.cwd });
-  if (!docs.ok) return void ui.notify(`Bridge State 不可讀：${docs.error}`, 'error');
+export interface ScopeOverrideTarget {
+  targetKind?: OverrideKind;
+  targetId?: string;
+  expectedStateRevision?: string;
+}
 
-  if (!ctx.isProjectTrusted()) {
-    return void ui.notify('Project Trust 未由 Pi host 授予——無法執行任何 Project Scope Lifecycle Operation（紀錄仍保存但不參與 Effective State）。', 'warning');
+async function showTransactionStep(ctx: ExtensionCommandContext, model: TransactionSheetModel): Promise<boolean> {
+  return await openTransactionSheet(ctx, model) === 'continue';
+}
+
+async function reportDeclinedOverride(
+  ctx: ExtensionCommandContext,
+  model: Omit<TransactionSheetModel, 'step'> & { authority: 'project'; stateRevision: string },
+): Promise<void> {
+  const receipt = createReceipt({
+    operation: model.actionLabel,
+    scope: 'project',
+    trigger: `declined ${model.actionLabel} ${model.target ?? ''}`,
+    expectedStateRevision: model.stateRevision,
+    summary: 'Declined',
+    stateChanged: false,
+  });
+  await appendAndReportReceipt(ctx, receipt);
+}
+
+async function pickInheritedRow(
+  ui: ExtensionUIContext,
+  rows: InheritedRecordRow[],
+  target: ScopeOverrideTarget,
+): Promise<InheritedRecordRow | undefined> {
+  if (target.targetId) {
+    return rows.find((row) =>
+      row.targetId === target.targetId && (!target.targetKind || row.kind === target.targetKind));
   }
+  const candidates = target.targetKind ? rows.filter((row) => row.kind === target.targetKind) : rows;
+  const labels = candidates.map((row) => `${row.label} · ${quote(row.targetId)}`);
+  const chosen = await ui.select('建立 Scope Override — 選擇要抑制的繼承全域紀錄', labels);
+  if (!chosen) return undefined;
+  return candidates[labels.indexOf(chosen)];
+}
+
+async function pickExistingOverride(
+  ui: ExtensionUIContext,
+  overrides: BridgeState['scopeOverrides'],
+  target: ScopeOverrideTarget,
+): Promise<BridgeState['scopeOverrides'][number] | undefined> {
+  if (target.targetId) {
+    return overrides.find((item) =>
+      item.targetId === target.targetId && (!target.targetKind || item.kind === target.targetKind));
+  }
+  const candidates = target.targetKind ? overrides.filter((item) => item.kind === target.targetKind) : overrides;
+  const labels = candidates.map((item) => `${item.kind} Override → ${quote(item.targetId)}`);
+  const chosen = await ui.select('移除 Scope Override — 移除後立即還原繼承（不改寫全域文件）', labels);
+  if (!chosen) return undefined;
+  return candidates[labels.indexOf(chosen)];
+}
+
+/** Create fine-grained Scope Overrides against inherited Global registrations / installations. */
+export async function runScopeOverrideFlow(
+  ctx: ExtensionCommandContext,
+  target: ScopeOverrideTarget = {},
+): Promise<void> {
+  const ui: ExtensionUIContext = ctx.ui;
+  const docs = await readBoth({ cwd: ctx.cwd });
+  if (!docs.ok) return void ui.notify(`Bridge State 不可讀：${quote(docs.error ?? 'Persistence Indeterminate')}`, 'error');
+  const expectedStateRevision = target.expectedStateRevision ?? docs.project!.stateRevision;
+  const opts = {
+    cwd: ctx.cwd,
+    agentDir: undefined,
+    projectTrusted: ctx.isProjectTrusted(),
+    expectedStateRevision,
+  };
 
   const rows = inheritedRecordRows(docs.global!, docs.project!, ctx.isProjectTrusted());
-  const chosen = await ui.select('建立 Scope Override — 選擇要抑制的繼承全域紀錄', rows.map((row) => row.label));
-  if (!chosen) return;
-  const row = rows.find((item) => item.label === chosen)!;
-  if (row.suppressedByOverride) return void ui.notify('此紀錄已被現有 Scope Override 抑制。', 'warning');
+  const row = await pickInheritedRow(ui, rows, target);
+  if (!row) return void ui.notify('找不到指定的繼承全域紀錄。', 'warning');
+
+  const model = {
+    actionLabel: 'Scope Override Creation',
+    authority: 'project' as const,
+    target: row.targetId,
+    stateRevision: expectedStateRevision,
+  } satisfies Omit<TransactionSheetModel, 'step'>;
+  if (!await showTransactionStep(ctx, {
+    ...model,
+    step: 'Intent',
+    details: [`Create a Project Scope ${row.kind} override without modifying Global Bridge State`],
+  })) return void await reportDeclinedOverride(ctx, model);
+
+  if (!await showTransactionStep(ctx, {
+    ...model,
+    step: 'Validation',
+    details: [
+      ...validationDisclosureLines([]),
+      `Target kind: ${row.kind}`,
+      `Target ID: ${quote(row.targetId)}`,
+      `Already suppressed: ${row.suppressedByOverride ? 'yes' : 'no'}`,
+      `Project Trust observed from Pi host: ${ctx.isProjectTrusted() ? 'granted' : 'not granted; domain admission will block'}`,
+    ],
+  })) return void await reportDeclinedOverride(ctx, model);
 
   const cascade = row.kind === 'registration'
     ? '\n\nRegistration Override 會抑制整顆 Marketplace 子樹（該 Registration 及其所有 Installations）。'
     : '\n\nInstallation Override 僅抑制此單一 Plugin。';
+  if (!await showTransactionStep(ctx, {
+    ...model,
+    step: 'Consent',
+    details: ['Scope Override Disclosure remains a separate Default No decision'],
+  })) return void await reportDeclinedOverride(ctx, model);
   const confirmed = await ui.confirm(
     'Scope Override Disclosure — 預設 No',
-    `將於 Project Scope 建立 ${row.kind} Scope Override，抑制繼承的全域紀錄：\n${row.targetId}${cascade}\n\n不會修改全域文件；移除 Override 即可還原繼承。`,
+    `將於 Project Scope 建立 ${row.kind} Scope Override，抑制繼承的全域紀錄：\n${quote(row.targetId)}${cascade}\n\n不會修改全域文件；移除 Override 即可還原繼承。`,
   );
-  if (!confirmed) return void ui.notify('Attempt Summary: Declined — state unchanged.', 'info');
+  if (!confirmed) return void await reportDeclinedOverride(ctx, model);
+
+  if (!await showTransactionStep(ctx, {
+    ...model,
+    step: 'Plan',
+    details: [row.kind === 'registration' ? 'Suppress the inherited Registration marketplace subtree' : 'Suppress only the inherited Installation'],
+  })) return void await reportDeclinedOverride(ctx, model);
+  if (!await showTransactionStep(ctx, {
+    ...model,
+    step: 'Commit',
+    details: ['The domain lifecycle guard will acquire the Project Attempt Fence, validate trust and barrier state, and commit atomically'],
+  })) return void await reportDeclinedOverride(ctx, model);
 
   const outcome = await createScopeOverride(row.kind, row.targetId, opts);
-  reportOutcome(ctx, outcome);
+  await reportOutcome(ctx, outcome);
 }
 
 /** Remove existing Scope Overrides; inheritance restores immediately via recomputation. */
-export async function runRemoveScopeOverrideFlow(ctx: ExtensionCommandContext): Promise<void> {
+export async function runRemoveScopeOverrideFlow(
+  ctx: ExtensionCommandContext,
+  targetOptions: ScopeOverrideTarget = {},
+): Promise<void> {
   const ui: ExtensionUIContext = ctx.ui;
-  const opts = { cwd: ctx.cwd, agentDir: undefined, projectTrusted: ctx.isProjectTrusted() };
   const docs = await readBoth({ cwd: ctx.cwd });
-  if (!docs.ok) return void ui.notify(`Bridge State 不可讀：${docs.error}`, 'error');
+  if (!docs.ok) return void ui.notify(`Bridge State 不可讀：${quote(docs.error ?? 'Persistence Indeterminate')}`, 'error');
+  const expectedStateRevision = targetOptions.expectedStateRevision ?? docs.project!.stateRevision;
+  const opts = {
+    cwd: ctx.cwd,
+    agentDir: undefined,
+    projectTrusted: ctx.isProjectTrusted(),
+    expectedStateRevision,
+  };
   const overrides = docs.project!.scopeOverrides;
   if (overrides.length === 0) return void ui.notify('Project Scope 目前沒有任何 Scope Override。', 'info');
 
-  const labels = overrides.map((item) => `${item.kind} Override → ${item.targetId.slice(0, 8)}…`);
-  const chosen = await ui.select('移除 Scope Override — 移除後立即還原繼承（不改寫全域文件）', labels);
-  if (!chosen) return;
-  const target = overrides[labels.indexOf(chosen)]!;
+  const target = await pickExistingOverride(ui, overrides, targetOptions);
+  if (!target) return void ui.notify('找不到指定的 Scope Override。', 'warning');
 
+  const model = {
+    actionLabel: 'Scope Override Removal',
+    authority: 'project' as const,
+    target: target.targetId,
+    stateRevision: expectedStateRevision,
+  } satisfies Omit<TransactionSheetModel, 'step'>;
+  if (!await showTransactionStep(ctx, {
+    ...model,
+    step: 'Intent',
+    details: [`Remove the Project Scope ${target.kind} override and reveal inherited state by recomputation`],
+  })) return void await reportDeclinedOverride(ctx, model);
+  if (!await showTransactionStep(ctx, {
+    ...model,
+    step: 'Validation',
+    details: [
+      ...validationDisclosureLines([]),
+      `Target kind: ${target.kind}`,
+      `Target ID: ${quote(target.targetId)}`,
+      `Project Trust observed from Pi host: ${ctx.isProjectTrusted() ? 'granted' : 'not granted; domain admission will block'}`,
+    ],
+  })) return void await reportDeclinedOverride(ctx, model);
+
+  if (!await showTransactionStep(ctx, {
+    ...model,
+    step: 'Consent',
+    details: ['Override Removal remains a separate Default No decision'],
+  })) return void await reportDeclinedOverride(ctx, model);
   const confirmed = await ui.confirm('Override Removal — 預設 No', `移除 ${target.kind} Scope Override？\n被抑制的繼承全域紀錄將立即在 Effective State 中恢復。`);
-  if (!confirmed) return void ui.notify('Attempt Summary: Declined — state unchanged.', 'info');
+  if (!confirmed) return void await reportDeclinedOverride(ctx, model);
+
+  if (!await showTransactionStep(ctx, {
+    ...model,
+    step: 'Plan',
+    details: ['Remove only the selected Project Scope Override; Global Bridge State remains unchanged'],
+  })) return void await reportDeclinedOverride(ctx, model);
+  if (!await showTransactionStep(ctx, {
+    ...model,
+    step: 'Commit',
+    details: ['The domain lifecycle guard will acquire the Project Attempt Fence, validate trust and barrier state, and commit atomically'],
+  })) return void await reportDeclinedOverride(ctx, model);
 
   const outcome = await removeScopeOverride(target.kind, target.targetId, opts);
-  reportOutcome(ctx, outcome);
+  await reportOutcome(ctx, outcome);
 }
 
 /** Read-only Effective State + Projected Skills / collision diagnostics view. */
@@ -159,7 +308,7 @@ export async function runEffectiveStateView(ctx: ExtensionCommandContext): Promi
   const ui: ExtensionUIContext = ctx.ui;
   const trusted = ctx.isProjectTrusted();
   const docs = await readBoth({ cwd: ctx.cwd });
-  if (!docs.ok) return void ui.notify(`Bridge State 不可讀：${docs.error}`, 'error');
+  if (!docs.ok) return void ui.notify(`Bridge State 不可讀：${quote(docs.error ?? 'Persistence Indeterminate')}`, 'error');
   const effective = computeEffectiveState(docs.global!, docs.project!, { projectTrusted: trusted });
   const projection = projectEffectiveState(docs.global!, docs.project!, { projectTrusted: trusted });
   const trustNote = trusted ? '' : '\n\n⚠ Project Trust 未授予——Project Scope 紀錄仍保存但不參與 Effective State。';

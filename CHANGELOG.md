@@ -2,6 +2,12 @@
 
 All notable changes to `pi-codex-marketplace` are documented here. Format follows Keep a Changelog and SemVer (starting at `0.1.0`; Git tags `v*` mirror npm versions).
 
+## [Unreleased]
+
+### Added
+- **Bridge Ledger TUI** (#38): replace the flat `/codex-marketplace` menu with a responsive five-section workspace, simultaneous Global / Project authority rails, persistent Project Trust and Global Pending Barrier status, structured canonical action intents, scope-partitioned browsing focus, Entry-level Plugin rows with directly bound install paths, eligibility-aware State Repair, and 120/80/60-column keyboard navigation.
+- **Shared Transaction Sheet** (#38): present every mutation as `Intent → Validation → Consent → Plan → Commit → Receipt`, preserve separate Default-No Registration / Activation confirmations, provide expandable complete disclosures, and render Durable / Findings / Runtime outcomes with terminal-safe quoting; preflight cancellation produces a durable Declined Receipt, while active Pending Application chains expose an Attempt Fence-held, exact Revision + Validation Snapshot-bound Retry Application with final pre-reload/post-reload verification (missing snapshots disable unsafe replay, interaction-time drift fails closed without reload, and reload errors remain Pending Application). Repair State also exposes safe atomic Receipt Journal reconstruction for `JOURNAL-02` degradation while preserving parsed active chains.
+
 ## [0.1.7] - 2026-08-23
 
 ### Added
@@ -56,6 +62,7 @@ Initial Bridge Package release — single `pi` extension, Pi `0.84.2` baseline.
 - **TUI management flow** (`/codex-marketplace`): single aggregated command faithful to `prototype/tui-management-flow@c9107d2` — hybrid discovery/guided, explicit scope choice per operation, Registration/Activation separated snapshot+revision bound Default No confirmations, Update Plan Checklist, partitioned Global/Project lists, skill-granular diagnostics, synchronized Findings, closed Recovery Actions, immediate-reload three-orthogonal Receipt report, Pending/Global Barrier blocking hints.
 - **Verification matrix**: synthetic / pinned `SamWang32191/codex-plugins@98e78ca` / adversarial three-tier fixtures × (unit + integration + E2E at the TUI seam) on Pi `0.84.2` / macOS / Linux / Node `>=22.19.0`; every row is a release gate (`v*` → CI full matrix green → `npm publish --provenance` `latest`/`next` channels, `0.y`/`1.0` maintenance windows).
 
+[Unreleased]: https://github.com/SamWang32191/pi-codex-marketplace/compare/v0.1.7...HEAD
 [0.1.7]: https://github.com/SamWang32191/pi-codex-marketplace/releases/tag/v0.1.7
 [0.1.6]: https://github.com/SamWang32191/pi-codex-marketplace/releases/tag/v0.1.6
 [0.1.5]: https://github.com/SamWang32191/pi-codex-marketplace/releases/tag/v0.1.5

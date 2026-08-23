@@ -7,14 +7,19 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { commitBridgeState, readBridgeState } from '../../src/bridge-state/store.js';
 import {
+  confirmPluginDisable,
   confirmPluginInstallation,
   confirmPluginEnable,
+  declinePluginDisable,
+  declinePluginInstallation,
   disablePluginInstallation,
   installationDisclosure,
+  preflightPluginDisable,
   preflightPluginInstallation,
   preflightPluginEnable,
 } from '../../src/installation/flow.js';
 import { inspectMarketplaceEntries } from '../../src/installation/inspection.js';
+import { readReceiptJournal } from '../../src/journal/journal.js';
 import { buildLocalSnapshot, type ValidationSnapshot } from '../../src/registration/snapshot.js';
 import { localSourceKey } from '../../src/registration/source-key.js';
 import { entryChoices } from '../../extensions/pi/installation.js';
@@ -151,6 +156,46 @@ describe('Plugin Installation lifecycle', () => {
     expect(enabled.receipt.operation).toBe('Plugin Enablement');
   });
 
+  it('rejects enablement as stale when fresh inspection differs from the Installation Validation Snapshot', async () => {
+    const opts = { agentDir: env.agentDir, cwd: env.projectDir };
+    const preflight = await preflightPluginInstallation('global', registrationId, '/plugins/0', opts);
+    expect(preflight.ok).toBe(true);
+    if (!preflight.ok) return;
+    const installed = await confirmPluginInstallation(preflight.preflight, 'disabled', opts);
+    expect(installed.status).toBe('completed');
+    if (installed.status !== 'completed') return;
+    const boundSnapshot = installed.installation.validationSnapshot;
+
+    writeFileSync(
+      join(env.marketplace, 'plugins', 'release-helper', 'skills', 'release-notes', 'SKILL.md'),
+      '---\nname: release-notes\ndescription: Changed before enablement\n---\n\nDifferent body.\n',
+    );
+
+    const enable = await preflightPluginEnable('global', installed.installation.id, opts);
+    if (enable.ok) enable.preflight.fence.release();
+    expect(enable.ok).toBe(false);
+    if (enable.ok) return;
+    expect(enable.outcome).toEqual(expect.objectContaining({
+      status: 'rejected-as-stale',
+      receipt: expect.objectContaining({
+        summary: 'Rejected as Stale',
+        expectedStateRevision: installed.newRevision,
+        observedStateRevision: installed.newRevision,
+        validationSnapshot: boundSnapshot,
+      }),
+    }));
+
+    const state = await readBridgeState('global', opts);
+    expect(state.state!.stateRevision).toBe(installed.newRevision);
+    expect(state.state!.installations).toEqual([
+      expect.objectContaining({
+        id: installed.installation.id,
+        installationState: 'disabled',
+        validationSnapshot: boundSnapshot,
+      }),
+    ]);
+  });
+
   it('rejects a source change after preflight as stale before it can commit the disclosed Plugin', async () => {
     const opts = { agentDir: env.agentDir, cwd: env.projectDir };
     const preflight = await preflightPluginInstallation('global', registrationId, '/plugins/0', opts);
@@ -213,7 +258,103 @@ describe('Plugin Installation lifecycle', () => {
       beforeInstallationCommit: async () => { await commitBridgeState('global', (state) => ({ ...state }), opts); },
     });
     expect(outcome.status).toBe('rejected-as-stale');
+    if (outcome.status === 'rejected-as-stale') {
+      expect(outcome.receipt.observedStateRevision).toBe('2');
+    }
     expect((await readBridgeState('global', opts)).state!.installations).toEqual([]);
+  });
+
+  it('records the observed State Revision when the confirmation read is stale', async () => {
+    const opts = { agentDir: env.agentDir, cwd: env.projectDir };
+    const preflight = await preflightPluginInstallation('global', registrationId, '/plugins/0', opts);
+    expect(preflight.ok).toBe(true);
+    if (!preflight.ok) return;
+    await commitBridgeState('global', (state) => ({ ...state }), opts);
+
+    const outcome = await confirmPluginInstallation(preflight.preflight, 'disabled', opts);
+    expect(outcome.status).toBe('rejected-as-stale');
+    if (outcome.status !== 'rejected-as-stale') return;
+    expect(outcome.receipt).toEqual(expect.objectContaining({
+      expectedStateRevision: '1',
+      observedStateRevision: '2',
+      summary: 'Rejected as Stale',
+    }));
+    expect((await readBridgeState('global', opts)).state!.installations).toEqual([]);
+  });
+
+  it('rejects a Ledger-bound installation preflight when its selected State Revision is stale', async () => {
+    const result = await preflightPluginInstallation('global', registrationId, '/plugins/0', {
+      agentDir: env.agentDir,
+      cwd: env.projectDir,
+      expectedStateRevision: '0',
+      expectedMarketplaceEntryId: `${registrationId}/acme-marketplace/plugins/0`,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.outcome).toEqual(expect.objectContaining({
+      status: 'rejected-as-stale',
+      receipt: expect.objectContaining({
+        summary: 'Rejected as Stale',
+        expectedStateRevision: '0',
+        observedStateRevision: '1',
+      }),
+    }));
+    expect((await readBridgeState('global', {
+      agentDir: env.agentDir,
+      cwd: env.projectDir,
+    })).state?.installations).toEqual([]);
+  });
+
+  it('rejects a Ledger-bound installation preflight when the complete Marketplace Entry identity changed', async () => {
+    const result = await preflightPluginInstallation('global', registrationId, '/plugins/0', {
+      agentDir: env.agentDir,
+      cwd: env.projectDir,
+      expectedStateRevision: '1',
+      expectedMarketplaceEntryId: `${registrationId}/previous-marketplace/plugins/0`,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.outcome).toEqual(expect.objectContaining({
+      status: 'rejected-as-stale',
+      receipt: expect.objectContaining({
+        summary: 'Rejected as Stale',
+        expectedStateRevision: '1',
+        observedStateRevision: '1',
+      }),
+    }));
+  });
+
+  it('blocks a Ledger-bound installation preflight with an exact finding when its Entry pointer disappeared', async () => {
+    writeFileSync(
+      join(env.marketplace, '.agents', 'plugins', 'marketplace.json'),
+      JSON.stringify({ name: 'acme-marketplace', plugins: [] }),
+    );
+
+    const result = await preflightPluginInstallation('global', registrationId, '/plugins/0', {
+      agentDir: env.agentDir,
+      cwd: env.projectDir,
+      expectedStateRevision: '1',
+      expectedMarketplaceEntryId: `${registrationId}/acme-marketplace/plugins/0`,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.outcome).toEqual(expect.objectContaining({
+      status: 'blocked',
+      receipt: expect.objectContaining({
+        summary: 'Blocked',
+        expectedStateRevision: '1',
+      }),
+      findings: expect.arrayContaining([
+        expect.objectContaining({
+          code: 'INSTALLATION_NOT_FOUND',
+          target: 'entry',
+          outcome: "Marketplace Entry '/plugins/0' is Unavailable",
+        }),
+      ]),
+    }));
   });
 
   it('escapes Marketplace-controlled resource names in the Activation Disclosure', async () => {
@@ -226,6 +367,25 @@ describe('Plugin Installation lifecycle', () => {
     expect(disclosure).toContain('"resource\\nforged.txt"');
     expect(disclosure).not.toContain('resources: resource\nforged.txt');
     preflight.preflight.fence.release();
+  });
+
+  it('escapes Marketplace-controlled identities in TUI entry choices', async () => {
+    writeFileSync(
+      join(env.marketplace, '.agents', 'plugins', 'marketplace.json'),
+      JSON.stringify({
+        name: 'acme\nFORGED-MARKET',
+        plugins: [{ source: { source: 'local', path: './plugins/release-helper' } }],
+      }),
+    );
+
+    const choices = await entryChoices(
+      { id: registrationId, sourceKind: 'local', source: env.marketplace },
+      'global',
+      { cwd: env.projectDir },
+    );
+
+    expect(choices[0]?.label).toContain('acme\\nFORGED-MARKET');
+    expect(choices[0]?.label).not.toContain('acme\nFORGED-MARKET');
   });
 
   it('fails closed when a Skill Resource symlink targets snapshot-excluded content', () => {
@@ -250,6 +410,112 @@ describe('Plugin Installation lifecycle', () => {
     const disable = await disablePluginInstallation('global', 'global/missing-plugin', opts);
     expect(disable.status).toBe('blocked');
     if (disable.status === 'blocked') expect(disable.receipt.operation).toBe('Plugin Disablement');
+  });
+
+  it('holds the Attempt Fence from Plugin Disablement preflight until decline', async () => {
+    const opts = { agentDir: env.agentDir, cwd: env.projectDir };
+    const install = await preflightPluginInstallation('global', registrationId, '/plugins/0', opts);
+    expect(install.ok).toBe(true);
+    if (!install.ok) return;
+    const installed = await confirmPluginInstallation(install.preflight, 'enabled', true, opts);
+    expect(installed.status).toBe('completed');
+    if (installed.status !== 'completed') return;
+
+    const first = await preflightPluginDisable('global', installed.installation.id, opts);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    const competing = await preflightPluginDisable('global', installed.installation.id, {
+      ...opts,
+      fenceTimeoutMs: 5,
+    });
+    expect(competing.ok).toBe(false);
+    if (!competing.ok && competing.outcome.status === 'blocked') {
+      expect(competing.outcome.findings).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'ATTEMPT_IN_PROGRESS' }),
+      ]));
+    }
+
+    const declined = await declinePluginDisable(first.preflight, opts);
+    expect(declined.status).toBe('declined');
+    const admittedAgain = await preflightPluginDisable('global', installed.installation.id, opts);
+    expect(admittedAgain.ok).toBe(true);
+    if (admittedAgain.ok) await declinePluginDisable(admittedAgain.preflight, opts);
+  });
+
+  it('journals Plugin Disablement hook failure and releases its Attempt Fence', async () => {
+    const opts = { agentDir: env.agentDir, cwd: env.projectDir };
+    const install = await preflightPluginInstallation('global', registrationId, '/plugins/0', opts);
+    expect(install.ok).toBe(true);
+    if (!install.ok) return;
+    const installed = await confirmPluginInstallation(install.preflight, 'enabled', true, opts);
+    expect(installed.status).toBe('completed');
+    if (installed.status !== 'completed') return;
+
+    const disable = await preflightPluginDisable('global', installed.installation.id, opts);
+    expect(disable.ok).toBe(true);
+    if (!disable.ok) return;
+    const hookError = new Error('disable hook failed');
+    await expect(confirmPluginDisable(disable.preflight, {
+      ...opts,
+      beforeDisableCommit: () => {
+        throw hookError;
+      },
+    })).rejects.toBe(hookError);
+
+    expect((await readReceiptJournal('global', opts)).receipts.at(-1)).toEqual(
+      expect.objectContaining({
+        operation: 'Plugin Disablement',
+        summary: 'Persistence Failed',
+        durableOutcome: 'failed',
+        expectedStateRevision: disable.preflight.stateRevision,
+        observedStateRevision: disable.preflight.stateRevision,
+        findings: expect.arrayContaining([
+          expect.objectContaining({
+            code: 'PERSISTENCE_FAILED',
+            outcome: 'disable hook failed',
+          }),
+        ]),
+      }),
+    );
+
+    const admittedAgain = await preflightPluginDisable('global', installed.installation.id, opts);
+    expect(admittedAgain.ok).toBe(true);
+    if (admittedAgain.ok) await declinePluginDisable(admittedAgain.preflight, opts);
+  });
+
+  it('journals Plugin Installation hook failure and releases its Attempt Fence', async () => {
+    const opts = { agentDir: env.agentDir, cwd: env.projectDir };
+    const first = await preflightPluginInstallation('global', registrationId, '/plugins/0', opts);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    const hookError = new Error('installation hook failed');
+    await expect(confirmPluginInstallation(first.preflight, 'disabled', {
+      ...opts,
+      beforeInstallationCommit: () => {
+        throw hookError;
+      },
+    })).rejects.toBe(hookError);
+
+    expect((await readReceiptJournal('global', opts)).receipts.at(-1)).toEqual(
+      expect.objectContaining({
+        operation: 'Plugin Installation',
+        summary: 'Persistence Failed',
+        durableOutcome: 'failed',
+        expectedStateRevision: first.preflight.stateRevision,
+        observedStateRevision: first.preflight.stateRevision,
+        findings: expect.arrayContaining([
+          expect.objectContaining({
+            code: 'PERSISTENCE_FAILED',
+            outcome: 'installation hook failed',
+          }),
+        ]),
+      }),
+    );
+
+    const admittedAgain = await preflightPluginInstallation('global', registrationId, '/plugins/0', opts);
+    expect(admittedAgain.ok).toBe(true);
+    if (admittedAgain.ok) await declinePluginInstallation(admittedAgain.preflight, opts);
   });
 
   it('rejects disablement as stale when the State Revision advances after fence admission', async () => {
