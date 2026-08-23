@@ -34,6 +34,9 @@
       "optional": false
     }
   },
+  "dependencies": {
+    "yaml": "2.9.0"
+  },
   "overrides": {},
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.84.2",
