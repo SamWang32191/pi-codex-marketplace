@@ -225,6 +225,7 @@ function validateAgentProfile(text: string, pointer: string, opts: Classificatio
 }
 
 function loadAgentProfile(
+  pluginRoot: string,
   skillDirectory: string,
   skillName: string,
   opts: ClassificationOptions,
@@ -250,10 +251,17 @@ function loadAgentProfile(
   }
 
   try {
-    // Snapshot validation owns symlink containment. Classification accepts a validated symlink
-    // whose target is a regular file and remains fail-closed for every other present path.
-    if (!statSync(profilePath).isFile()) throw new TypeError('not a regular file');
-    const text = readFileSync(profilePath, 'utf8');
+    const canonicalPluginRoot = realpathSync.native(pluginRoot);
+    const canonicalSkillDirectory = realpathSync.native(skillDirectory);
+    const canonicalProfilePath = realpathSync.native(profilePath);
+    if (
+      !isWithin(canonicalSkillDirectory, canonicalProfilePath)
+      || isSnapshotExcluded(canonicalPluginRoot, canonicalProfilePath)
+      || !statSync(canonicalProfilePath).isFile()
+    ) {
+      throw new TypeError('not a snapshot-covered regular file owned by the Skill');
+    }
+    const text = readFileSync(canonicalProfilePath, 'utf8');
     capture.add(`agent-profile:${skillName}`, text);
     return validateAgentProfile(text, pointer, opts);
   } catch {
@@ -265,7 +273,7 @@ function loadAgentProfile(
         RULE.SKILL_AGENT_PROFILE_INVALID,
         'skill',
         pointer,
-        'Skill Agent Profile must resolve to a readable regular file when present',
+        'Skill Agent Profile must resolve within its owning Skill to a readable regular file covered by the Validation Snapshot',
       )],
     };
   }
@@ -434,7 +442,7 @@ export function classifyPlugin(root: string, opts: ClassificationOptions): Class
       if (descriptor.frontmatter?.['disable-model-invocation'] !== undefined && typeof descriptor.frontmatter['disable-model-invocation'] !== 'boolean') {
         findings.push(finding(opts, CODE.SKILL_DESCRIPTOR_INVALID, RULE.SKILL_DESCRIPTOR_INVALID, 'skill', `skills/${entry.name}/SKILL.md#/disable-model-invocation`, 'disable-model-invocation must be a boolean when declared'));
       }
-      const agentProfile = loadAgentProfile(skillDirectory, entry.name, opts, capture);
+      const agentProfile = loadAgentProfile(root, skillDirectory, entry.name, opts, capture);
       findings.push(...agentProfile.findings);
       const descriptorPolicy = descriptorInvocationPolicy(descriptor.frontmatter?.['disable-model-invocation']);
       if (descriptorPolicy && agentProfile.invocationPolicy && descriptorPolicy !== agentProfile.invocationPolicy) {

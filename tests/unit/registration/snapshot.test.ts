@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync, realpathSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync, realpathSync, truncateSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { buildLocalSnapshot } from '../../../src/registration/snapshot.js';
 import { localSourceKey } from '../../../src/registration/source-key.js';
-import { COMPATIBILITY_PROFILE, VALIDATION_BUDGET, VALIDATION_RULESET } from '../../../src/registration/budget.js';
+import { BUDGET, COMPATIBILITY_PROFILE, VALIDATION_BUDGET, VALIDATION_RULESET } from '../../../src/registration/budget.js';
 
 function makeRoot() {
   const tmp = mkdtempSync(join(tmpdir(), 'snapshot-test-'));
@@ -76,6 +76,22 @@ describe('Validation Snapshot', () => {
     const link = s.entries.find((e) => e.relPath === 'pluglink')!;
     expect(link.type).toBe('symlink');
     expect(link.symlinkTarget).toBe('./plugins');
+  });
+
+  it('charges a symlinked Skill Agent Profile target to the Validation Budget', () => {
+    const skill = join(root, 'plugins', 'p1', 'skills', 'release-notes');
+    mkdirSync(join(skill, 'agents'), { recursive: true });
+    const target = join(skill, 'profile.yaml');
+    writeFileSync(target, '');
+    truncateSync(target, BUDGET.maxTotalBytes + 1);
+    symlinkSync('../profile.yaml', join(skill, 'agents', 'openai.yaml'));
+
+    const result = buildLocalSnapshot(root, sourceKey, 'global');
+
+    expect(result.ok).toBe(false);
+    expect(result.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'BUDGET_EXCEEDED', classification: 'blocking' }),
+    ]));
   });
 
   it('flags symlinks whose canonical target escapes the root as Blocking', () => {

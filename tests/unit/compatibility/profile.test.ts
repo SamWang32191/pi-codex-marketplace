@@ -373,6 +373,82 @@ describe('Compatibility Profile v1', () => {
     expect(result.plugin!.skills[0]!.invocationPolicy).toBe('explicit');
   });
 
+  it('rejects a Skill Agent Profile symlink whose target belongs to another Skill', () => {
+    const root = pluginRoot();
+    const skills = join(root, 'skills');
+    mkdirSync(join(skills, 'other-skill'), { recursive: true });
+    writeFileSync(
+      join(skills, 'other-skill', 'SKILL.md'),
+      '---\nname: other-skill\ndescription: Other skill\n---\n\nDo other work.\n',
+    );
+    writeFileSync(join(skills, 'other-skill', 'profile.yaml'), 'policy:\n  allow_implicit_invocation: false\n');
+    mkdirSync(join(skills, 'release-notes', 'agents'), { recursive: true });
+    symlinkSync('../../other-skill/profile.yaml', join(skills, 'release-notes', 'agents', 'openai.yaml'));
+
+    const result = classifyPlugin(root, {
+      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+    });
+
+    expect(result.classification).toBe('invalid');
+    expect(result.plugin).toBeUndefined();
+    expect(result.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'SKILL_AGENT_PROFILE_INVALID',
+        pointer: 'skills/release-notes/agents/openai.yaml',
+      }),
+    ]));
+  });
+
+  it('rejects a symlinked Agent Profile parent that resolves into another Skill', () => {
+    const root = pluginRoot();
+    const skills = join(root, 'skills');
+    mkdirSync(join(skills, 'other-skill', 'agents'), { recursive: true });
+    writeFileSync(
+      join(skills, 'other-skill', 'SKILL.md'),
+      '---\nname: other-skill\ndescription: Other skill\n---\n\nDo other work.\n',
+    );
+    writeFileSync(join(skills, 'other-skill', 'agents', 'openai.yaml'), 'policy:\n  allow_implicit_invocation: false\n');
+    symlinkSync('../other-skill/agents', join(skills, 'release-notes', 'agents'));
+
+    const result = classifyPlugin(root, {
+      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+    });
+
+    expect(result.classification).toBe('invalid');
+    expect(result.plugin).toBeUndefined();
+    expect(result.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'SKILL_AGENT_PROFILE_INVALID',
+        pointer: 'skills/release-notes/agents/openai.yaml',
+      }),
+    ]));
+  });
+
+  it.each(['.git', 'node_modules'])(
+    'rejects a Skill Agent Profile symlink whose target is in snapshot-excluded %s',
+    (excludedDirectory) => {
+      const root = pluginRoot();
+      const skill = join(root, 'skills', 'release-notes');
+      mkdirSync(join(skill, excludedDirectory), { recursive: true });
+      writeFileSync(join(skill, excludedDirectory, 'openai.yaml'), 'policy:\n  allow_implicit_invocation: false\n');
+      mkdirSync(join(skill, 'agents'), { recursive: true });
+      symlinkSync(`../${excludedDirectory}/openai.yaml`, join(skill, 'agents', 'openai.yaml'));
+
+      const result = classifyPlugin(root, {
+        scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+      });
+
+      expect(result.classification).toBe('invalid');
+      expect(result.plugin).toBeUndefined();
+      expect(result.findings).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          code: 'SKILL_AGENT_PROFILE_INVALID',
+          pointer: 'skills/release-notes/agents/openai.yaml',
+        }),
+      ]));
+    },
+  );
+
   it('marks a broken Skill Agent Profile symlink Invalid', () => {
     const root = pluginRoot();
     const agents = join(root, 'skills', 'release-notes', 'agents');
