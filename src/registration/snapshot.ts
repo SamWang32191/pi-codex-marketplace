@@ -15,13 +15,13 @@ import { createHash } from 'node:crypto';
 import {
   lstatSync,
   readdirSync,
-  readFileSync,
   readlinkSync,
   realpathSync,
   statSync,
 } from 'node:fs';
 import { join, sep } from 'node:path';
 
+import { hashBoundedFileSync } from './bounded-read.js';
 import { BUDGET, COMPATIBILITY_PROFILE, VALIDATION_BUDGET, VALIDATION_RULESET } from './budget.js';
 import { CODE, RULE, blocking, type ValidationFinding } from './findings.js';
 import type { SourceKey } from './source-key.js';
@@ -207,15 +207,26 @@ function walkTree(
         return;
       }
       let contentHash = '';
+      let observedSize = st.size;
       try {
-        contentHash = createHash('sha256').update(readFileSync(abs)).digest('hex');
+        const bytesBeforeFile = totalBytes - st.size;
+        const hashed = hashBoundedFileSync(abs, BUDGET.maxTotalBytes - bytesBeforeFile);
+        if (!hashed.ok) {
+          failBudget(
+            `Validation Budget exceeded: ${bytesBeforeFile + hashed.observedBytes} bytes > ${BUDGET.maxTotalBytes}`,
+          );
+          return;
+        }
+        totalBytes = bytesBeforeFile + hashed.bytesRead;
+        observedSize = hashed.bytesRead;
+        contentHash = hashed.contentHash;
       } catch (e) {
         const err = e as NodeJS.ErrnoException;
         if (err.code === 'ENOENT') continue;
         failBudget(`unable to hash content: ${err.message}`);
         return;
       }
-      entries.push({ relPath: rel, type: 'file', mode: lst.mode, size: st.size, contentHash });
+      entries.push({ relPath: rel, type: 'file', mode: lst.mode, size: observedSize, contentHash });
     }
   };
 

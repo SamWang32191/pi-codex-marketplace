@@ -11,9 +11,10 @@ import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'no
 import { join, relative, sep } from 'node:path';
 
 import { parseFrontmatter } from '@earendil-works/pi-coding-agent';
-import { parse as parseYaml } from 'yaml';
+import { CST, Lexer, isCollection, parseDocument, visit } from 'yaml';
 
 import type { Scope } from '../bridge-state/types.js';
+import { readBoundedFileSync } from '../registration/bounded-read.js';
 import { BUDGET } from '../registration/budget.js';
 import { CODE, RULE, blocking, sortFindings, warning, type ValidationFinding } from '../registration/findings.js';
 
@@ -121,25 +122,159 @@ interface AgentProfileResult {
   findings: ValidationFinding[];
 }
 
+function agentProfileBudgetExceeded(
+  opts: ClassificationOptions,
+  pointer: string,
+  outcome: string,
+): AgentProfileResult {
+  return {
+    findings: [finding(
+      opts,
+      CODE.BUDGET_EXCEEDED,
+      RULE.BUDGET_EXCEEDED,
+      'plugin',
+      pointer,
+      outcome,
+    )],
+  };
+}
+
+function invalidAgentProfile(opts: ClassificationOptions, pointer: string): AgentProfileResult {
+  return {
+    findings: [finding(
+      opts,
+      CODE.SKILL_AGENT_PROFILE_INVALID,
+      RULE.SKILL_AGENT_PROFILE_INVALID,
+      'skill',
+      pointer,
+      'Skill Agent Profile must be valid YAML that parses to a mapping',
+    )],
+  };
+}
+
+function agentProfileYamlComplexityViolation(text: string): string | undefined {
+  let tokens = 0;
+  let flowDepth = 0;
+  let inlineBlockDepth = 0;
+  let atLineStart = true;
+  let indentation = 0;
+  const indentationStack: number[] = [];
+
+  for (const lexeme of new Lexer().lex(text)) {
+    tokens += 1;
+    if (tokens > BUDGET.maxAgentProfileYamlTokens) {
+      return `YAML token count exceeds ${BUDGET.maxAgentProfileYamlTokens}`;
+    }
+    const type = CST.tokenType(lexeme);
+    if (type === 'newline') {
+      atLineStart = true;
+      indentation = 0;
+      inlineBlockDepth = 0;
+      continue;
+    }
+    if (atLineStart && type === 'space' && lexeme.startsWith(' ')) {
+      indentation += lexeme.length;
+      continue;
+    }
+    if (atLineStart && type === 'comment') continue;
+    if (atLineStart) {
+      while (
+        indentationStack.length > 0
+        && indentationStack[indentationStack.length - 1]! >= indentation
+      ) {
+        indentationStack.pop();
+      }
+      indentationStack.push(indentation);
+      if (indentationStack.length > BUDGET.maxAgentProfileYamlDepth) {
+        return `YAML block depth exceeds ${BUDGET.maxAgentProfileYamlDepth}`;
+      }
+      atLineStart = false;
+    }
+
+    if (type === 'flow-map-start' || type === 'flow-seq-start') {
+      flowDepth += 1;
+      if (flowDepth > BUDGET.maxAgentProfileYamlDepth) {
+        return `YAML flow depth exceeds ${BUDGET.maxAgentProfileYamlDepth}`;
+      }
+    } else if (type === 'flow-map-end' || type === 'flow-seq-end') {
+      flowDepth = Math.max(0, flowDepth - 1);
+    } else if (
+      flowDepth === 0
+      && (type === 'seq-item-ind' || type === 'explicit-key-ind' || type === 'map-value-ind')
+    ) {
+      inlineBlockDepth += 1;
+      if (inlineBlockDepth > BUDGET.maxAgentProfileYamlDepth) {
+        return `YAML inline block depth exceeds ${BUDGET.maxAgentProfileYamlDepth}`;
+      }
+    }
+  }
+  return undefined;
+}
+
 function validateAgentProfile(text: string, pointer: string, opts: ClassificationOptions): AgentProfileResult {
   const findings: ValidationFinding[] = [];
-  let profile: Record<string, unknown>;
+  let document: ReturnType<typeof parseDocument>;
   try {
-    const parsed: unknown = parseYaml(text);
-    if (!isMapping(parsed)) throw new TypeError('not a mapping');
-    profile = parsed;
-  } catch {
-    return {
-      findings: [finding(
+    const violation = agentProfileYamlComplexityViolation(text);
+    if (violation) {
+      return agentProfileBudgetExceeded(
         opts,
-        CODE.SKILL_AGENT_PROFILE_INVALID,
-        RULE.SKILL_AGENT_PROFILE_INVALID,
-        'skill',
         pointer,
-        'Skill Agent Profile must be valid YAML that parses to a mapping',
-      )],
-    };
+        `Skill Agent Profile exceeds Validation Budget: ${violation}`,
+      );
+    }
+    document = parseDocument(text, { logLevel: 'silent', prettyErrors: false });
+    if (document.errors.length > 0) throw document.errors[0];
+  } catch {
+    return invalidAgentProfile(opts, pointer);
   }
+
+  let nodeCount = 0;
+  let astViolation: string | undefined;
+  visit(document, (_key, node, path) => {
+    nodeCount += 1;
+    if (nodeCount > BUDGET.maxAgentProfileYamlNodes) {
+      astViolation = `YAML node count exceeds ${BUDGET.maxAgentProfileYamlNodes}`;
+      return visit.BREAK;
+    }
+    const collectionDepth = path.reduce(
+      (depth, ancestor) => depth + (isCollection(ancestor) ? 1 : 0),
+      isCollection(node) ? 1 : 0,
+    );
+    if (collectionDepth > BUDGET.maxAgentProfileYamlDepth) {
+      astViolation = `YAML AST depth exceeds ${BUDGET.maxAgentProfileYamlDepth}`;
+      return visit.BREAK;
+    }
+    return undefined;
+  });
+  if (astViolation) {
+    return agentProfileBudgetExceeded(
+      opts,
+      pointer,
+      `Skill Agent Profile exceeds Validation Budget: ${astViolation}`,
+    );
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = document.toJS({ maxAliasCount: BUDGET.maxAgentProfileYamlAliases });
+  } catch (error) {
+    if (
+      error instanceof ReferenceError
+      && error.message === 'Excessive alias count indicates a resource exhaustion attack'
+    ) {
+      return agentProfileBudgetExceeded(
+        opts,
+        pointer,
+        `Skill Agent Profile exceeds Validation Budget: YAML alias expansion exceeds ${BUDGET.maxAgentProfileYamlAliases}`,
+      );
+    }
+    return invalidAgentProfile(opts, pointer);
+  }
+  if (!isMapping(parsed)) {
+    return invalidAgentProfile(opts, pointer);
+  }
+  const profile = parsed;
 
   for (const key of Object.keys(profile).sort((a, b) => a.localeCompare(b))) {
     if (key === 'interface' || key === 'policy') continue;
@@ -257,13 +392,20 @@ function loadAgentProfile(
     if (
       !isWithin(canonicalSkillDirectory, canonicalProfilePath)
       || isSnapshotExcluded(canonicalPluginRoot, canonicalProfilePath)
-      || !statSync(canonicalProfilePath).isFile()
     ) {
       throw new TypeError('not a snapshot-covered regular file owned by the Skill');
     }
-    const text = readFileSync(canonicalProfilePath, 'utf8');
-    capture.add(`agent-profile:${skillName}`, text);
-    return validateAgentProfile(text, pointer, opts);
+    const read = readBoundedFileSync(canonicalProfilePath, BUDGET.maxAgentProfileBytes);
+    if (!read.ok) {
+      capture.add(`agent-profile-budget:${skillName}`, `${pointer}:${read.observedBytes}`);
+      return agentProfileBudgetExceeded(
+        opts,
+        pointer,
+        `Skill Agent Profile exceeds Validation Budget: ${read.observedBytes} bytes > ${BUDGET.maxAgentProfileBytes}`,
+      );
+    }
+    capture.add(`agent-profile:${skillName}`, read.bytes);
+    return validateAgentProfile(read.bytes.toString('utf8'), pointer, opts);
   } catch {
     capture.add(`agent-profile-error:${skillName}`, pointer);
     return {

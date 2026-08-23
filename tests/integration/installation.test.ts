@@ -21,7 +21,7 @@ import { entryChoices } from '../../extensions/pi/installation.js';
 
 const PINNED_CODEX_PLUGINS_COMMIT = '98e78caf2b658dc5ccfd77720b0849dff9b7e99a';
 
-function legacyRulesetV1Fingerprint(snapshot: ValidationSnapshot): string {
+function legacyValidationFingerprint(snapshot: ValidationSnapshot): string {
   const hash = createHash('sha256');
   for (const entry of snapshot.entries) {
     const parts = [entry.relPath, entry.type, String(entry.mode), String(entry.size)];
@@ -30,7 +30,7 @@ function legacyRulesetV1Fingerprint(snapshot: ValidationSnapshot): string {
     hash.update(parts.join('\u001f'));
   }
   hash.update('\u001e');
-  for (const binding of [snapshot.sourceKey.key, snapshot.profile, 'ruleset:v1', snapshot.budget]) {
+  for (const binding of [snapshot.sourceKey.key, snapshot.profile, 'ruleset:v1', 'budget:v1']) {
     hash.update(`${binding}\u001f`);
   }
   return hash.digest('hex');
@@ -185,8 +185,9 @@ describe('Plugin Installation lifecycle', () => {
   it('requires Marketplace Refresh for a persisted ruleset:v1 Validation Snapshot', () => {
     const sourceKey = localSourceKey(env.marketplace).sourceKey!;
     const currentSnapshot = buildLocalSnapshot(env.marketplace, sourceKey, 'global').snapshot!;
-    const legacyFingerprint = legacyRulesetV1Fingerprint(currentSnapshot);
+    const legacyFingerprint = legacyValidationFingerprint(currentSnapshot);
     expect(currentSnapshot.ruleset).toBe('ruleset:v2');
+    expect(currentSnapshot.budget).toBe('budget:v2');
     expect(legacyFingerprint).not.toBe(currentSnapshot.fingerprint);
 
     const inspected = inspectMarketplaceEntries({

@@ -8,7 +8,7 @@
  */
 
 export const VALIDATION_RULESET = 'ruleset:v2';
-export const VALIDATION_BUDGET = 'budget:v1';
+export const VALIDATION_BUDGET = 'budget:v2';
 /** Compatibility Profile reference bound into every snapshot (full profile contract is #19). */
 export const COMPATIBILITY_PROFILE = 'profile:v1';
 
@@ -21,6 +21,16 @@ export const BUDGET = {
   maxTotalBytes: 512 * 1024 * 1024,
   /** Maximum Marketplace Catalog file bytes. */
   maxCatalogBytes: 1 * 1024 * 1024,
+  /** Maximum bytes read and synchronously parsed from one Skill Agent Profile. */
+  maxAgentProfileBytes: 64 * 1024,
+  /** Maximum YAML lexer tokens accepted before composing a Skill Agent Profile. */
+  maxAgentProfileYamlTokens: 8_192,
+  /** Maximum YAML collection nesting accepted in a Skill Agent Profile. */
+  maxAgentProfileYamlDepth: 32,
+  /** Maximum composed YAML AST nodes accepted in a Skill Agent Profile. */
+  maxAgentProfileYamlNodes: 2_048,
+  /** Maximum alias expansion count while materializing a Skill Agent Profile. */
+  maxAgentProfileYamlAliases: 32,
   /** Maximum plugins entries in a catalog. */
   maxEntries: 1024,
   /** Maximum declared marketplace name length. */

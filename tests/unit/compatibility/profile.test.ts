@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mkdtempSync } from 'node:fs';
@@ -6,6 +6,7 @@ import { mkdtempSync } from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { classifyPlugin } from '../../../src/compatibility/profile.js';
+import { BUDGET } from '../../../src/registration/budget.js';
 
 const roots: string[] = [];
 
@@ -289,6 +290,130 @@ describe('Compatibility Profile v1', () => {
     expect(result.plugin).toBeUndefined();
     expect(result.findings).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: 'SKILL_AGENT_PROFILE_INVALID', pointer }),
+    ]));
+  });
+
+  it('rejects a Skill Agent Profile above its dedicated byte budget before parsing', () => {
+    const root = pluginRoot();
+    const profileDirectory = join(root, 'skills', 'release-notes', 'agents');
+    const profilePath = join(profileDirectory, 'openai.yaml');
+    mkdirSync(profileDirectory, { recursive: true });
+    writeFileSync(profilePath, '');
+    truncateSync(profilePath, BUDGET.maxAgentProfileBytes + 1);
+    expect(BUDGET.maxAgentProfileBytes + 1).toBeLessThan(BUDGET.maxTotalBytes);
+
+    const result = classifyPlugin(root, {
+      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+    });
+
+    expect(result.classification).toBe('invalid');
+    expect(result.plugin).toBeUndefined();
+    expect(result.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'BUDGET_EXCEEDED',
+        classification: 'blocking',
+        pointer: 'skills/release-notes/agents/openai.yaml',
+        target: 'plugin',
+      }),
+    ]));
+  });
+
+  it('rejects a Skill Agent Profile above its YAML node budget', () => {
+    const root = pluginRoot();
+    const profileDirectory = join(root, 'skills', 'release-notes', 'agents');
+    const profile = `interface: [${Array.from(
+      { length: BUDGET.maxAgentProfileYamlNodes + 1 },
+      () => 'value',
+    ).join(',')}]\n`;
+    expect(Buffer.byteLength(profile)).toBeLessThan(BUDGET.maxAgentProfileBytes);
+    mkdirSync(profileDirectory, { recursive: true });
+    writeFileSync(join(profileDirectory, 'openai.yaml'), profile);
+
+    const result = classifyPlugin(root, {
+      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+    });
+
+    expect(result.classification).toBe('invalid');
+    expect(result.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'BUDGET_EXCEEDED',
+        outcome: expect.stringContaining('YAML node count exceeds'),
+      }),
+    ]));
+  });
+
+  it('rejects a Skill Agent Profile above its YAML depth budget', () => {
+    const root = pluginRoot();
+    const profileDirectory = join(root, 'skills', 'release-notes', 'agents');
+    const nesting = BUDGET.maxAgentProfileYamlDepth + 1;
+    const profile = `interface: ${'['.repeat(nesting)}value${']'.repeat(nesting)}\n`;
+    expect(Buffer.byteLength(profile)).toBeLessThan(BUDGET.maxAgentProfileBytes);
+    mkdirSync(profileDirectory, { recursive: true });
+    writeFileSync(join(profileDirectory, 'openai.yaml'), profile);
+
+    const result = classifyPlugin(root, {
+      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+    });
+
+    expect(result.classification).toBe('invalid');
+    expect(result.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'BUDGET_EXCEEDED' }),
+    ]));
+  });
+
+  it('rejects a Skill Agent Profile above its YAML alias expansion budget', () => {
+    const root = pluginRoot();
+    const profileDirectory = join(root, 'skills', 'release-notes', 'agents');
+    const profile = `interface:\n${Array.from(
+      { length: BUDGET.maxAgentProfileYamlAliases + 2 },
+      (_, index) => index === 0 ? '  field_0: &shared value' : `  field_${index}: *shared`,
+    ).join('\n')}\n`;
+    expect(Buffer.byteLength(profile)).toBeLessThan(BUDGET.maxAgentProfileBytes);
+    mkdirSync(profileDirectory, { recursive: true });
+    writeFileSync(join(profileDirectory, 'openai.yaml'), profile);
+
+    const result = classifyPlugin(root, {
+      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+    });
+
+    expect(result.classification).toBe('invalid');
+    expect(result.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'BUDGET_EXCEEDED' }),
+    ]));
+  });
+
+  it('classifies an unresolved Skill Agent Profile alias as invalid YAML rather than a budget failure', () => {
+    const root = pluginRoot();
+    const profileDirectory = join(root, 'skills', 'release-notes', 'agents');
+    mkdirSync(profileDirectory, { recursive: true });
+    writeFileSync(join(profileDirectory, 'openai.yaml'), 'policy: *missing\n');
+
+    const result = classifyPlugin(root, {
+      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+    });
+
+    expect(result.classification).toBe('invalid');
+    expect(result.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'SKILL_AGENT_PROFILE_INVALID' }),
+    ]));
+    expect(result.findings).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'BUDGET_EXCEEDED' }),
+    ]));
+  });
+
+  it('accepts collection nesting at the Skill Agent Profile depth budget', () => {
+    const root = pluginRoot();
+    const profileDirectory = join(root, 'skills', 'release-notes', 'agents');
+    const profile = `${'['.repeat(BUDGET.maxAgentProfileYamlDepth)}value${']'.repeat(BUDGET.maxAgentProfileYamlDepth)}\n`;
+    mkdirSync(profileDirectory, { recursive: true });
+    writeFileSync(join(profileDirectory, 'openai.yaml'), profile);
+
+    const result = classifyPlugin(root, {
+      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+    });
+
+    expect(result.findings).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'BUDGET_EXCEEDED' }),
     ]));
   });
 
