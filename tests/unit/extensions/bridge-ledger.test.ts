@@ -9,6 +9,7 @@ import {
   BridgeLedgerComponent,
   buildBridgeLedgerModel,
   loadBridgeLedgerSnapshot,
+  mapMarketplaceInspectionToLedgerItems,
   type BridgeLedgerSnapshot,
   type LedgerActionId,
 } from '../../../extensions/pi/bridge-ledger.js';
@@ -256,6 +257,214 @@ describe('Bridge Ledger presentation model', () => {
     expect(incompatible?.detail).toMatch(/incompatible/i);
     expect(incompatible?.actions.every((entry) => !entry.enabled)).toBe(true);
     expect(incompatible?.actions[0]?.disabledReason).toContain('unsupported active component');
+  });
+
+  it.each([
+    [
+      'Git cache miss',
+      'SOURCE_REACQUISITION_REQUIRED',
+      'INSTALL-04',
+      "Git Source Cache miss: Validation Snapshot '0123456789abcdef…' is not retained in Source Cache; Marketplace Refresh or re-acquisition is required",
+      'registration',
+    ],
+    [
+      'source drift',
+      'SOURCE_DRIFT',
+      'DRIFT-01',
+      'Source Drift: cached tree at fingerprint 0123456789abcdef… no longer hashes to the recorded Validation Snapshot; Marketplace Refresh is required',
+      'registration',
+    ],
+    [
+      'unsupported source',
+      'SOURCE_REACQUISITION_REQUIRED',
+      'INSTALL-04',
+      "Unknown or unsupported sourceKind 'archive'",
+      'registration',
+    ],
+    [
+      'source snapshot budget failure',
+      'BUDGET_EXCEEDED',
+      'BUDG-01',
+      'Validation Budget exceeded: 10001 files > 10000',
+      'source',
+    ],
+    [
+      'missing catalog',
+      'CATALOG_MISSING',
+      'CAT-01',
+      'Marketplace Catalog cannot be read',
+      'catalog',
+    ],
+    [
+      'malformed catalog',
+      'CATALOG_MALFORMED',
+      'CAT-02',
+      'marketplace.json is not an object',
+      'catalog',
+    ],
+  ] as const)(
+    'keeps an empty-entry %s finding as a non-installable Registration diagnostic',
+    (_case, code, rule, outcome, target) => {
+      const unavailable = snapshot();
+      const registration = unavailable.global.state!.registrations[0]!;
+      const finding = {
+        code,
+        classification: 'blocking' as const,
+        phase: 'validation' as const,
+        target,
+        scope: 'global' as const,
+        pointer: '',
+        rule,
+        outcome,
+      };
+
+      unavailable.marketplaceEntries.global = mapMarketplaceInspectionToLedgerItems(
+        'global',
+        registration,
+        { entries: [], findings: [finding] },
+      );
+
+      const diagnostic = buildBridgeLedgerModel(unavailable).sections
+        .find((section) => section.id === 'plugins')?.rows
+        .find((row) => row.id === `marketplace-diagnostic:global:${registration.id}`);
+
+      expect(unavailable.marketplaceEntries.global[0]).not.toHaveProperty('marketplaceEntryId');
+      expect(unavailable.marketplaceEntries.global[0]?.findings).toEqual([finding]);
+      expect(diagnostic).toMatchObject({
+        label: 'global-market',
+        detail: `Unavailable · ${code} · ${rule} · ${outcome}`,
+        scope: 'global',
+        targetKind: 'registration',
+        targetId: registration.id,
+        actions: [],
+      });
+      expect(diagnostic?.actions.some((entry) =>
+        entry.intent.actionId === 'install-disabled' || entry.intent.actionId === 'install-and-enable')).toBe(false);
+    },
+  );
+
+  it('renders actionless Marketplace diagnostics only in their focused scope without dispatching them', () => {
+    const unavailable = snapshot();
+    const globalRegistration = unavailable.global.state!.registrations[0]!;
+    const projectRegistration = unavailable.project.state!.registrations[0]!;
+    unavailable.global.state!.installations = [];
+    unavailable.project.state!.installations = [];
+    unavailable.marketplaceEntries.global = mapMarketplaceInspectionToLedgerItems(
+      'global',
+      globalRegistration,
+      {
+        entries: [],
+        findings: [{
+          code: 'SOURCE_DRIFT',
+          classification: 'blocking',
+          phase: 'validation',
+          target: 'registration',
+          scope: 'global',
+          pointer: '',
+          rule: 'DRIFT-01',
+          outcome: 'Source Drift requires Marketplace Refresh',
+        }],
+      },
+    );
+    unavailable.marketplaceEntries.project = mapMarketplaceInspectionToLedgerItems(
+      'project',
+      projectRegistration,
+      {
+        entries: [],
+        findings: [{
+          code: 'CATALOG_MALFORMED',
+          classification: 'blocking',
+          phase: 'validation',
+          target: 'catalog',
+          scope: 'project',
+          pointer: '/',
+          rule: 'CAT-02',
+          outcome: 'marketplace.json is not an object',
+        }],
+      },
+    );
+    const rendered = component(buildBridgeLedgerModel(unavailable));
+    rendered.instance.render(240);
+    rendered.instance.handleInput('\x1b[C'); // Sources
+    rendered.instance.handleInput('\x1b[C'); // Plugins
+
+    const globalScreen = rendered.instance.render(240).join('\n');
+    expect(globalScreen).toContain(
+      'SOURCE_DRIFT · DRIFT-01 · Source Drift requires Marketplace Refresh',
+    );
+    expect(globalScreen).not.toContain(
+      'CATALOG_MALFORMED · CAT-02 · marketplace.json is not an object',
+    );
+    rendered.instance.handleInput('\r');
+    expect(rendered.results).toEqual([]);
+
+    rendered.instance.handleInput('p');
+    const projectScreen = rendered.instance.render(240).join('\n');
+    expect(projectScreen).toContain(
+      'CATALOG_MALFORMED · CAT-02 · marketplace.json is not an object',
+    );
+    expect(projectScreen).not.toContain(
+      'SOURCE_DRIFT · DRIFT-01 · Source Drift requires Marketplace Refresh',
+    );
+    rendered.instance.handleInput('\r');
+    expect(rendered.results).toEqual([]);
+  });
+
+  it('uses compatible Plugin identity, not Marketplace Entry provenance, to detect scope-local Installations', () => {
+    const findMarketplaceRow = (value: BridgeLedgerSnapshot, marketplaceEntryId: string) =>
+      buildBridgeLedgerModel(value).sections
+        .find((section) => section.id === 'plugins')?.rows
+        .find((row) => row.id === `marketplace-entry:global:${marketplaceEntryId}`);
+
+    const moved = snapshot();
+    const movedEntry = moved.marketplaceEntries.global[0]!;
+    if (!('marketplaceEntryId' in movedEntry) || !movedEntry.plugin) {
+      throw new Error('fixture requires a compatible Marketplace Entry');
+    }
+    moved.global.state!.installations[0]!.marketplaceEntryId = movedEntry.marketplaceEntryId;
+    movedEntry.entryPointer = '/plugins/7';
+    movedEntry.marketplaceEntryId = '11111111-1111-4111-8111-111111111111/global-market/plugins/7';
+    movedEntry.plugin.marketplaceEntryId = movedEntry.marketplaceEntryId;
+
+    const movedRow = findMarketplaceRow(moved, movedEntry.marketplaceEntryId);
+    expect(movedRow?.actions.every((entry) => !entry.enabled)).toBe(true);
+    expect(movedRow?.actions[0]?.disabledReason).toContain('scope-local Installation');
+
+    const replacement = snapshot();
+    const replacementEntry = replacement.marketplaceEntries.global[0]!;
+    if (!('marketplaceEntryId' in replacementEntry) || !replacementEntry.plugin) {
+      throw new Error('fixture requires a compatible Marketplace Entry');
+    }
+    replacement.global.state!.installations[0]!.marketplaceEntryId = replacementEntry.marketplaceEntryId;
+    replacementEntry.name = 'replacement-tool';
+    replacementEntry.plugin = {
+      ...replacementEntry.plugin,
+      id: '11111111-1111-4111-8111-111111111111/global-market/replacement-tool',
+      manifestName: 'replacement-tool',
+    };
+
+    const replacementRow = findMarketplaceRow(replacement, replacementEntry.marketplaceEntryId);
+    expect(replacementRow?.actions.map((entry) => entry.enabled)).toEqual([true, true]);
+
+    const unavailable = snapshot();
+    const unavailableEntryId = '11111111-1111-4111-8111-111111111111/global-market/plugins/0';
+    unavailable.global.state!.installations[0]!.marketplaceEntryId = unavailableEntryId;
+    unavailable.marketplaceEntries.global = [{
+      scope: 'global',
+      registrationId: '11111111-1111-4111-8111-111111111111',
+      entryPointer: '/plugins/0',
+      marketplaceEntryId: unavailableEntryId,
+      name: 'broken-tool',
+      classification: 'unavailable',
+      findings: [],
+      unavailableReason: 'Plugin manifest is unavailable',
+    }];
+
+    const unavailableRow = findMarketplaceRow(unavailable, unavailableEntryId);
+    expect(unavailableRow?.actions[0]).toMatchObject({
+      enabled: false,
+      disabledReason: 'Plugin manifest is unavailable',
+    });
   });
 
   it('offers Retry Application for an exact active Pending Application chain', () => {

@@ -154,6 +154,16 @@ function isOptionalString(value: unknown): value is string | undefined {
   return value === undefined || typeof value === 'string';
 }
 
+const CANONICAL_RECEIPT_ID = /^rcpt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+function isReceiptId(value: unknown): value is string {
+  return typeof value === 'string' && CANONICAL_RECEIPT_ID.test(value);
+}
+
+function isOptionalReceiptId(value: unknown): value is string | undefined {
+  return value === undefined || isReceiptId(value);
+}
+
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string');
 }
@@ -181,7 +191,7 @@ export function isAttemptReceipt(value: unknown): value is AttemptReceipt {
   if (!isRecord(value)) return false;
 
   return (
-    typeof value.id === 'string' &&
+    isReceiptId(value.id) &&
     typeof value.kind === 'string' &&
     RECEIPT_KINDS.has(value.kind as ReceiptKind) &&
     typeof value.operation === 'string' &&
@@ -207,8 +217,8 @@ export function isAttemptReceipt(value: unknown): value is AttemptReceipt {
       (action) => typeof action === 'string' && RECOVERY_ACTIONS.has(action as RecoveryAction),
     ) &&
     typeof value.stateChanged === 'boolean' &&
-    isOptionalString(value.recoversReceiptId) &&
-    isOptionalString(value.supersedesReceiptId) &&
+    isOptionalReceiptId(value.recoversReceiptId) &&
+    isOptionalReceiptId(value.supersedesReceiptId) &&
     typeof value.createdAt === 'string'
   );
 }

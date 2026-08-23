@@ -10,6 +10,10 @@ import { repairBridgeState } from '../../src/bridge-state/repair.js';
 import { createReceipt } from '../../src/registration/receipt.js';
 import { getReceiptsJournalPath, getStatePath } from '../../src/bridge-state/paths.js';
 
+const PENDING_RECEIPT = 'rcpt_10000000-0000-4000-8000-000000000001';
+const VALID_RECEIPT_1 = 'rcpt_10000000-0000-4000-8000-000000000002';
+const VALID_RECEIPT_2 = 'rcpt_10000000-0000-4000-8000-000000000003';
+
 function makeMarketplace(root: string, name = 'test-market') {
   mkdirSync(join(root, '.agents', 'plugins'), { recursive: true });
   mkdirSync(join(root, 'plugins', 'weather'), { recursive: true });
@@ -65,7 +69,7 @@ describe('Integration — Journal, Fence, and Global Barrier', () => {
 
     // 2. Append a Pending Application receipt into the journal
     const pendingRcpt = createReceipt({
-      id: 'rcpt_pending_app_1',
+      id: PENDING_RECEIPT,
       operation: 'Plugin Installation',
       scope: 'global',
       trigger: 'install weather',
@@ -81,7 +85,7 @@ describe('Integration — Journal, Fence, and Global Barrier', () => {
     // 3. Append 15 resolved receipts to trigger pruning threshold
     for (let i = 0; i < 15; i++) {
       const resolvedRcpt = createReceipt({
-        id: `rcpt_resolved_${i}`,
+        id: `rcpt_20000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
         operation: 'Inspect Marketplace',
         scope: 'global',
         trigger: 'inspect',
@@ -93,7 +97,7 @@ describe('Integration — Journal, Fence, and Global Barrier', () => {
 
     journal = await readReceiptJournal('global', opts);
     expect(journal.activeChains).toHaveLength(1);
-    expect(journal.activeChains[0].rootReceiptId).toBe('rcpt_pending_app_1');
+    expect(journal.activeChains[0].rootReceiptId).toBe(PENDING_RECEIPT);
 
     // Prune with maxReceipts = 5
     await pruneReceiptJournal('global', 5, opts);
@@ -101,8 +105,8 @@ describe('Integration — Journal, Fence, and Global Barrier', () => {
     journal = await readReceiptJournal('global', opts);
     // Active chain MUST be retained!
     expect(journal.activeChains).toHaveLength(1);
-    expect(journal.activeChains[0].rootReceiptId).toBe('rcpt_pending_app_1');
-    const hasPending = journal.receipts.some((r) => r.id === 'rcpt_pending_app_1');
+    expect(journal.activeChains[0].rootReceiptId).toBe(PENDING_RECEIPT);
+    const hasPending = journal.receipts.some((r) => r.id === PENDING_RECEIPT);
     expect(hasPending).toBe(true);
   });
 
@@ -110,7 +114,7 @@ describe('Integration — Journal, Fence, and Global Barrier', () => {
     const opts = { cwd: projectDir, agentDir, projectTrusted: true };
 
     const validRcpt = createReceipt({
-      id: 'rcpt_valid_1',
+      id: VALID_RECEIPT_1,
       operation: 'Marketplace Registration',
       scope: 'global',
       trigger: 'register',
@@ -125,7 +129,7 @@ describe('Integration — Journal, Fence, and Global Barrier', () => {
 
     // Append another valid receipt
     const validRcpt2 = createReceipt({
-      id: 'rcpt_valid_2',
+      id: VALID_RECEIPT_2,
       operation: 'Inspect',
       scope: 'global',
       trigger: 'inspect',

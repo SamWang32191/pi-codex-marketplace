@@ -25,6 +25,7 @@ import type {
 import {
   inspectMarketplaceEntries,
   type InspectedMarketplaceEntry,
+  type MarketplaceInspection,
 } from '../../src/installation/inspection.js';
 import { readReceiptJournal } from '../../src/journal/journal.js';
 import type { JournalReadResult } from '../../src/journal/types.js';
@@ -135,7 +136,7 @@ export interface BridgeLedgerSnapshot {
   projectTrusted: boolean;
   barrier: GlobalBarrierStatus;
   journals: Record<Scope, JournalReadResult>;
-  marketplaceEntries: Record<Scope, LedgerMarketplaceEntry[]>;
+  marketplaceEntries: Record<Scope, LedgerMarketplaceItem[]>;
   effective?: EffectiveState;
 }
 
@@ -150,6 +151,16 @@ export interface LedgerMarketplaceEntry {
   findings: ValidationFinding[];
   unavailableReason?: string;
 }
+
+export interface LedgerMarketplaceDiagnostic {
+  scope: Scope;
+  registrationId: string;
+  name: string;
+  classification: 'unavailable';
+  findings: ValidationFinding[];
+}
+
+export type LedgerMarketplaceItem = LedgerMarketplaceEntry | LedgerMarketplaceDiagnostic;
 
 export interface BridgeLedgerModel {
   rails: Record<Scope, LedgerAuthorityRail>;
@@ -190,7 +201,7 @@ export async function loadBridgeLedgerSnapshot(
   const marketplaceEntries = {
     global: inspectLedgerEntries('global', globalReadable, options.agentDir),
     project: inspectLedgerEntries('project', projectReadable, options.agentDir),
-  } satisfies Record<Scope, LedgerMarketplaceEntry[]>;
+  } satisfies Record<Scope, LedgerMarketplaceItem[]>;
 
   return {
     ...states,
@@ -206,23 +217,39 @@ function inspectLedgerEntries(
   scope: Scope,
   state: BridgeState | undefined,
   agentDir?: string,
-): LedgerMarketplaceEntry[] {
+): LedgerMarketplaceItem[] {
   return (state?.registrations ?? []).flatMap((registration) => {
     const inspection = inspectMarketplaceEntries(registration, scope, { agentDir });
-    return inspection.entries.map((item: InspectedMarketplaceEntry): LedgerMarketplaceEntry => ({
-      scope,
-      registrationId: registration.id,
-      entryPointer: item.entry.entryId,
-      marketplaceEntryId: inspection.marketplaceId
-        ? `${inspection.marketplaceId}${item.entry.entryId}`
-        : `${registration.id}${item.entry.entryId}`,
-      name: item.entry.name ?? item.plugin?.manifestName ?? item.entry.entryId,
-      classification: item.classification ?? (item.plugin ? 'compatible' : 'unavailable'),
-      plugin: item.plugin,
-      findings: item.findings,
-      unavailableReason: item.unavailableReason,
-    }));
+    return mapMarketplaceInspectionToLedgerItems(scope, registration, inspection);
   });
+}
+
+export function mapMarketplaceInspectionToLedgerItems(
+  scope: Scope,
+  registration: Registration,
+  inspection: MarketplaceInspection,
+): LedgerMarketplaceItem[] {
+  const entries = inspection.entries.map((item: InspectedMarketplaceEntry): LedgerMarketplaceEntry => ({
+    scope,
+    registrationId: registration.id,
+    entryPointer: item.entry.entryId,
+    marketplaceEntryId: inspection.marketplaceId
+      ? `${inspection.marketplaceId}${item.entry.entryId}`
+      : `${registration.id}${item.entry.entryId}`,
+    name: item.entry.name ?? item.plugin?.manifestName ?? item.entry.entryId,
+    classification: item.classification ?? (item.plugin ? 'compatible' : 'unavailable'),
+    plugin: item.plugin,
+    findings: item.findings,
+    unavailableReason: item.unavailableReason,
+  }));
+  if (entries.length > 0) return entries;
+  return [{
+    scope,
+    registrationId: registration.id,
+    name: registrationName(registration),
+    classification: 'unavailable',
+    findings: inspection.findings,
+  }];
 }
 
 function readableState(result: ReadResult): BridgeState | undefined {
@@ -414,8 +441,28 @@ function pluginRows(
   snapshot: BridgeLedgerSnapshot,
 ): LedgerObjectRow[] {
   const installRows = snapshot.marketplaceEntries[scope].map((entry): LedgerObjectRow => {
-    const installed = (state?.installations ?? []).some((installation) =>
-      installation.marketplaceEntryId === entry.marketplaceEntryId);
+    if (!('marketplaceEntryId' in entry)) {
+      const findings = entry.findings.length > 0
+        ? entry.findings.map((finding) =>
+            `${finding.code} · ${finding.rule} · ${finding.outcome}`,
+          ).join('; ')
+        : 'no Marketplace Entries were reported';
+      return {
+        id: `marketplace-diagnostic:${scope}:${entry.registrationId}`,
+        label: entry.name,
+        detail: `Unavailable · ${findings}`,
+        scope,
+        targetKind: 'registration',
+        targetId: entry.registrationId,
+        actions: [],
+      };
+    }
+    const compatiblePluginId = entry.classification === 'compatible'
+      ? entry.plugin?.id
+      : undefined;
+    const installed = compatiblePluginId !== undefined &&
+      (state?.installations ?? []).some((installation) =>
+        installation.pluginId === compatiblePluginId);
     const skillDetail = entry.plugin?.skills.length
       ? entry.plugin.skills.map((skill) =>
           `${skill.name} ${skill.invocationPolicy} resources ${skill.resources.length > 0 ? skill.resources.join(', ') : 'none'}`,
@@ -918,32 +965,48 @@ export class BridgeLedgerComponent implements Component {
   }
 
   private actionLines(section: LedgerSection): string[] {
-    const entries = this.actionEntries(section);
-    if (entries.length === 0) return [this.theme.fg('muted', 'No actions in this section')];
-    return entries.flatMap(({ row, action }, index) => {
-      const selected = index === this.rowIndex;
-      const availabilityText = action.enabled
-        ? 'available'
-        : `disabled: ${quoteTerminalText(action.disabledReason ?? 'unavailable')}`;
-      return [
-        this.theme.fg(selected ? 'accent' : 'text',
-          `${selected ? '>' : ' '} [${availabilityText}] ${action.label} / ${quoteTerminalText(row.label)}`),
-        this.theme.fg('dim',
-          `  detail ${quoteTerminalText(row.detail ?? '(none)')} | target ${action.intent.targetKind ?? 'none'} ` +
-          `${quoteTerminalText(action.intent.targetId ?? '(none)')} | scope ${action.intent.scope ?? 'none'} | ` +
-          `mode ${action.intent.mode}`),
-      ];
+    const rows = this.visibleRows(section);
+    if (rows.length === 0) return [this.theme.fg('muted', 'No rows in this section')];
+    let actionIndex = 0;
+    return rows.flatMap((row) => {
+      if (row.actions.length === 0) {
+        return [
+          this.theme.fg('warning', `  [Unavailable] ${quoteTerminalText(row.label)}`),
+          this.theme.fg('dim',
+            `  detail ${quoteTerminalText(row.detail ?? '(none)')} | target ${row.targetKind ?? 'none'} ` +
+            `${quoteTerminalText(row.targetId ?? '(none)')} | scope ${row.scope ?? 'none'} | actions none`),
+        ];
+      }
+      return row.actions.flatMap((action) => {
+        const selected = actionIndex === this.rowIndex;
+        actionIndex += 1;
+        const availabilityText = action.enabled
+          ? 'available'
+          : `disabled: ${quoteTerminalText(action.disabledReason ?? 'unavailable')}`;
+        return [
+          this.theme.fg(selected ? 'accent' : 'text',
+            `${selected ? '>' : ' '} [${availabilityText}] ${action.label} / ${quoteTerminalText(row.label)}`),
+          this.theme.fg('dim',
+            `  detail ${quoteTerminalText(row.detail ?? '(none)')} | target ${action.intent.targetKind ?? 'none'} ` +
+            `${quoteTerminalText(action.intent.targetId ?? '(none)')} | scope ${action.intent.scope ?? 'none'} | ` +
+            `mode ${action.intent.mode}`),
+        ];
+      });
     });
   }
 
-  private actionEntries(section = this.currentSection()): { row: LedgerObjectRow; action: LedgerActionRow }[] {
+  private visibleRows(section = this.currentSection()): LedgerObjectRow[] {
     const scopePartitioned = section.id === 'sources'
       || section.id === 'plugins'
       || section.id === 'recovery-receipts';
-    const visibleRows = scopePartitioned
+    return scopePartitioned
       ? section.rows.filter((row) => row.scope === undefined || row.scope === this.browseFocus)
       : section.rows;
-    return visibleRows.flatMap((row) => row.actions.map((action) => ({ row, action })));
+  }
+
+  private actionEntries(section = this.currentSection()): { row: LedgerObjectRow; action: LedgerActionRow }[] {
+    return this.visibleRows(section)
+      .flatMap((row) => row.actions.map((action) => ({ row, action })));
   }
 
   private currentSection(): LedgerSection {

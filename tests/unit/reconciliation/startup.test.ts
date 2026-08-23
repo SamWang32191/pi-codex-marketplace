@@ -8,6 +8,10 @@ import { appendReceipt, readReceiptJournal } from '../../../src/journal/journal.
 import { createReceipt } from '../../../src/registration/receipt.js';
 import { getStatePath } from '../../../src/bridge-state/paths.js';
 
+const PENDING_RECEIPT = 'rcpt_50000000-0000-4000-8000-000000000001';
+const GLOBAL_PENDING_RECEIPT = 'rcpt_50000000-0000-4000-8000-000000000002';
+const PROJECT_PENDING_RECEIPT = 'rcpt_50000000-0000-4000-8000-000000000003';
+
 describe('Startup Reconciliation', () => {
   let tmpRoot: string;
   let agentDir: string;
@@ -39,7 +43,7 @@ describe('Startup Reconciliation', () => {
   it('reconciles Global Pending Application on startup and produces a Reconciliation receipt', async () => {
     // 1. Setup pending application in global journal
     const pendingRcpt = createReceipt({
-      id: 'rcpt_pending_1',
+      id: PENDING_RECEIPT,
       operation: 'Marketplace Registration',
       scope: 'global',
       trigger: 'register',
@@ -78,7 +82,7 @@ describe('Startup Reconciliation', () => {
     expect(res.globalReconciled).toBe(true);
     expect(res.globalReceipt?.summary).toBe('Completed');
     expect(res.globalReceipt?.kind).toBe('Reconciliation');
-    expect(res.globalReceipt?.recoversReceiptId).toBe('rcpt_pending_1');
+    expect(res.globalReceipt?.recoversReceiptId).toBe(PENDING_RECEIPT);
 
     const gj = await readReceiptJournal('global', { agentDir, cwd: projectDir });
     expect(gj.activeChains).toHaveLength(0);
@@ -87,7 +91,7 @@ describe('Startup Reconciliation', () => {
   it('Global-first: blocks Project reconciliation when Global recovery cannot complete', async () => {
     // 1. Setup pending application in global journal
     const globalPending = createReceipt({
-      id: 'rcpt_global_pending',
+      id: GLOBAL_PENDING_RECEIPT,
       operation: 'Marketplace Registration',
       scope: 'global',
       trigger: 'register',
@@ -102,7 +106,7 @@ describe('Startup Reconciliation', () => {
 
     // 2. Setup project state with pending work
     const projectPending = createReceipt({
-      id: 'rcpt_proj_pending',
+      id: PROJECT_PENDING_RECEIPT,
       operation: 'Plugin Installation',
       scope: 'project',
       trigger: 'install',

@@ -9,6 +9,10 @@ import { getReceiptsJournalPath, getStatePath } from '../../../src/bridge-state/
 import { appendReceipt, readReceiptJournal } from '../../../src/journal/journal.js';
 import { createReceipt } from '../../../src/registration/receipt.js';
 
+const INDETERMINATE_RECEIPT = 'rcpt_30000000-0000-4000-8000-000000000001';
+const VALID_RECEIPT = 'rcpt_30000000-0000-4000-8000-000000000002';
+const PENDING_RECEIPT = 'rcpt_30000000-0000-4000-8000-000000000003';
+
 describe('Repair State', () => {
   let tmpRoot: string;
   let agentDir: string;
@@ -44,7 +48,7 @@ describe('Repair State', () => {
   it('succeeds and resolves active indeterminate recovery chain when state file is verified valid', async () => {
     // 1. Record an indeterminate receipt in journal
     const indetRcpt = createReceipt({
-      id: 'rcpt_indet_1',
+      id: INDETERMINATE_RECEIPT,
       operation: 'Marketplace Registration',
       scope: 'global',
       trigger: 'register',
@@ -73,7 +77,7 @@ describe('Repair State', () => {
     const res = await repairBridgeState('global', { agentDir, cwd: projectDir });
     expect(res.success).toBe(true);
     expect(res.receipt.summary).toBe('Completed');
-    expect(res.receipt.recoversReceiptId).toBe('rcpt_indet_1');
+    expect(res.receipt.recoversReceiptId).toBe(INDETERMINATE_RECEIPT);
 
     const journal = await readReceiptJournal('global', { agentDir, cwd: projectDir });
     expect(journal.activeChains).toHaveLength(0);
@@ -82,7 +86,7 @@ describe('Repair State', () => {
   it('atomically removes corrupted journal lines after state verification and clears the Global Pending Barrier', async () => {
     const opts = { agentDir, cwd: projectDir };
     const valid = createReceipt({
-      id: 'rcpt_valid_before_journal_repair',
+      id: VALID_RECEIPT,
       operation: 'Inspect',
       scope: 'global',
       trigger: 'inspect',
@@ -113,7 +117,7 @@ describe('Repair State', () => {
   it('preserves active recovery chains while repairing corrupted journal lines', async () => {
     const opts = { agentDir, cwd: projectDir };
     const pending = createReceipt({
-      id: 'rcpt_pending_preserved_by_journal_repair',
+      id: PENDING_RECEIPT,
       operation: 'Runtime Application',
       scope: 'global',
       trigger: 'reload',

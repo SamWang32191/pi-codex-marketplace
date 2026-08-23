@@ -13,7 +13,11 @@ import {
 } from '../../src/registration/git-flow.js';
 import type { GitSelectorInput } from '../../src/registration/git-selector.js';
 import type { Scope } from '../../src/bridge-state/types.js';
-import { fullValidationDisclosureLines, reportOutcome } from './registration.js';
+import {
+  fullValidationDisclosureLines,
+  reportOutcome,
+  reportTerminalPreflightOutcome,
+} from './registration.js';
 import { quoteTerminalText } from './terminal-presentation.js';
 import { openTransactionSheet, type TransactionSheetModel } from './transaction-sheet.js';
 
@@ -109,7 +113,7 @@ export async function runGitRegistrationFlow(
   const opts = { cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() };
   const res = await preflightGitRegistration(scope, locator, selectorInput, opts);
   if (!res.ok) {
-    await reportOutcome(ctx, res.outcome);
+    await reportTerminalPreflightOutcome(ctx, res.outcome);
     return;
   }
 

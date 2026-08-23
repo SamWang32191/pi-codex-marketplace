@@ -103,7 +103,7 @@ export async function runLocalRegistrationFlow(
   const opts = { cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() };
   const res = await preflightLocalRegistration(scope, rootPath, opts);
   if (!res.ok) {
-    await reportOutcome(ctx, res.outcome);
+    await reportTerminalPreflightOutcome(ctx, res.outcome);
     return;
   }
 
@@ -168,6 +168,24 @@ export async function runLocalRegistrationFlow(
   }
 
   const outcome = await confirmLocalRegistration(pf, yes, opts);
+  await reportOutcome(ctx, outcome);
+}
+
+/** Show a terminal preflight's bound Validation Disclosure before presenting its existing Receipt. */
+export async function reportTerminalPreflightOutcome(
+  ctx: Pick<ExtensionCommandContext, 'mode' | 'hasUI' | 'ui'>,
+  outcome: { receipt: AttemptReceipt },
+): Promise<void> {
+  const receipt = outcome.receipt;
+  await openTransactionSheet(ctx, {
+    step: 'Validation',
+    actionLabel: receipt.operation,
+    authority: receipt.scope,
+    target: receipt.trigger,
+    stateRevision: receipt.expectedStateRevision,
+    validationSnapshot: receipt.validationSnapshot,
+    details: fullValidationDisclosureLines(receipt.findings),
+  });
   await reportOutcome(ctx, outcome);
 }
 

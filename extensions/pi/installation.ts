@@ -18,7 +18,12 @@ import type { SourceCache } from '../../src/cache/source-cache.js';
 import type { Installation, Registration, Scope } from '../../src/bridge-state/types.js';
 import { blocking, CODE, RULE } from '../../src/registration/findings.js';
 import { createReceipt } from '../../src/registration/receipt.js';
-import { fullValidationDisclosureLines, reportOutcome, validationDisclosureLines } from './registration.js';
+import {
+  fullValidationDisclosureLines,
+  reportOutcome,
+  reportTerminalPreflightOutcome,
+  validationDisclosureLines,
+} from './registration.js';
 import { quoteTerminalText } from './terminal-presentation.js';
 import { openTransactionSheet, type TransactionSheetModel } from './transaction-sheet.js';
 
@@ -136,7 +141,7 @@ export async function runPluginInstallationFlow(
     ],
   })) return;
   const preflight = await preflightPluginInstallation(scope, registration.id, selected.pointer, opts);
-  if (!preflight.ok) return await reportOutcome(ctx, preflight.outcome);
+  if (!preflight.ok) return await reportTerminalPreflightOutcome(ctx, preflight.outcome);
   const pf = preflight.preflight;
   const boundModel = {
     actionLabel,
@@ -317,11 +322,14 @@ export async function runPluginStateFlow(
       step: 'Commit',
       details: [`Write authority ${scope} at State Revision ${quoteTerminalText(state.state?.stateRevision ?? '?')}`],
     }, declineStateTransaction)) return;
-    await reportOutcome(ctx, await disablePluginInstallation(scope, installation.id, opts));
+    await reportOutcome(ctx, await disablePluginInstallation(scope, installation.id, {
+      ...opts,
+      expectedStateRevision: currentRevision,
+    }));
     return;
   }
   const preflight = await preflightPluginEnable(scope, installation.id, opts);
-  if (!preflight.ok) return await reportOutcome(ctx, preflight.outcome);
+  if (!preflight.ok) return await reportTerminalPreflightOutcome(ctx, preflight.outcome);
   const pf = preflight.preflight;
   const boundModel = {
     actionLabel,

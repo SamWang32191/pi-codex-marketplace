@@ -422,26 +422,101 @@ async function runRetryApplicationUnderFence(
     });
     return;
   }
-
-  const outcome = await requestRuntimeApplication(async () => {
-    try {
-      await ctx.reload();
-    } catch {
-      return false;
+  if (scope === 'project' && !ctx.isProjectTrusted()) {
+    await reportRetryTerminal(ctx, {
+      scope,
+      receiptId,
+      stateRevision: chain.stateRevision,
+      validationSnapshot: rootValidationSnapshot,
+      summary: 'Blocked',
+      findings: [retryFinding(
+        scope,
+        CODE.PROJECT_TRUST_DENIED,
+        RULE.PROJECT_TRUST_DENIED,
+        'Project Trust was revoked during confirmation; Runtime Application was not requested',
+      )],
+      attachToChain: true,
+    });
+    return;
+  }
+  if (scope === 'project') {
+    const barrier = await checkGlobalPendingBarrier({ cwd: ctx.cwd });
+    if (barrier.active) {
+      await reportRetryTerminal(ctx, {
+        scope,
+        receiptId,
+        stateRevision: chain.stateRevision,
+        validationSnapshot: rootValidationSnapshot,
+        summary: 'Blocked',
+        findings: [barrier.finding ?? retryFinding(
+          scope,
+          CODE.GLOBAL_PENDING_BARRIER,
+          RULE.GLOBAL_PENDING_BARRIER,
+          barrier.reason ?? 'Global recovery became required during confirmation',
+        )],
+        attachToChain: true,
+      });
+      return;
     }
-    const observed = await readBridgeState(scope, { cwd: ctx.cwd });
-    return (observed.status === 'ok' || observed.status === 'missing')
-      && observed.state!.stateRevision === chain.stateRevision
-      && exactValidationSnapshotStillValid(scope, observed.state!, rootValidationSnapshot);
-  }, {
-    scope,
-    stateRevision: chain.stateRevision,
-    validationSnapshot: rootValidationSnapshot,
-    cwd: ctx.cwd,
-    recoversReceiptId: receiptId,
-    wholePluginFindings: rootReceipt.findings,
-  });
-  await reportOutcome(ctx, outcome);
+  }
+
+  const postReloadGuardBlocked = Symbol('post-reload-project-guard-blocked');
+  let postReloadGuardFinding: ValidationFinding | undefined;
+  try {
+    const outcome = await requestRuntimeApplication(async () => {
+      try {
+        await ctx.reload();
+      } catch {
+        return false;
+      }
+      const observed = await readBridgeState(scope, { cwd: ctx.cwd });
+      const reentered = (observed.status === 'ok' || observed.status === 'missing')
+        && observed.state!.stateRevision === chain.stateRevision
+        && exactValidationSnapshotStillValid(scope, observed.state!, rootValidationSnapshot);
+      if (!reentered) return false;
+      if (scope === 'project' && !ctx.isProjectTrusted()) {
+        postReloadGuardFinding = retryFinding(
+          scope,
+          CODE.PROJECT_TRUST_DENIED,
+          RULE.PROJECT_TRUST_DENIED,
+          'Project Trust was revoked during host reload; Project Runtime Application remains blocked',
+        );
+        throw postReloadGuardBlocked;
+      }
+      if (scope === 'project') {
+        const barrier = await checkGlobalPendingBarrier({ cwd: ctx.cwd });
+        if (barrier.active) {
+          postReloadGuardFinding = barrier.finding ?? retryFinding(
+            scope,
+            CODE.GLOBAL_PENDING_BARRIER,
+            RULE.GLOBAL_PENDING_BARRIER,
+            barrier.reason ?? 'Global recovery became required during host reload',
+          );
+          throw postReloadGuardBlocked;
+        }
+      }
+      return true;
+    }, {
+      scope,
+      stateRevision: chain.stateRevision,
+      validationSnapshot: rootValidationSnapshot,
+      cwd: ctx.cwd,
+      recoversReceiptId: receiptId,
+      wholePluginFindings: rootReceipt.findings,
+    });
+    await reportOutcome(ctx, outcome);
+  } catch (error) {
+    if (error !== postReloadGuardBlocked || !postReloadGuardFinding) throw error;
+    await reportRetryTerminal(ctx, {
+      scope,
+      receiptId,
+      stateRevision: chain.stateRevision,
+      validationSnapshot: rootValidationSnapshot,
+      summary: 'Blocked',
+      findings: [postReloadGuardFinding],
+      attachToChain: true,
+    });
+  }
 }
 
 export async function runReceiptJournalView(

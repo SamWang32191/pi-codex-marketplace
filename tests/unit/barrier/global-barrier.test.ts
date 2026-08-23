@@ -9,6 +9,9 @@ import { createReceipt } from '../../../src/registration/receipt.js';
 import { acquireAttemptFence } from '../../../src/registration/fence.js';
 import { getStatePath } from '../../../src/bridge-state/paths.js';
 
+const PENDING_RECEIPT = 'rcpt_60000000-0000-4000-8000-000000000001';
+const RESOLVED_RECEIPT = 'rcpt_60000000-0000-4000-8000-000000000002';
+
 describe('Global Pending Barrier', () => {
   let tmpRoot: string;
   let agentDir: string;
@@ -52,7 +55,7 @@ describe('Global Pending Barrier', () => {
 
   it('activates barrier when Global Scope has Pending Application in journal', async () => {
     const pendingRcpt = createReceipt({
-      id: 'rcpt_pending_global',
+      id: PENDING_RECEIPT,
       operation: 'Marketplace Registration',
       scope: 'global',
       trigger: 'register global',
@@ -71,7 +74,7 @@ describe('Global Pending Barrier', () => {
 
     // Resolve by appending Completed recovery receipt
     const resolvedRcpt = createReceipt({
-      id: 'rcpt_resolved_global',
+      id: RESOLVED_RECEIPT,
       operation: 'Runtime Application',
       scope: 'global',
       trigger: 'reapply',
@@ -80,7 +83,7 @@ describe('Global Pending Barrier', () => {
       durableOutcome: 'unchanged',
       runtimeOutcome: 'applied',
       summary: 'Completed',
-      recoversReceiptId: 'rcpt_pending_global',
+      recoversReceiptId: PENDING_RECEIPT,
     });
     await appendReceipt('global', resolvedRcpt, { agentDir, cwd: projectDir });
 

@@ -10,7 +10,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, openSync, closeSync, fsyncSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-import { atomicWriteFile } from '../bridge-state/atomic.js';
+import { atomicWriteFile, withFileLock } from '../bridge-state/atomic.js';
 import { getReceiptsJournalPath } from '../bridge-state/paths.js';
 import type { Scope } from '../bridge-state/types.js';
 import { CODE, notice, RULE, type ValidationFinding } from '../registration/findings.js';
@@ -22,9 +22,25 @@ import type {
   JournalReadResult,
 } from './types.js';
 
+export interface JournalTestHooks {
+  /** @internal Deterministic seam for exercising append-vs-rewrite concurrency. */
+  beforePruneRewrite?: () => Promise<void> | void;
+}
+
 export interface JournalOptions {
   cwd?: string;
   agentDir?: string;
+  journalLockTimeoutMs?: number;
+  /** @internal Test-only coordination hooks; production callers should omit this. */
+  testHooks?: JournalTestHooks;
+}
+
+function withJournalLock<T>(
+  journalPath: string,
+  opts: JournalOptions,
+  action: () => Promise<T> | T,
+): Promise<T> {
+  return withFileLock(`${journalPath}.lock`, action, opts.journalLockTimeoutMs ?? 5000);
 }
 
 /** Append an Attempt Receipt to the scope's Receipt Journal with fsync durability. */
@@ -35,21 +51,23 @@ export async function appendReceipt(
 ): Promise<JournalAppendResult> {
   const journalPath = getReceiptsJournalPath(scope, opts);
   try {
-    mkdirSync(dirname(journalPath), { recursive: true });
-    const line = JSON.stringify(receipt) + '\n';
-    appendFileSync(journalPath, line, 'utf-8');
+    return await withJournalLock(journalPath, opts, () => {
+      mkdirSync(dirname(journalPath), { recursive: true });
+      const line = JSON.stringify(receipt) + '\n';
+      appendFileSync(journalPath, line, 'utf-8');
 
-    // fsync file for durability
-    try {
-      const fd = openSync(journalPath, 'r');
+      // fsync file for durability
       try {
-        fsyncSync(fd);
-      } finally {
-        closeSync(fd);
-      }
-    } catch {}
+        const fd = openSync(journalPath, 'r');
+        try {
+          fsyncSync(fd);
+        } finally {
+          closeSync(fd);
+        }
+      } catch {}
 
-    return { success: true };
+      return { success: true };
+    });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     const finding: ValidationFinding = notice({
@@ -65,13 +83,12 @@ export async function appendReceipt(
   }
 }
 
-/** Read the scope's Receipt Journal, parsing line-by-line with tolerance for single-line corruptions. */
-export async function readReceiptJournal(
+/** Lock-free reader for callers that already hold the per-journal rewrite lock. */
+function readReceiptJournalUnlocked(
   scope: Scope,
   opts: JournalOptions = {},
-): Promise<JournalReadResult> {
-  const journalPath = getReceiptsJournalPath(scope, opts);
-
+  journalPath = getReceiptsJournalPath(scope, opts),
+): JournalReadResult {
   if (!existsSync(journalPath)) {
     return {
       receipts: [],
@@ -120,9 +137,13 @@ export async function readReceiptJournal(
 
     try {
       const parsed = JSON.parse(line);
-      if (isAttemptReceipt(parsed)) {
-        receipts.push(parsed);
+      const receipt = isAttemptReceipt(parsed) ? parsed : undefined;
+      if (receipt?.scope === scope) {
+        receipts.push(receipt);
       } else {
+        const reason = receipt
+          ? `scope '${receipt.scope}' does not match requested scope '${scope}'`
+          : 'missing or invalid required receipt fields';
         corruptedLineCount++;
         findings.push(
           notice({
@@ -132,7 +153,7 @@ export async function readReceiptJournal(
             scope,
             pointer: `${journalPath}:${i + 1}`,
             rule: RULE.RECEIPT_CORRUPT,
-            outcome: `Corrupted receipt line ${i + 1}: missing required receipt fields`,
+            outcome: `Corrupted receipt line ${i + 1}: ${reason}`,
           }),
         );
       }
@@ -165,45 +186,61 @@ export async function readReceiptJournal(
   };
 }
 
+/** Read the scope's Receipt Journal, parsing line-by-line with tolerance for single-line corruptions. */
+export async function readReceiptJournal(
+  scope: Scope,
+  opts: JournalOptions = {},
+): Promise<JournalReadResult> {
+  return readReceiptJournalUnlocked(scope, opts);
+}
+
 /** Prune resolved receipts outside active chains while preserving ALL active recovery chains. */
 export async function pruneReceiptJournal(
   scope: Scope,
   keepCount = 100,
   opts: JournalOptions = {},
 ): Promise<JournalPruneResult> {
-  const current = await readReceiptJournal(scope, opts);
-  const activeReceiptIds = new Set<string>();
-
-  for (const chain of current.activeChains) {
-    for (const r of chain.receipts) {
-      activeReceiptIds.add(r.id);
-    }
-  }
-
-  const outsideActive: AttemptReceipt[] = [];
-  for (const r of current.receipts) {
-    if (!activeReceiptIds.has(r.id)) {
-      outsideActive.push(r);
-    }
-  }
-
-  // Keep latest N outside active chains
-  const retainOutside = outsideActive.slice(-keepCount);
-  const retainOutsideIds = new Set(retainOutside.map((r) => r.id));
-
-  // Build final retained receipts preserving chronological order
-  const retained = current.receipts.filter(
-    (r) => activeReceiptIds.has(r.id) || retainOutsideIds.has(r.id),
-  );
-
-  const prunedCount = current.receipts.length - retained.length;
   const journalPath = getReceiptsJournalPath(scope, opts);
+  return withJournalLock(journalPath, opts, async () => {
+    // Re-read only after acquiring the lock so every completed append participates
+    // in this rewrite and cannot be overwritten by a stale snapshot.
+    const current = readReceiptJournalUnlocked(scope, opts, journalPath);
+    const activeReceiptIds = new Set<string>();
 
-  const content = retained.map((r) => JSON.stringify(r)).join('\n') + (retained.length > 0 ? '\n' : '');
-  mkdirSync(dirname(journalPath), { recursive: true });
-  atomicWriteFile(journalPath, content);
+    for (const chain of current.activeChains) {
+      for (const r of chain.receipts) {
+        activeReceiptIds.add(r.id);
+      }
+    }
 
-  return { prunedCount, retainedCount: retained.length };
+    const outsideActive: AttemptReceipt[] = [];
+    for (const r of current.receipts) {
+      if (!activeReceiptIds.has(r.id)) {
+        outsideActive.push(r);
+      }
+    }
+
+    // Keep latest N outside active chains
+    const retainOutside = outsideActive.slice(-keepCount);
+    const retainOutsideIds = new Set(retainOutside.map((r) => r.id));
+
+    // Build final retained receipts preserving chronological order
+    const retained = current.receipts.filter(
+      (r) => activeReceiptIds.has(r.id) || retainOutsideIds.has(r.id),
+    );
+
+    const prunedCount = current.receipts.length - retained.length;
+
+    const content = retained.map((r) => JSON.stringify(r)).join('\n') + (retained.length > 0 ? '\n' : '');
+    mkdirSync(dirname(journalPath), { recursive: true });
+    await opts.testHooks?.beforePruneRewrite?.();
+    const write = atomicWriteFile(journalPath, content);
+    if (!write.success || !write.verified) {
+      throw new Error(`Failed to atomically replace Receipt Journal: ${write.error ?? 'verification failed'}`);
+    }
+
+    return { prunedCount, retainedCount: retained.length };
+  });
 }
 
 /** Reconstruct or initialize the Receipt Journal from state. */
@@ -211,5 +248,6 @@ export async function reconstructJournalFromState(
   scope: Scope,
   opts: JournalOptions = {},
 ): Promise<JournalReadResult> {
-  return readReceiptJournal(scope, opts);
+  const journalPath = getReceiptsJournalPath(scope, opts);
+  return withJournalLock(journalPath, opts, () => readReceiptJournalUnlocked(scope, opts, journalPath));
 }
