@@ -16,6 +16,7 @@ import { stripTerminalSequences } from '@earendil-works/pi-tui';
 
 import { readBridgeStateSync } from '../../src/bridge-state/store.js';
 import type { ReadResult } from '../../src/bridge-state/types.js';
+import { discoverProjectedSkillPaths } from '../../src/projection/exposure.js';
 import { runStartupReconciliation } from '../../src/reconciliation/startup.js';
 import type { AttemptReceipt } from '../../src/registration/receipt.js';
 import { checkGlobalPendingBarrier } from '../../src/barrier/global-barrier.js';
@@ -304,6 +305,24 @@ export default function (pi: ExtensionAPI) {
       }
     } catch {
       // Non-blocking in extension bootstrap
+    }
+  });
+
+  // Runtime Skill Exposure (ADR 0001): contribute Projected Skills through Pi's
+  // resource-discovery seam at every startup and reload. Passive existence inspection over the
+  // current Effective State only — no fingerprint validation, no Bridge State mutation, and no
+  // Attempt Receipt. Missing snapshot material is skipped individually; discovery never fails
+  // the host's resource pass.
+  pi.on('resources_discover', async (_event, ctx) => {
+    try {
+      return {
+        skillPaths: discoverProjectedSkillPaths({
+          cwd: ctx.cwd,
+          projectTrusted: ctx.isProjectTrusted(),
+        }).skillPaths,
+      };
+    } catch {
+      return {};
     }
   });
 
