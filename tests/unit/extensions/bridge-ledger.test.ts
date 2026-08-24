@@ -13,6 +13,7 @@ import {
   type BridgeLedgerSnapshot,
   type LedgerActionId,
 } from '../../../extensions/pi/bridge-ledger.js';
+import { attemptSummaryText, findingOutcomeText, uiText } from '../../../extensions/pi/ui-strings.js';
 
 const identityTheme = {
   fg: (_token: string, text: string) => text,
@@ -219,11 +220,11 @@ describe('Bridge Ledger presentation model', () => {
     ]));
 
     const recovery = model.sections.find((section) => section.id === 'recovery-receipts')!;
-    expect(recovery.rows.find((row) => row.id === 'journal:global')?.detail).toContain(
-      '1 receipt',
+    expect(recovery.rows.find((row) => row.id === 'journal:global')?.detail).toBe(
+      uiText('ledger.row.journal.detail', { receipts: 1, chains: 0, degraded: uiText('common.no') }),
     );
-    expect(recovery.rows.find((row) => row.id === 'journal:project')?.detail).toContain(
-      '0 active recovery chains',
+    expect(recovery.rows.find((row) => row.id === 'journal:project')?.detail).toBe(
+      uiText('ledger.row.journal.detail', { receipts: 0, chains: 0, degraded: uiText('common.no') }),
     );
   });
 
@@ -383,7 +384,7 @@ describe('Bridge Ledger presentation model', () => {
       expect(unavailable.marketplaceEntries.global[0]?.findings).toEqual([finding]);
       expect(diagnostic).toMatchObject({
         label: 'global-market',
-        detail: `Unavailable · ${code} · ${rule} · ${outcome}`,
+        detail: `Unavailable（無法使用）· ${code} · ${rule} · ${findingOutcomeText({ rule, outcome })}`,
         scope: 'global',
         targetKind: 'registration',
         targetId: registration.id,
@@ -440,23 +441,17 @@ describe('Bridge Ledger presentation model', () => {
     rendered.instance.handleInput('\x1b[C'); // Plugins
 
     const globalScreen = rendered.instance.render(240).join('\n');
-    expect(globalScreen).toContain(
-      'SOURCE_DRIFT · DRIFT-01 · Source Drift requires Marketplace Refresh',
-    );
-    expect(globalScreen).not.toContain(
-      'CATALOG_MALFORMED · CAT-02 · marketplace.json is not an object',
-    );
+    const driftOutcome = findingOutcomeText({ rule: 'DRIFT-01', outcome: 'Source Drift requires Marketplace Refresh' });
+    const catalogOutcome = findingOutcomeText({ rule: 'CAT-02', outcome: 'marketplace.json is not an object' });
+    expect(globalScreen).toContain(`SOURCE_DRIFT · DRIFT-01 · ${driftOutcome}`);
+    expect(globalScreen).not.toContain(`CATALOG_MALFORMED · CAT-02 · ${catalogOutcome}`);
     rendered.instance.handleInput('\r');
     expect(rendered.results).toEqual([]);
 
     rendered.instance.handleInput('p');
     const projectScreen = rendered.instance.render(240).join('\n');
-    expect(projectScreen).toContain(
-      'CATALOG_MALFORMED · CAT-02 · marketplace.json is not an object',
-    );
-    expect(projectScreen).not.toContain(
-      'SOURCE_DRIFT · DRIFT-01 · Source Drift requires Marketplace Refresh',
-    );
+    expect(projectScreen).toContain(`CATALOG_MALFORMED · CAT-02 · ${catalogOutcome}`);
+    expect(projectScreen).not.toContain(`SOURCE_DRIFT · DRIFT-01 · ${driftOutcome}`);
     rendered.instance.handleInput('\r');
     expect(rendered.results).toEqual([]);
   });
@@ -479,7 +474,7 @@ describe('Bridge Ledger presentation model', () => {
 
     const movedRow = findMarketplaceRow(moved, movedEntry.marketplaceEntryId);
     expect(movedRow?.actions.every((entry) => !entry.enabled)).toBe(true);
-    expect(movedRow?.actions[0]?.disabledReason).toContain('scope-local Installation');
+    expect(movedRow?.actions[0]?.disabledReason).toContain('Installation');
 
     const replacement = snapshot();
     const replacementEntry = replacement.marketplaceEntries.global[0]!;
@@ -596,7 +591,7 @@ describe('Bridge Ledger presentation model', () => {
 
     expect(retry?.actions[0]).toMatchObject({
       enabled: false,
-      disabledReason: expect.stringContaining('no bound Validation Snapshot'),
+      disabledReason: expect.stringContaining(uiText('ledger.disabledReason.retryNoSnapshot')),
     });
   });
 
@@ -608,14 +603,14 @@ describe('Bridge Ledger presentation model', () => {
     expect(lines.length).toBeGreaterThan(8);
     expect(screen).toContain('CODEX MARKETPLACE / BRIDGE LEDGER');
     expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
-    expect(screen).toContain('G rev "12"');
-    expect(screen).toContain('P rev "7"');
-    expect(screen.match(/HEALTHY/g)).toHaveLength(2);
-    expect(screen).toContain('Project Trust: granted');
-    expect(screen).toContain('BARRIER CLEAR');
-    expect(screen).toContain('Status:');
+    expect(screen).toContain(uiText('ledger.rail.revision', { marker: 'G', revision: '"12"' }));
+    expect(screen).toContain(uiText('ledger.rail.revision', { marker: 'P', revision: '"7"' }));
+    expect(screen.match(new RegExp(uiText('ledger.badge.healthy'), 'g'))).toHaveLength(2);
+    expect(screen).toContain(uiText('ledger.rail.trust.granted'));
+    expect(screen).toContain(uiText('ledger.badge.barrierClear'));
+    expect(screen).toContain('狀態：');
     expect(screen).toContain('Esc/q');
-    expect(screen).toContain(width >= 96 ? 'Navigation' : 'Sections');
+    expect(screen).toContain(width >= 96 ? uiText('ledger.panel.navigation') : uiText('ledger.panel.sections'));
   });
 
   it.each([120, 80, 60])('presents both authority rails as bordered panels at every width %i', (width) => {
@@ -656,7 +651,7 @@ describe('Bridge Ledger presentation model', () => {
     instance.handleInput('\x1b[C'); // Sources
     const idle = instance.render(120);
     const baselineWashes = backgrounds.filter((token) => token === 'selectedBg').length;
-    expect(idle.some((line) => line.includes('● Ready Register local Marketplace'))).toBe(true);
+    expect(idle.some((line) => line.includes(`● ${uiText('ledger.availability.ready')} ${uiText('ledger.action.register-local')}`))).toBe(true);
 
     instance.handleInput('j'); // move onto the registration row's actions
     instance.render(120);
@@ -667,6 +662,31 @@ describe('Bridge Ledger presentation model', () => {
     expect(screen).not.toContain('[Unavailable]');
   });
 
+  it.each([120, 80, 60])('keeps CJK double-width content within %i columns without overflow or frame damage', (width) => {
+    const cjk = snapshot();
+    cjk.global.state!.registrations[0]!.alias = '全球市集（相當長的雙寬字元名稱測試）';
+    cjk.project.state!.registrations[0]!.alias = '專案市集——CJK 寬度安全檢查';
+    cjk.barrier = { active: true, reason: '需要先進行全域復原：一段很長的中文診斷訊息，用來壓迫寬度計算' };
+    const { instance } = component(buildBridgeLedgerModel(cjk));
+    instance.render(width);
+    if (width >= 96) {
+      instance.handleInput('\x1b[C'); // 寬版：右切到「來源」
+    } else {
+      instance.handleInput('j'); // 窄版：選到「來源」分區
+      instance.handleInput('\r'); // 進入分區詳情
+    }
+    const lines = instance.render(width);
+    const screen = lines.join('\n');
+
+    // No line exceeds the terminal width even with double-width characters.
+    expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
+    // Panel frames stay intact: every framed content row still closes with a right border.
+    for (const line of lines.filter((candidate) => candidate.includes('│'))) {
+      expect(line.trimEnd().endsWith('│')).toBe(true);
+    }
+    expect(screen).toContain('全球市集');
+  });
+
   it('changes g/p browsing focus while keeping the visible action authority explicit', () => {
     const { instance, requests, results } = component();
     instance.render(120);
@@ -674,9 +694,9 @@ describe('Bridge Ledger presentation model', () => {
     instance.handleInput('\x1b[C'); // Sources
     instance.handleInput('p');
     const projectScreen = instance.render(120).join('\n');
-    expect(projectScreen).toContain('Status: browsing P');
-    expect(projectScreen).toContain('Project registration actions');
-    expect(projectScreen).not.toContain('Global registration actions');
+    expect(projectScreen).toContain('瀏覽 P');
+    expect(projectScreen).toContain(uiText('ledger.row.registrationActions', { scopeWord: 'Project' }));
+    expect(projectScreen).not.toContain(uiText('ledger.row.registrationActions', { scopeWord: 'Global' }));
     instance.handleInput('\r');
 
     expect(results).toEqual([{
@@ -742,7 +762,7 @@ describe('Bridge Ledger presentation model', () => {
     expect(findAction(clear, 'register-local', 'project').enabled).toBe(true);
     expect(findAction(clear, 'repair-state', 'project')).toMatchObject({
       enabled: false,
-      disabledReason: expect.stringContaining('no eligible Persistence Indeterminate'),
+      disabledReason: expect.stringContaining(uiText('ledger.disabledReason.repairNothing')),
     });
 
     const barrierSnapshot = snapshot();
@@ -757,7 +777,7 @@ describe('Bridge Ledger presentation model', () => {
     expect(findAction(barrier, 'view-receipt-journal', 'project').enabled).toBe(true);
     expect(findAction(barrier, 'repair-state', 'global')).toMatchObject({
       enabled: false,
-      disabledReason: expect.stringContaining('no eligible Persistence Indeterminate'),
+      disabledReason: expect.stringContaining(uiText('ledger.disabledReason.repairNothing')),
     });
 
     const untrustedSnapshot = snapshot();
@@ -923,27 +943,27 @@ describe('Bridge Ledger presentation model', () => {
     const wide = component();
     wide.instance.render(120);
     wide.instance.handleInput('\x1b[57418u'); // Kitty right
-    expect(wide.instance.render(120).join('\n')).toContain('> Sources');
+    expect(wide.instance.render(120).join('\n')).toContain(`> ${uiText('ledger.section.sources.label')}`);
     wide.instance.handleInput('j');
     wide.instance.handleInput('\x1b[57420u'); // Kitty down
     wide.instance.handleInput('\x1b[57419u'); // Kitty up
     wide.instance.handleInput('k');
     wide.instance.handleInput('?');
-    expect(wide.instance.render(120).join('\n')).toContain('Help');
+    expect(wide.instance.render(120).join('\n')).toContain(uiText('ledger.panel.help'));
     wide.instance.handleInput('\x1b[27u'); // Kitty Escape closes help
     expect(wide.results).toEqual([]);
 
     // The structured dump is hidden until expanded, then fully retrievable.
     const collapsed = wide.instance.render(120).join('\n');
-    expect(collapsed).not.toContain('| mode ');
-    expect(collapsed).not.toContain('detail ');
+    expect(collapsed).not.toContain('模式 ');
+    expect(collapsed).not.toContain('詳情 ');
     wide.instance.handleInput('i');
     const expanded = wide.instance.render(120).join('\n');
-    expect(expanded).toContain('mode mutation');
-    expect(expanded).toContain('scope global');
-    expect(expanded).toContain('target scope "global"');
+    expect(expanded).toContain('模式 mutation');
+    expect(expanded).toContain('Scope global');
+    expect(expanded).toContain('目標 scope "global"');
     wide.instance.handleInput('i');
-    expect(wide.instance.render(120).join('\n')).not.toContain('mode mutation');
+    expect(wide.instance.render(120).join('\n')).not.toContain('模式 mutation');
 
     wide.instance.handleInput('\x1b[13u'); // Kitty Enter activates first Global action
     expect(wide.results[0]).toMatchObject({ actionId: 'register-local', scope: 'global' });
@@ -960,15 +980,15 @@ describe('Bridge Ledger presentation model', () => {
   it.each([80, 60])('drills down through single-column sections at %i columns', (width) => {
     const narrow = component();
     narrow.instance.render(width);
-    expect(narrow.instance.render(width).join('\n')).toContain('Sections');
+    expect(narrow.instance.render(width).join('\n')).toContain(uiText('ledger.panel.sections'));
 
     narrow.instance.handleInput('\r');
     const detail = narrow.instance.render(width).join('\n');
-    expect(detail).toContain('Observe');
-    expect(detail).toContain('● Ready Inspect authority partitions');
+    expect(detail).toContain(uiText('ledger.section.observe.label'));
+    expect(detail).toContain(`● ${uiText('ledger.availability.ready')} ${uiText('ledger.action.observe-partitions')}`);
 
     narrow.instance.handleInput('\x1b');
-    expect(narrow.instance.render(width).join('\n')).toContain('Sections');
+    expect(narrow.instance.render(width).join('\n')).toContain(uiText('ledger.panel.sections'));
 
     narrow.instance.handleInput('q');
     expect(narrow.results).toEqual([undefined]);
@@ -987,7 +1007,7 @@ describe('Bridge Ledger presentation model', () => {
     blocked.instance.handleInput('p'); // Project register-local
     const screen = blocked.instance.render(120).join('\n');
 
-    expect(screen).toContain('○ Blocked Register local Marketplace');
+    expect(screen).toContain(`○ ${uiText('ledger.availability.blocked')} ${uiText('ledger.action.register-local')}`);
     expect(screen).toContain('Global Pending Barrier');
     expect(screen).not.toContain('[available]');
     expect(screen).not.toContain('[Unavailable]');

@@ -20,8 +20,13 @@ import {
   runRepairStateFlow,
   runRetryApplicationFlow,
 } from '../../../extensions/pi/journal.js';
+import {
+  TRANSACTION_STEPS,
+  type TransactionStep,
+} from '../../../extensions/pi/transaction-sheet.js';
 import { runRefreshFlow, runRemovalFlow, runUpdatePlanChecklist } from '../../../extensions/pi/lifecycle.js';
 import { runScopeOverrideFlow } from '../../../extensions/pi/scope-overrides.js';
+import { transactionStepLabel, uiText, verdictText } from '../../../extensions/pi/ui-strings.js';
 
 const FIRST_REGISTRATION_ID = '11111111-1111-4111-8111-111111111111';
 const SECOND_REGISTRATION_ID = '22222222-2222-4222-8222-222222222222';
@@ -66,8 +71,9 @@ function makeUiHarness(options: UiHarnessOptions = {}) {
       const component = factory({ requestRender: () => {} }, identityTheme, {}, resolveSheet);
       const rendered = component.render(options.width ?? 120).join('\n');
       renders.push(rendered);
-      const active = ['Intent', 'Validation', 'Consent', 'Plan', 'Commit', 'Receipt']
-        .find((step) => rendered.includes(`${step} ACTIVE`));
+      // Canonical step ids are detected through their localized presentation markers.
+      const active = TRANSACTION_STEPS.find((step: TransactionStep, index: number) =>
+        rendered.includes(`▸ ${index + 1} ${transactionStepLabel(step)}（${uiText('step.activeSuffix')}）`));
       if (active) {
         sheets.push(active);
         await options.onStep?.(active);
@@ -429,7 +435,7 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       await flow;
 
       const receiptSheet = harness.renders.at(-1) ?? '';
-      expect(harness.notifications.at(-1)).toContain('Attempt Summary: Persistence Failed');
+      expect(harness.notifications.at(-1)).toContain('Attempt Summary：Persistence Failed（持久化失敗）');
       expect(receiptSheet).toMatch(/Attempt Summary:\s*"Persistence Failed"/s);
       expect(receiptSheet).toMatch(/RECEIPT_PERSISTENCE_FAILED.*JOURNAL-01/s);
       expect(receiptSheet).toContain('Scope Override Creation');
@@ -577,8 +583,8 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
     await runRepairStateFlow(ctx as never, { scope: 'global' });
 
     expect(harness.sheets).toEqual(['Intent', 'Validation', 'Consent', 'Receipt']);
-    expect(harness.renders.find((rendered) => rendered.includes('Validation ACTIVE'))).toMatch(
-      /Verdict Passed.*Findings 0 blocking/s,
+    expect(harness.renders.find((rendered) => rendered.includes(`▸ 2 ${transactionStepLabel('Validation')}（${uiText('step.activeSuffix')}）`))).toMatch(
+      new RegExp(`${uiText('verdict.label')}：${verdictText('Passed')}.*${uiText('findings.count.label')}：${uiText('findings.count.line', { blocking: 0, warning: 0, notice: 0 })}`, 's'),
     );
     expect((await readReceiptJournal('global', { cwd, agentDir })).receipts.at(-1)).toEqual(
       expect.objectContaining({ kind: 'State Repair', operation: 'Repair State', summary: 'Declined' }),
@@ -605,7 +611,7 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       await flow;
 
       const receiptSheet = harness.renders.at(-1) ?? '';
-      expect(harness.notifications.at(-1)).toContain('Attempt Summary: Persistence Failed');
+      expect(harness.notifications.at(-1)).toContain('Attempt Summary：Persistence Failed（持久化失敗）');
       expect(receiptSheet).toMatch(/Attempt Summary:\s*"Persistence Failed"/s);
       expect(receiptSheet).toMatch(/RECEIPT_PERSISTENCE_FAILED.*JOURNAL-01/s);
       expect(receiptSheet).toContain('Repair State');
@@ -641,7 +647,7 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       await flow;
 
       const receiptSheet = harness.renders.at(-1) ?? '';
-      expect(harness.notifications.at(-1)).toContain('Attempt Summary: Persistence Failed');
+      expect(harness.notifications.at(-1)).toContain('Attempt Summary：Persistence Failed（持久化失敗）');
       expect(receiptSheet).toMatch(/Attempt Summary:\s*"Persistence Failed"/s);
       expect(receiptSheet).toMatch(/REJECTED_AS_STALE.*STALE-01/s);
       expect(receiptSheet).toMatch(/RECEIPT_PERSISTENCE_FAILED.*JOURNAL-01/s);
@@ -1153,9 +1159,10 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
     });
 
     const disclosure = harness.renders.join('\n');
-    expect(disclosure).toContain('Verdict Blocked');
-    expect(disclosure).toContain('Findings 1 blocking');
-    expect(disclosure).toMatch(/classification blocking.*scope global.*phase post-commit.*target plugin.*pointer.*plugins\/0.*code.*WHOLE_PLUGIN_BLOCKED.*rule.*RUNTIME-01.*host cannot apply this plugin/s);
+    expect(disclosure).toContain(`${uiText('verdict.label')}：${verdictText('Blocked')}`);
+    expect(disclosure).toContain(uiText('findings.count.line', { blocking: 1, warning: 0, notice: 0 }));
+    // Detail lines pass through quoteTerminalText, so embedded quotes surface as \".
+    expect(disclosure).toMatch(/分類 blocking.*Scope global.*階段 post-commit.*目標 plugin.*指標.*plugins\/0.*代碼.*WHOLE_PLUGIN_BLOCKED.*規則.*RUNTIME-01.*結果 \\\"host cannot apply this plugin\\\"/s);
     expect(reloads).toBe(0);
     expect((await readReceiptJournal('global', { cwd, agentDir })).activeChains).toHaveLength(1);
   });
@@ -1179,7 +1186,7 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
     expect(harness.sheets).toEqual(['Intent', 'Validation', 'Receipt']);
     expect(harness.renders.join('\n')).toContain('Marketplace Refresh');
     expect(harness.renders.join('\n')).toContain('Blocked');
-    expect(harness.renders.join('\n')).toContain('Verdict Blocked');
+    expect(harness.renders.join('\n')).toContain(`${uiText('verdict.label')}：${verdictText('Blocked')}`);
     const state = await readBridgeState('global', { cwd, agentDir });
     expect(state.status).toBe('missing');
     expect(state.state?.stateRevision).toBe('0');

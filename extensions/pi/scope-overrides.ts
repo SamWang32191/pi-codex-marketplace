@@ -6,6 +6,8 @@
  * suppresses only that single Plugin, and removing either reveals the inherited record again.
  * The Effective State view marks every record's participating source and suppression reason,
  * and lists Projected Skills with their collision outcome and Skill Availability.
+ *
+ * All user-visible strings come from the centralized ui-strings module (Issue #41).
  */
 
 import type { ExtensionCommandContext, ExtensionUIContext } from '@earendil-works/pi-coding-agent';
@@ -18,6 +20,7 @@ import { projectEffectiveState } from '../../src/projection/project.js';
 import { createReceipt } from '../../src/registration/receipt.js';
 import { reportOutcome, validationDisclosureLines } from './registration.js';
 import { appendAndReportReceipt } from './journal.js';
+import { uiText } from './ui-strings.js';
 import { quoteTerminalText } from './terminal-presentation.js';
 import { openTransactionSheet, type TransactionSheetModel } from './transaction-sheet.js';
 
@@ -54,7 +57,9 @@ export function inheritedRecordRows(
     rows.push({
       kind: 'registration',
       targetId: registration.id,
-      label: `${quote(registration.alias ?? registration.marketplaceName ?? registration.id)} · Registration ${registration.id.slice(0, 8)}…${reason === 'scope-override-registration' ? ' — 已抑制（子樹）' : ''}`,
+      label: `${quote(registration.alias ?? registration.marketplaceName ?? registration.id)} · Registration ${registration.id.slice(0, 8)}…${
+        reason === 'scope-override-registration' ? uiText('ovr.suppressed.subtree') : ''
+      }`,
       suppressedByOverride: reason === 'scope-override-registration',
       supersededByProject: false,
       selectable: true,
@@ -67,9 +72,9 @@ export function inheritedRecordRows(
       kind: 'installation',
       targetId: installation.id,
       label: `${quote(installation.manifestName ?? installation.pluginId)} · Installation ${installation.id.slice(0, 8)}…${
-        reason === 'scope-override-installation' ? ' — 已抑制（單一 Plugin）'
-          : reason === 'scope-override-registration' ? ' — 已抑制（隸屬被覆蓋的 Registration 子樹）'
-            : reason === 'project-precedence' ? ' — 由 Project 同名 Plugin 優先取代' : ''
+        reason === 'scope-override-installation' ? uiText('ovr.suppressed.single')
+          : reason === 'scope-override-registration' ? uiText('ovr.suppressed.byRegistration')
+            : reason === 'project-precedence' ? uiText('ovr.supersededByProject') : ''
       }`,
       suppressedByOverride: reason === 'scope-override-installation' || reason === 'scope-override-registration',
       supersededByProject: reason === 'project-precedence',
@@ -82,19 +87,33 @@ export function inheritedRecordRows(
 /** Compact multi-line summary of one projection result for disclosure / notification. */
 export function formatProjectionSummary(state: EffectiveState, plugins: ReturnType<typeof projectEffectiveState>['plugins'], findings: ReturnType<typeof projectEffectiveState>['findings']): string {
   const lines = [
-    `Effective State: ${state.registrations.length} registrations · ${state.installations.length} installations 參與`,
-    ...state.suppressed.map((item) => `⊘ suppressed ${item.kind} ${item.targetId.slice(0, 8)}… (${item.reason})`),
+    uiText('ovr.projection.header', {
+      registrations: state.registrations.length,
+      installations: state.installations.length,
+    }),
+    ...state.suppressed.map((item) => uiText('ovr.projection.suppressed', {
+      kind: item.kind,
+      targetId: `${item.targetId.slice(0, 8)}…`,
+      reason: item.reason,
+    })),
   ];
-  if (plugins.length === 0) lines.push('Projected Plugins: none');
+  if (plugins.length === 0) lines.push(uiText('ovr.projection.noPlugins'));
   for (const plugin of plugins) {
     lines.push(`▸ ${quote(plugin.pluginId)} · ${plugin.sourceScope}`);
     for (const skill of plugin.skills) {
-      const status = skill.status === 'projected' ? 'projected' : 'unavailable（碰撞）';
-      lines.push(`    ${quote(skill.name)} · ${status} · availability: ${skill.availability}`);
+      lines.push('    ' + uiText('ovr.projection.skill', {
+        name: quote(skill.name),
+        status: skill.status === 'projected'
+          ? uiText('ovr.projection.skillProjected')
+          : uiText('ovr.projection.skillUnavailable'),
+        availability: skill.availability,
+      }));
     }
   }
   if (findings.length > 0) {
-    lines.push(`Findings: ${findings.map((f) => `${f.classification} ${f.code}`).join(' | ')}`);
+    lines.push(uiText('ovr.projection.findings', {
+      findings: findings.map((f) => `${f.classification} ${f.code}`).join(' | '),
+    }));
   }
   return lines.join('\n');
 }
@@ -143,7 +162,7 @@ async function pickInheritedRow(
   }
   const candidates = target.targetKind ? rows.filter((row) => row.kind === target.targetKind) : rows;
   const labels = candidates.map((row) => `${row.label} · ${quote(row.targetId)}`);
-  const chosen = await ui.select('建立 Scope Override — 選擇要抑制的繼承全域紀錄', labels);
+  const chosen = await ui.select(uiText('ovr.select.create'), labels);
   if (!chosen) return undefined;
   return candidates[labels.indexOf(chosen)];
 }
@@ -158,8 +177,8 @@ async function pickExistingOverride(
       item.targetId === target.targetId && (!target.targetKind || item.kind === target.targetKind));
   }
   const candidates = target.targetKind ? overrides.filter((item) => item.kind === target.targetKind) : overrides;
-  const labels = candidates.map((item) => `${item.kind} Override → ${quote(item.targetId)}`);
-  const chosen = await ui.select('移除 Scope Override — 移除後立即還原繼承（不改寫全域文件）', labels);
+  const labels = candidates.map((item) => uiText('ovr.pick.existing', { kind: item.kind, targetId: quote(item.targetId) }));
+  const chosen = await ui.select(uiText('ovr.select.remove'), labels);
   if (!chosen) return undefined;
   return candidates[labels.indexOf(chosen)];
 }
@@ -171,7 +190,9 @@ export async function runScopeOverrideFlow(
 ): Promise<void> {
   const ui: ExtensionUIContext = ctx.ui;
   const docs = await readBoth({ cwd: ctx.cwd });
-  if (!docs.ok) return void ui.notify(`Bridge State 不可讀：${quote(docs.error ?? 'Persistence Indeterminate')}`, 'error');
+  if (!docs.ok) {
+    return void ui.notify(uiText('common.bridgeState.unreadable', { error: quote(docs.error ?? 'Persistence Indeterminate') }), 'error');
+  }
   const expectedStateRevision = target.expectedStateRevision ?? docs.project!.stateRevision;
   const opts = {
     cwd: ctx.cwd,
@@ -182,10 +203,10 @@ export async function runScopeOverrideFlow(
 
   const rows = inheritedRecordRows(docs.global!, docs.project!, ctx.isProjectTrusted());
   const row = await pickInheritedRow(ui, rows, target);
-  if (!row) return void ui.notify('找不到指定的繼承全域紀錄。', 'warning');
+  if (!row) return void ui.notify(uiText('ovr.notFound.inherited'), 'warning');
 
   const model = {
-    actionLabel: 'Scope Override Creation',
+    actionLabel: uiText('ovr.create.actionLabel'),
     authority: 'project' as const,
     target: row.targetId,
     stateRevision: expectedStateRevision,
@@ -193,7 +214,7 @@ export async function runScopeOverrideFlow(
   if (!await showTransactionStep(ctx, {
     ...model,
     step: 'Intent',
-    details: [`Create a Project Scope ${row.kind} override without modifying Global Bridge State`],
+    details: [uiText('ovr.create.intent', { kind: row.kind })],
   })) return void await reportDeclinedOverride(ctx, model);
 
   if (!await showTransactionStep(ctx, {
@@ -201,36 +222,44 @@ export async function runScopeOverrideFlow(
     step: 'Validation',
     details: [
       ...validationDisclosureLines([]),
-      `Target kind: ${row.kind}`,
-      `Target ID: ${quote(row.targetId)}`,
-      `Already suppressed: ${row.suppressedByOverride ? 'yes' : 'no'}`,
-      `Project Trust observed from Pi host: ${ctx.isProjectTrusted() ? 'granted' : 'not granted; domain admission will block'}`,
+      uiText('ovr.create.targetKind', { kind: row.kind }),
+      uiText('ovr.create.targetId', { targetId: quote(row.targetId) }),
+      uiText('ovr.create.alreadySuppressed', {
+        value: row.suppressedByOverride ? uiText('common.yes') : uiText('common.no'),
+      }),
+      uiText('ovr.create.trustObserved', {
+        value: ctx.isProjectTrusted() ? uiText('ovr.create.trust.granted') : uiText('ovr.create.trust.notGranted'),
+      }),
     ],
   })) return void await reportDeclinedOverride(ctx, model);
 
   const cascade = row.kind === 'registration'
-    ? '\n\nRegistration Override 會抑制整顆 Marketplace 子樹（該 Registration 及其所有 Installations）。'
-    : '\n\nInstallation Override 僅抑制此單一 Plugin。';
+    ? uiText('ovr.create.cascade.registration')
+    : uiText('ovr.create.cascade.installation');
   if (!await showTransactionStep(ctx, {
     ...model,
     step: 'Consent',
-    details: ['Scope Override Disclosure remains a separate Default No decision'],
+    details: [uiText('ovr.create.consent.details')],
   })) return void await reportDeclinedOverride(ctx, model);
   const confirmed = await ui.confirm(
-    'Scope Override Disclosure — 預設 No',
-    `將於 Project Scope 建立 ${row.kind} Scope Override，抑制繼承的全域紀錄：\n${quote(row.targetId)}${cascade}\n\n不會修改全域文件；移除 Override 即可還原繼承。`,
+    uiText('ovr.create.consent.title'),
+    uiText('ovr.create.consent.body', {
+      kind: row.kind,
+      targetId: quote(row.targetId),
+      cascade,
+    }),
   );
   if (!confirmed) return void await reportDeclinedOverride(ctx, model);
 
   if (!await showTransactionStep(ctx, {
     ...model,
     step: 'Plan',
-    details: [row.kind === 'registration' ? 'Suppress the inherited Registration marketplace subtree' : 'Suppress only the inherited Installation'],
+    details: [uiText(row.kind === 'registration' ? 'ovr.create.plan.registration' : 'ovr.create.plan.installation')],
   })) return void await reportDeclinedOverride(ctx, model);
   if (!await showTransactionStep(ctx, {
     ...model,
     step: 'Commit',
-    details: ['The domain lifecycle guard will acquire the Project Attempt Fence, validate trust and barrier state, and commit atomically'],
+    details: [uiText('ovr.create.commit')],
   })) return void await reportDeclinedOverride(ctx, model);
 
   const outcome = await createScopeOverride(row.kind, row.targetId, opts);
@@ -244,7 +273,9 @@ export async function runRemoveScopeOverrideFlow(
 ): Promise<void> {
   const ui: ExtensionUIContext = ctx.ui;
   const docs = await readBoth({ cwd: ctx.cwd });
-  if (!docs.ok) return void ui.notify(`Bridge State 不可讀：${quote(docs.error ?? 'Persistence Indeterminate')}`, 'error');
+  if (!docs.ok) {
+    return void ui.notify(uiText('common.bridgeState.unreadable', { error: quote(docs.error ?? 'Persistence Indeterminate') }), 'error');
+  }
   const expectedStateRevision = targetOptions.expectedStateRevision ?? docs.project!.stateRevision;
   const opts = {
     cwd: ctx.cwd,
@@ -253,13 +284,13 @@ export async function runRemoveScopeOverrideFlow(
     expectedStateRevision,
   };
   const overrides = docs.project!.scopeOverrides;
-  if (overrides.length === 0) return void ui.notify('Project Scope 目前沒有任何 Scope Override。', 'info');
+  if (overrides.length === 0) return void ui.notify(uiText('ovr.none'), 'info');
 
   const target = await pickExistingOverride(ui, overrides, targetOptions);
-  if (!target) return void ui.notify('找不到指定的 Scope Override。', 'warning');
+  if (!target) return void ui.notify(uiText('ovr.notFound.override'), 'warning');
 
   const model = {
-    actionLabel: 'Scope Override Removal',
+    actionLabel: uiText('ovr.remove.actionLabel'),
     authority: 'project' as const,
     target: target.targetId,
     stateRevision: expectedStateRevision,
@@ -267,36 +298,41 @@ export async function runRemoveScopeOverrideFlow(
   if (!await showTransactionStep(ctx, {
     ...model,
     step: 'Intent',
-    details: [`Remove the Project Scope ${target.kind} override and reveal inherited state by recomputation`],
+    details: [uiText('ovr.remove.intent', { kind: target.kind })],
   })) return void await reportDeclinedOverride(ctx, model);
   if (!await showTransactionStep(ctx, {
     ...model,
     step: 'Validation',
     details: [
       ...validationDisclosureLines([]),
-      `Target kind: ${target.kind}`,
-      `Target ID: ${quote(target.targetId)}`,
-      `Project Trust observed from Pi host: ${ctx.isProjectTrusted() ? 'granted' : 'not granted; domain admission will block'}`,
+      uiText('ovr.create.targetKind', { kind: target.kind }),
+      uiText('ovr.create.targetId', { targetId: quote(target.targetId) }),
+      uiText('ovr.create.trustObserved', {
+        value: ctx.isProjectTrusted() ? uiText('ovr.create.trust.granted') : uiText('ovr.create.trust.notGranted'),
+      }),
     ],
   })) return void await reportDeclinedOverride(ctx, model);
 
   if (!await showTransactionStep(ctx, {
     ...model,
     step: 'Consent',
-    details: ['Override Removal remains a separate Default No decision'],
+    details: [uiText('ovr.remove.consent.details')],
   })) return void await reportDeclinedOverride(ctx, model);
-  const confirmed = await ui.confirm('Override Removal — 預設 No', `移除 ${target.kind} Scope Override？\n被抑制的繼承全域紀錄將立即在 Effective State 中恢復。`);
+  const confirmed = await ui.confirm(
+    uiText('ovr.remove.consent.title'),
+    uiText('ovr.remove.consent.body', { kind: target.kind }),
+  );
   if (!confirmed) return void await reportDeclinedOverride(ctx, model);
 
   if (!await showTransactionStep(ctx, {
     ...model,
     step: 'Plan',
-    details: ['Remove only the selected Project Scope Override; Global Bridge State remains unchanged'],
+    details: [uiText('ovr.remove.plan')],
   })) return void await reportDeclinedOverride(ctx, model);
   if (!await showTransactionStep(ctx, {
     ...model,
     step: 'Commit',
-    details: ['The domain lifecycle guard will acquire the Project Attempt Fence, validate trust and barrier state, and commit atomically'],
+    details: [uiText('ovr.create.commit')],
   })) return void await reportDeclinedOverride(ctx, model);
 
   const outcome = await removeScopeOverride(target.kind, target.targetId, opts);
@@ -308,12 +344,14 @@ export async function runEffectiveStateView(ctx: ExtensionCommandContext): Promi
   const ui: ExtensionUIContext = ctx.ui;
   const trusted = ctx.isProjectTrusted();
   const docs = await readBoth({ cwd: ctx.cwd });
-  if (!docs.ok) return void ui.notify(`Bridge State 不可讀：${quote(docs.error ?? 'Persistence Indeterminate')}`, 'error');
+  if (!docs.ok) {
+    return void ui.notify(uiText('common.bridgeState.unreadable', { error: quote(docs.error ?? 'Persistence Indeterminate') }), 'error');
+  }
   const effective = computeEffectiveState(docs.global!, docs.project!, { projectTrusted: trusted });
   const projection = projectEffectiveState(docs.global!, docs.project!, { projectTrusted: trusted });
-  const trustNote = trusted ? '' : '\n\n⚠ Project Trust 未授予——Project Scope 紀錄仍保存但不參與 Effective State。';
+  const trustNote = trusted ? '' : uiText('ovr.projection.trustNote');
   ui.notify(
-    `${formatProjectionSummary(effective, projection.plugins, projection.findings)}${trustNote}\n\nAvailable 僅由宿主獨立證據確立；碰撞僅影響技能粒度，不改變 Plugin 分類。`,
+    `${formatProjectionSummary(effective, projection.plugins, projection.findings)}${trustNote}${uiText('ovr.projection.availableNote')}`,
     projection.findings.length > 0 ? 'warning' : 'info',
   );
 }

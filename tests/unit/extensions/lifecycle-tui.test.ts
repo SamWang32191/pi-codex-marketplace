@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import type { Scope } from '../../../src/bridge-state/types.js';
 import type { UpdateCandidate } from '../../../src/lifecycle/refresh.js';
 import { candidateSummary, planChoicesFor } from '../../../extensions/pi/lifecycle.js';
+import { findingOutcomeText, uiText, verdictText } from '../../../extensions/pi/ui-strings.js';
+import { quoteTerminalText } from '../../../extensions/pi/terminal-presentation.js';
 import type { CompatiblePlugin } from '../../../src/compatibility/profile.js';
 
 const SCOPE: Scope = 'global';
@@ -73,12 +75,12 @@ describe('Update Plan Checklist TUI helpers', () => {
     candidate.resolvedRevision = 'c'.repeat(40);
     candidate.recordedResolvedRevision = 'd'.repeat(40);
     const summary = candidateSummary(candidate);
-    expect(summary).toContain('Scope: global');
+    expect(summary).toContain(uiText('life.candidate.scope', { scope: SCOPE }));
     expect(summary).toContain('b'.repeat(16));
     expect(summary).toContain('aaaa');
     expect(summary).toContain('cccc');
     expect(summary).toContain('/plugins/0');
-    expect(summary).toContain('unavailable ("invalid manifest")');
+    expect(summary).toContain(`（"invalid manifest"）`);
     // Marketplace-controlled text is quoted so values cannot forge disclosure lines.
     expect(summary).toContain('"kept"');
   });
@@ -109,14 +111,30 @@ describe('Update Plan Checklist TUI helpers', () => {
     ];
 
     const summary = candidateSummary(candidate);
-    expect(summary).toContain(
-      'Finding classification blocking | scope global | phase validation | target catalog | ' +
-        'pointer "/a" | code "BLOCKING_CODE" | rule "BLOCK-01" | outcome "blocking outcome"',
-    );
-    expect(summary).toContain(
-      'Finding classification notice | scope global | phase post-commit | target entry | ' +
-        'pointer "/z" | code "NOTICE_CODE" | rule "NOTICE-01" | outcome "notice outcome"',
-    );
+    const expectedBlocking = uiText('finding.line', {
+      classification: 'blocking',
+      scope: 'global',
+      phase: 'validation',
+      target: 'catalog',
+      pointer: '"/a"',
+      code: '"BLOCKING_CODE"',
+      rule: '"BLOCK-01"',
+      outcome: quoteTerminalText(findingOutcomeText({ rule: 'BLOCK-01', outcome: 'blocking outcome' })),
+    });
+    const expectedNotice = uiText('finding.line', {
+      classification: 'notice',
+      scope: 'global',
+      phase: 'post-commit',
+      target: 'entry',
+      pointer: '"/z"',
+      code: '"NOTICE_CODE"',
+      rule: '"NOTICE-01"',
+      outcome: quoteTerminalText(findingOutcomeText({ rule: 'NOTICE-01', outcome: 'notice outcome' })),
+    });
+    expect(summary).toContain(expectedBlocking);
+    expect(summary).toContain(expectedNotice);
+    // Canonical order is unchanged by presentation language; the verdict headline leads.
+    expect(summary.indexOf(verdictText('Blocked'))).toBeGreaterThan(-1);
     expect(summary.indexOf('BLOCKING_CODE')).toBeLessThan(summary.indexOf('NOTICE_CODE'));
   });
 });

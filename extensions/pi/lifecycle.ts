@@ -4,7 +4,8 @@
  *
  * All consent surfaces Default No and are bound to Validation Snapshot + State Revision by the
  * underlying src/lifecycle seams; this layer only collects explicit user outcomes and reports
- * Attempt Summary receipts.
+ * Attempt Summary receipts. All user-visible strings come from the centralized ui-strings
+ * module (Issue #41).
  */
 
 import type { ExtensionCommandContext, ExtensionUIContext } from '@earendil-works/pi-coding-agent';
@@ -16,8 +17,6 @@ import {
   applyUpdate,
   preflightRebind,
   refreshRegistration,
-  registrationRemovalDisclosure,
-  installationRemovalDisclosure,
   confirmRegistrationRemoval,
   confirmInstallationRemoval,
   preflightRegistrationRemoval,
@@ -25,6 +24,8 @@ import {
   type LifecycleFlowOptions,
   type RebindTarget,
   type UpdateCandidate,
+  type RegistrationRemovalPreflight,
+  type InstallationRemovalPreflight,
 } from '../../src/lifecycle/index.js';
 import { buildUpdatePlan, compatibleCandidateIds, type InstallationChoice } from '../../src/lifecycle/update-plan.js';
 import { createReceipt, type AttemptReceipt } from '../../src/registration/receipt.js';
@@ -33,6 +34,7 @@ import {
   reportOutcome,
   validationDisclosureLines,
 } from './registration.js';
+import { attemptSummaryText, uiText } from './ui-strings.js';
 import { quoteTerminalText } from './terminal-presentation.js';
 import { openTransactionSheet, type TransactionSheetModel } from './transaction-sheet.js';
 
@@ -49,9 +51,17 @@ export function planChoicesFor(
   return installations.map((installation) => ({
     installation,
     options: [
-      { label: `update — 套用新快照（${compatible.has(installation.pluginId) ? '有 Compatible candidate' : '無 candidate → 不可選'}）`, value: 'update', enabled: compatible.has(installation.pluginId) },
-      { label: 'disable — 停用並保留 Installation ID', value: 'disable', enabled: true },
-      { label: 'remove — 移除此 Installation', value: 'remove', enabled: true },
+      {
+        label: uiText('life.plan.choice.update', {
+          detail: compatible.has(installation.pluginId)
+            ? uiText('life.plan.choice.update.compatible')
+            : uiText('life.plan.choice.update.incompatible'),
+        }),
+        value: 'update',
+        enabled: compatible.has(installation.pluginId),
+      },
+      { label: uiText('life.plan.choice.disable'), value: 'disable', enabled: true },
+      { label: uiText('life.plan.choice.remove'), value: 'remove', enabled: true },
     ],
   }));
 }
@@ -77,20 +87,27 @@ export function candidateSummary(candidate: UpdateCandidate): string {
     ]),
   ).values()];
   const lines = [
-    `Scope: ${candidate.scope}`,
-    `Registration: ${candidate.registrationId.slice(0, 8)}…`,
-    `Marketplace: ${quote(candidate.marketplaceName || '(unchanged name)')}`,
-    `New Validation Snapshot: ${candidate.snapshot.fingerprint.slice(0, 16)}…`,
-    `Recorded Snapshot: ${(candidate.recordedFingerprint ?? '(none)').slice(0, 16)}…`,
+    uiText('life.candidate.scope', { scope: candidate.scope }),
+    uiText('life.candidate.registration', { id: `${candidate.registrationId.slice(0, 8)}…` }),
+    uiText('reg.detail.marketplace', { name: quote(candidate.marketplaceName || `(${uiText('common.none')})`) }),
+    uiText('life.candidate.newSnapshot', { snapshot: candidate.snapshot.fingerprint.slice(0, 16) }),
+    uiText('life.candidate.recordedSnapshot', { snapshot: (candidate.recordedFingerprint ?? uiText('common.none')).slice(0, 16) }),
   ];
   if (candidate.resolvedRevision) {
-    lines.push(`Resolved Revision: ${candidate.recordedResolvedRevision ?? '(none)'.slice(0, 12)} → ${candidate.resolvedRevision}`);
+    lines.push(uiText('life.candidate.resolvedRevision', {
+      from: candidate.recordedResolvedRevision ?? uiText('common.none'),
+      to: candidate.resolvedRevision,
+    }));
   }
   const available = candidate.inspection.entries.filter((item) => item.plugin && !item.unavailableReason).length;
-  lines.push(`Entries: ${candidate.inspection.entries.length}（${available} 可安裝）`);
+  lines.push(uiText('life.candidate.entries', { total: candidate.inspection.entries.length, available }));
   lines.push(...fullValidationDisclosureLines(findings));
   for (const entry of candidate.inspection.entries) {
-    lines.push(`  ${quote(entry.entry.entryId)} ${entry.plugin ? `· ${quote(entry.plugin.manifestName)} ` : ''}— ${entry.unavailableReason ? `unavailable (${quote(entry.unavailableReason)})` : '可安裝'}`);
+    lines.push(`  ${quote(entry.entry.entryId)} ${entry.plugin ? `· ${quote(entry.plugin.manifestName)} ` : ''}— ${
+      entry.unavailableReason
+        ? uiText('common.unavailable') + `（${quote(entry.unavailableReason)}）`
+        : uiText('inst.entry.available')
+    }`);
   }
   return lines.join('\n');
 }
@@ -102,7 +119,7 @@ export async function attemptReport(
   const journal = await appendReceipt(outcome.receipt.scope, outcome.receipt, { cwd: ctx.cwd });
   await reportOutcome(ctx, outcome);
   if (!journal.success) {
-    ctx.ui.notify(`Receipt Journal 寫入失敗：${quote(journal.error ?? 'unknown error')}`, 'warning');
+    ctx.ui.notify(uiText('journal.appendFailed', { error: quote(journal.error ?? uiText('common.unknown')) }), 'warning');
   }
 }
 
@@ -116,10 +133,10 @@ function lifecycleOptions(ctx: ExtensionCommandContext): LifecycleFlowOptions {
 
 async function pickScope(ui: ExtensionUIContext): Promise<Scope | undefined> {
   const labels = new Map<string, Scope>([
-    ['Global Scope', 'global'],
-    ['Project Scope', 'project'],
+    [uiText('common.scope.global'), 'global'],
+    [uiText('common.scope.project'), 'project'],
   ]);
-  const choice = await ui.select('選擇 Scope', [...labels.keys()]);
+  const choice = await ui.select(uiText('life.pick.scope'), [...labels.keys()]);
   return choice ? labels.get(choice) : undefined;
 }
 
@@ -137,7 +154,7 @@ async function pickRegistration(
   const opts = lifecycleOptions(ctx);
   const state = await readBridgeState(scope, opts);
   if (state.status !== 'ok' && state.status !== 'missing') {
-    ui.notify(`Bridge State 不可讀：${quote(state.error ?? 'Persistence Indeterminate')}`, 'error');
+    ui.notify(uiText('common.bridgeState.unreadable', { error: quote(state.error ?? 'Persistence Indeterminate') }), 'error');
     return undefined;
   }
   const registrations = state.state?.registrations ?? [];
@@ -150,11 +167,11 @@ async function pickRegistration(
     };
   }
   if (registrations.length === 0) {
-    ui.notify('此 Scope 尚無 Marketplace Registration。', 'info');
+    ui.notify(uiText('common.registration.none'), 'info');
     return undefined;
   }
   const labels = registrations.map((r) => `${quote(r.alias ?? r.marketplaceName ?? r.id)} · ${r.sourceKind ?? '?'} · ${r.id}`);
-  const chosen = await ui.select('選擇 Marketplace Registration', labels);
+  const chosen = await ui.select(uiText('life.pick.registration'), labels);
   if (!chosen) return undefined;
   const registration = registrations[labels.indexOf(chosen)]!;
   return {
@@ -163,6 +180,55 @@ async function pickRegistration(
     validationSnapshot: registration.validationSnapshot,
     opts,
   };
+}
+
+/**
+ * Localized presentation of the Registration Removal cascade disclosure.
+ * Mirrors src/lifecycle/removal.ts disclosure content in the presentation language.
+ */
+export function localizedRegistrationRemovalDisclosure(pf: RegistrationRemovalPreflight): string {
+  const lines = [
+    uiText('life.removal.disclosure.scope', { scope: pf.scope }),
+    pf.registrationSource
+      ? uiText('life.removal.disclosure.registration', {
+          id: `${pf.registrationId.slice(0, 8)}…`,
+          source: quote(JSON.stringify(pf.registrationSource)),
+        })
+      : uiText('life.removal.disclosure.registration.noSource', { id: `${pf.registrationId.slice(0, 8)}…` }),
+    uiText('life.removal.disclosure.revision', { revision: pf.stateRevision }),
+    uiText('life.removal.disclosure.cascade', { count: pf.affectedInstallations.length }),
+  ];
+  for (const installation of pf.affectedInstallations) {
+    lines.push('  ' + quote(JSON.stringify(installation.id)) + ' · ' +
+      quote(JSON.stringify(installation.pluginId)) + ' · ' + installation.installationState);
+  }
+  lines.push(uiText('life.removal.disclosure.otherScopes'));
+  return lines.join('\n');
+}
+
+/** Localized presentation of the Installation Removal disclosure. */
+export function localizedInstallationRemovalDisclosure(pf: InstallationRemovalPreflight): string {
+  const lines = [
+    uiText('life.removal.disclosure.scope', { scope: pf.scope }),
+    uiText('life.removal.disclosure.installationLine', {
+      id: quote(JSON.stringify(pf.installation.id)),
+      pluginId: quote(JSON.stringify(pf.installation.pluginId)),
+      state: pf.installation.installationState,
+    }),
+    pf.registrationId
+      ? uiText('life.removal.disclosure.retainedRegistration', { id: pf.registrationId.slice(0, 8) + '…' })
+      : uiText('life.removal.disclosure.retainedNone'),
+    uiText('life.removal.disclosure.revision', { revision: pf.stateRevision }),
+  ];
+  if (pf.resumingInheritedInstallations.length > 0) {
+    lines.push(uiText('life.removal.disclosure.resuming.header'));
+    for (const inherited of pf.resumingInheritedInstallations) {
+      lines.push('  ' + quote(JSON.stringify(inherited.id)) + ' · ' + quote(JSON.stringify(inherited.pluginId)));
+    }
+  } else {
+    lines.push(uiText('life.removal.disclosure.resuming.none'));
+  }
+  return lines.join('\n');
 }
 
 /**
@@ -182,13 +248,17 @@ export async function runUpdatePlanChecklist(
   const ui = ctx.ui;
   const opts = lifecycleOptions(ctx);
   const state = await readBridgeState(scope, opts);
-  if (state.status !== 'ok' && state.status !== 'missing') return void ui.notify(`Bridge State 不可讀：${quote(state.error ?? 'Persistence Indeterminate')}`, 'error');
+  if (state.status !== 'ok' && state.status !== 'missing') {
+    return void ui.notify(uiText('common.bridgeState.unreadable', { error: quote(state.error ?? 'Persistence Indeterminate') }), 'error');
+  }
 
   // Strictly this Registration's own scope-local Installations — independent Registrations and
   // Installations are never combined into a batch (CONTEXT.md: Lifecycle Operation).
   const installations = (state.state?.installations ?? []).filter((i) => i.registrationId === candidate.registrationId);
 
-  const actionLabel = kind === 'rebind' ? 'Registration Rebind' : 'Apply Update';
+  const actionLabel = kind === 'rebind' ? uiText('life.actionLabel.rebind') : uiText('life.actionLabel.applyUpdate');
+  // Receipts store the canonical operation identity; display labels stay presentation-local.
+  const operation = kind === 'rebind' ? 'Registration Rebind' : 'Apply Update';
   const commonModel = {
     actionLabel,
     authority: scope,
@@ -203,7 +273,7 @@ export async function runUpdatePlanChecklist(
   ): Promise<void> => {
     await attemptReport(ctx, {
       receipt: createReceipt({
-        operation: actionLabel,
+        operation,
         scope,
         trigger: `${kind} ${candidate.registrationId}`,
         expectedStateRevision: stateRevision,
@@ -218,7 +288,9 @@ export async function runUpdatePlanChecklist(
   if (!transaction.intentShown && !await showTransactionStep(ctx, {
     ...commonModel,
     step: 'Intent',
-    details: [kind === 'rebind' ? 'Replace the Registration source while preserving its canonical ID' : 'Apply the exact Update Candidate in one Lifecycle Operation'],
+    details: [kind === 'rebind'
+      ? uiText('life.updatePlan.intent.rebind')
+      : uiText('life.updatePlan.intent.apply')],
   })) {
     await concludeWithoutCommit('Declined');
     return;
@@ -233,12 +305,12 @@ export async function runUpdatePlanChecklist(
     return;
   }
 
-  ui.notify(`Validation Disclosure（新快照）：\n${candidateSummary(candidate)}`, 'info');
+  ui.notify(uiText('life.updatePlan.notifyDisclosure', { summary: candidateSummary(candidate) }), 'info');
 
   if (!await showTransactionStep(ctx, {
     ...commonModel,
     step: 'Consent',
-    details: ['Registration Confirmation and every required Activation Confirmation remain separate Default No decisions'],
+    details: [uiText('life.updatePlan.consent.details')],
   })) {
     await concludeWithoutCommit('Declined');
     return;
@@ -246,8 +318,8 @@ export async function runUpdatePlanChecklist(
 
   // Fresh Registration Confirmation — Default No, bound to the candidate snapshot + revision.
   const registrationConfirmed = await ui.confirm(
-    'Registration Confirmation — 預設 No（綁定新 Validation Snapshot + State Revision）',
-    `接受此新的 Validation Snapshot 作為 Registration ${candidate.registrationId.slice(0, 8)}… 的授權來源？`,
+    uiText('life.updatePlan.confirmRegistration.title'),
+    uiText('life.updatePlan.confirmRegistration.body', { id: candidate.registrationId.slice(0, 8) }),
   );
   if (!registrationConfirmed) {
     await concludeWithoutCommit('Declined');
@@ -257,7 +329,7 @@ export async function runUpdatePlanChecklist(
   if (!await showTransactionStep(ctx, {
     ...commonModel,
     step: 'Plan',
-    details: [`Installations requiring an explicit outcome: ${installations.length}`],
+    details: [uiText('life.updatePlan.plan.details', { count: installations.length })],
   })) {
     await concludeWithoutCommit('Declined');
     return;
@@ -269,7 +341,10 @@ export async function runUpdatePlanChecklist(
   for (const { installation, options } of planChoicesFor(installations, candidate)) {
     const selectable = options.filter((o) => o.enabled);
     const picked = await ui.select(
-      `Installation ${quote(installation.manifestName ?? installation.pluginId)}（${installation.installationState}）— 選擇更新結果`,
+      uiText('life.updatePlan.pick.title', {
+        name: quote(installation.manifestName ?? installation.pluginId),
+        state: installation.installationState,
+      }),
       selectable.map((o) => o.label),
     );
     if (!picked) {
@@ -284,8 +359,8 @@ export async function runUpdatePlanChecklist(
     const willStayEnabled = installation.installationState === 'enabled' && choices[installation.id] === 'update';
     if (!willStayEnabled) continue;
     const confirmed = await ui.confirm(
-      'Activation Confirmation — 預設 No（舊同意不沿用）',
-      `啟用的 ${quote(installation.manifestName ?? installation.pluginId)} 將在新快照下保持啟用。確認其 Activation？`,
+      uiText('life.updatePlan.activation.title'),
+      uiText('life.updatePlan.activation.body', { name: quote(installation.manifestName ?? installation.pluginId) }),
     );
     activationConfirmations[installation.id] = confirmed;
     if (!confirmed) {
@@ -308,15 +383,19 @@ export async function runUpdatePlanChecklist(
 
   // Final checklist review before the single atomic commit.
   const checklist = plan.plan.entries
-    .map((entry) => `· ${entry.installationId.slice(0, 16)}… → ${entry.choice}${entry.choice === 'update' ? `（${entry.installationState}）` : ''}`)
+    .map((entry) => uiText('life.updatePlan.checklist.entry', {
+      installationId: `${entry.installationId.slice(0, 16)}…`,
+      choice: entry.choice,
+      state: entry.choice === 'update' ? `（${entry.installationState}）` : '',
+    }))
     .join('\n');
 
   if (!await showTransactionStep(ctx, {
     ...commonModel,
     step: 'Commit',
     details: [
-      'The complete Update Plan will commit atomically after the final Default No confirmation',
-      ...(checklist ? checklist.split('\n') : ['No existing Installation consequences']),
+      uiText('life.updatePlan.commit.details'),
+      ...(checklist ? checklist.split('\n') : [uiText('life.updatePlan.commit.noConsequences')]),
     ],
   })) {
     await concludeWithoutCommit('Declined');
@@ -324,8 +403,10 @@ export async function runUpdatePlanChecklist(
   }
 
   const proceed = await ui.confirm(
-    kind === 'rebind' ? 'Apply Rebind — 單次原子提交' : 'Apply Update — 單次原子提交',
-    `將以單一 Lifecycle Operation 原子替換快照並套用所有披露後果：\n${checklist || '（無既有 Installation）'}\n\n確認提交？`,
+    kind === 'rebind' ? uiText('life.updatePlan.commit.confirm.rebind.title') : uiText('life.updatePlan.commit.confirm.apply.title'),
+    uiText('life.updatePlan.commit.confirm.body', {
+      checklist: checklist || uiText('life.updatePlan.commit.confirm.empty'),
+    }),
   );
   if (!proceed) {
     await concludeWithoutCommit('Declined');
@@ -347,7 +428,7 @@ export async function runRefreshFlow(
   if (!picked) return;
 
   const model = {
-    actionLabel: 'Marketplace Refresh',
+    actionLabel: uiText('life.actionLabel.refresh'),
     authority: scope,
     target: picked.registrationId,
     stateRevision: picked.stateRevision,
@@ -357,8 +438,8 @@ export async function runRefreshFlow(
     ...model,
     step: 'Intent',
     details: [
-      'Run an explicit non-mutating inspection for this Registration only',
-      'Bridge State will not be written by Marketplace Refresh',
+      uiText('life.refresh.intent.inspectionOnly'),
+      uiText('life.refresh.intent.noWrite'),
     ],
   })) return;
 
@@ -366,7 +447,7 @@ export async function runRefreshFlow(
   const validationDetails = outcome.status === 'update-candidate'
     ? candidateSummary(outcome.candidate).split('\n')
     : [
-        `Refresh outcome: ${outcome.status}`,
+        uiText('life.refresh.outcome', { status: outcome.status }),
         ...fullValidationDisclosureLines(outcome.receipt.findings),
       ];
   const validationContinued = await showTransactionStep(ctx, {
@@ -384,7 +465,7 @@ export async function runRefreshFlow(
   if (outcome.status === 'blocked') {
     return;
   }
-  ui.notify('Update Candidate 已產生（非變異檢查，Bridge State 未寫入）。', 'info');
+  ui.notify(uiText('life.refresh.candidateReady'), 'info');
   // Bind the plan to the exact State Revision the candidate was validated against.
   await runUpdatePlanChecklist(ctx, scope, outcome.candidate, outcome.candidate.stateRevision, 'apply-update');
 }
@@ -402,36 +483,38 @@ export async function runRebindFlow(
 
   if (!await showTransactionStep(ctx, {
     step: 'Intent',
-    actionLabel: 'Registration Rebind',
+    actionLabel: uiText('life.actionLabel.rebind'),
     authority: scope,
     target: picked.registrationId,
-    details: ['Replace the source locator or Git selector while preserving the canonical Registration ID'],
+    details: [uiText('life.rebind.intent.details')],
   })) return;
 
   const sourceKinds = new Map<string, RebindTarget['kind']>([
-    ['本地目錄（local path）', 'local'],
-    ['Git 倉庫（locator + selector）', 'git'],
+    [uiText('life.rebind.sourceKind.local'), 'local'],
+    [uiText('life.rebind.sourceKind.git'), 'git'],
   ]);
-  const kindChoice = await ui.select('新來源型別', [...sourceKinds.keys()]);
+  const kindChoice = await ui.select(uiText('life.rebind.sourceKind.prompt'), [...sourceKinds.keys()]);
   if (!kindChoice) return;
   const sourceKind = sourceKinds.get(kindChoice);
   if (!sourceKind) return;
 
   let target: RebindTarget;
   if (sourceKind === 'local') {
-    const rootPath = await ui.input('新的本地 Marketplace Root 路徑', '/path/to/marketplace');
-    if (!rootPath) return void ui.notify('已取消 Rebind。', 'info');
+    const rootPath = await ui.input(uiText('life.rebind.localRoot.prompt'), '/path/to/marketplace');
+    if (!rootPath) return void ui.notify(uiText('life.rebind.cancelled'), 'info');
     target = { kind: 'local', rootPath };
   } else {
-    const locator = await ui.input('Git Locator（https:// 或 ssh，無憑證、無 query/fragment）', 'https://github.com/owner/repo.git');
-    if (!locator) return void ui.notify('已取消 Rebind。', 'info');
-    const selectorKind = await ui.select('Git Selector 型別', ['default', 'branch', 'tag', 'commit']);
-    if (!selectorKind) return void ui.notify('已取消 Rebind。', 'info');
+    const locator = await ui.input(uiText('life.rebind.locator.prompt'), 'https://github.com/owner/repo.git');
+    if (!locator) return void ui.notify(uiText('life.rebind.cancelled'), 'info');
+    const selectorKind = await ui.select(uiText('life.rebind.selectorKind.prompt'), ['default', 'branch', 'tag', 'commit']);
+    if (!selectorKind) return void ui.notify(uiText('life.rebind.cancelled'), 'info');
     let selector: Extract<RebindTarget, { kind: 'git' }>['selector'] = 'default';
     if (selectorKind === 'branch' || selectorKind === 'tag' || selectorKind === 'commit') {
-      const placeholder = selectorKind === 'commit' ? '完整 40/64 hex commit' : selectorKind === 'tag' ? 'v1.2.3' : 'main';
-      const value = await ui.input(`${selectorKind} 值（例：${placeholder}）`, placeholder);
-      if (!value) return void ui.notify('已取消 Rebind。', 'info');
+      const placeholder = selectorKind === 'commit'
+        ? uiText('life.rebind.selectorPlaceholder.commit')
+        : selectorKind === 'tag' ? uiText('life.rebind.selectorPlaceholder.tag') : uiText('life.rebind.selectorPlaceholder.branch');
+      const value = await ui.input(uiText('life.rebind.selectorValue.prompt', { kind: selectorKind, placeholder }), placeholder);
+      if (!value) return void ui.notify(uiText('life.rebind.cancelled'), 'info');
       selector = { kind: selectorKind, value };
     }
     target = { kind: 'git', locator, selector };
@@ -441,7 +524,7 @@ export async function runRebindFlow(
   if (!pf.ok) {
     await showTransactionStep(ctx, {
       step: 'Validation',
-      actionLabel: 'Registration Rebind',
+      actionLabel: uiText('life.actionLabel.rebind'),
       authority: scope,
       target: picked.registrationId,
       stateRevision: pf.outcome.receipt.expectedStateRevision,
@@ -451,7 +534,7 @@ export async function runRebindFlow(
     await attemptReport(ctx, pf.outcome);
     return;
   }
-  ui.notify('替代來源已完成完整重驗證；需重新收集全部確認（舊 Activation 同意不沿用）。', 'info');
+  ui.notify(uiText('life.rebind.revalidated'), 'info');
   // Rebind binds to the revision observed while validating the replacement source.
   await runUpdatePlanChecklist(
     ctx,
@@ -481,18 +564,20 @@ export async function runRemovalFlow(
 
   if (!targetKind && target.targetId) {
     const state = await readBridgeState(scope, opts);
-    if (state.status !== 'ok' && state.status !== 'missing') return void ui.notify(`Bridge State 不可讀：${quote(state.error ?? 'Persistence Indeterminate')}`, 'error');
+    if (state.status !== 'ok' && state.status !== 'missing') {
+      return void ui.notify(uiText('common.bridgeState.unreadable', { error: quote(state.error ?? 'Persistence Indeterminate') }), 'error');
+    }
     if (state.state?.registrations.some((registration) => registration.id === target.targetId)) targetKind = 'registration';
     if (state.state?.installations.some((installation) => installation.id === target.targetId)) targetKind = 'installation';
-    if (!targetKind) return void ui.notify(`找不到 canonical removal target ${quote(target.targetId)}。`, 'warning');
+    if (!targetKind) return void ui.notify(uiText('life.removal.notFound', { targetId: quote(target.targetId) }), 'warning');
   }
 
   if (!targetKind) {
     const removalKinds = new Map<string, 'registration' | 'installation'>([
-      ['整個 Registration（原子刪除同範圍所有 Installations）', 'registration'],
-      ['單一 Installation（保留 Registration）', 'installation'],
+      [uiText('life.removal.kind.registration'), 'registration'],
+      [uiText('life.removal.kind.installation'), 'installation'],
     ]);
-    const what = await ui.select('移除目標', [...removalKinds.keys()]);
+    const what = await ui.select(uiText('life.removal.pick.kind'), [...removalKinds.keys()]);
     if (!what) return;
     targetKind = removalKinds.get(what);
     if (!targetKind) return;
@@ -503,14 +588,14 @@ export async function runRemovalFlow(
     if (!picked) return;
 
     const model = {
-      actionLabel: 'Registration Removal',
+      actionLabel: uiText('life.actionLabel.registrationRemoval'),
       authority: scope,
       target: picked.registrationId,
     } satisfies Omit<TransactionSheetModel, 'step'>;
     if (!await showTransactionStep(ctx, {
       ...model,
       step: 'Intent',
-      details: ['Remove the Registration and all of its same-scope Installations atomically'],
+      details: [uiText('life.removal.reg.intent')],
     })) return;
 
     const pf = await preflightRegistrationRemoval(scope, picked.registrationId, opts);
@@ -534,28 +619,28 @@ export async function runRemovalFlow(
       step: 'Validation',
       details: [
         ...validationDisclosureLines([]),
-        ...registrationRemovalDisclosure(pf.preflight).split('\n'),
+        ...localizedRegistrationRemovalDisclosure(pf.preflight).split('\n'),
       ],
     })) return decline();
     if (!await showTransactionStep(ctx, {
       ...boundModel,
       step: 'Consent',
-      details: ['Registration Removal confirmation remains a separate Default No decision'],
+      details: [uiText('life.removal.reg.consent.details')],
     })) return decline();
     const proceed = await ui.confirm(
-      'Registration Removal — 預設 No',
-      quote(registrationRemovalDisclosure(pf.preflight)),
+      uiText('life.removal.reg.consent.title'),
+      quote(localizedRegistrationRemovalDisclosure(pf.preflight)),
     );
     if (!proceed) return decline();
     if (!await showTransactionStep(ctx, {
       ...boundModel,
       step: 'Plan',
-      details: registrationRemovalDisclosure(pf.preflight).split('\n'),
+      details: localizedRegistrationRemovalDisclosure(pf.preflight).split('\n'),
     })) return decline();
     if (!await showTransactionStep(ctx, {
       ...boundModel,
       step: 'Commit',
-      details: ['Commit the disclosed cascade to this scope document under the held Attempt Fence'],
+      details: [uiText('life.removal.reg.commit')],
     })) return decline();
     await attemptReport(ctx, await confirmRegistrationRemoval(pf.preflight, true, opts));
     return;
@@ -564,24 +649,27 @@ export async function runRemovalFlow(
   let installationId = target.targetId;
   if (!installationId) {
     const state = await readBridgeState(scope, opts);
-    if (state.status !== 'ok' && state.status !== 'missing') return void ui.notify(`Bridge State 不可讀：${quote(state.error ?? 'Persistence Indeterminate')}`, 'error');
+    if (state.status !== 'ok' && state.status !== 'missing') {
+      return void ui.notify(uiText('common.bridgeState.unreadable', { error: quote(state.error ?? 'Persistence Indeterminate') }), 'error');
+    }
     const installations = state.state?.installations ?? [];
-    if (installations.length === 0) return void ui.notify('此 Scope 尚無 Installed Plugin。', 'info');
-    const labels = installations.map((installation) => `${quote(installation.manifestName ?? installation.pluginId)} · ${installation.installationState} · ${quote(installation.id)}`);
-    const chosen = await ui.select('選擇要移除的 Installation', labels);
+    if (installations.length === 0) return void ui.notify(uiText('common.installation.none'), 'info');
+    const labels = installations.map((installation) =>
+      `${quote(installation.manifestName ?? installation.pluginId)} · ${installation.installationState} · ${quote(installation.id)}`);
+    const chosen = await ui.select(uiText('life.removal.pick.installation'), labels);
     if (!chosen) return;
     installationId = installations[labels.indexOf(chosen)]!.id;
   }
 
   const model = {
-    actionLabel: 'Installation Removal',
+    actionLabel: uiText('life.actionLabel.installationRemoval'),
     authority: scope,
     target: installationId,
   } satisfies Omit<TransactionSheetModel, 'step'>;
   if (!await showTransactionStep(ctx, {
     ...model,
     step: 'Intent',
-    details: ['Remove exactly one scope-local Installation while retaining its Registration'],
+    details: [uiText('life.removal.inst.intent')],
   })) return;
 
   const pf = await preflightInstallationRemoval(scope, installationId, opts);
@@ -604,28 +692,28 @@ export async function runRemovalFlow(
     step: 'Validation',
     details: [
       ...validationDisclosureLines([]),
-      ...installationRemovalDisclosure(pf.preflight).split('\n'),
+      ...localizedInstallationRemovalDisclosure(pf.preflight).split('\n'),
     ],
   })) return decline();
   if (!await showTransactionStep(ctx, {
     ...boundModel,
     step: 'Consent',
-    details: ['Installation Removal confirmation remains a separate Default No decision'],
+    details: [uiText('life.removal.inst.consent.details')],
   })) return decline();
   const proceed = await ui.confirm(
-    'Installation Removal — 預設 No',
-    quote(installationRemovalDisclosure(pf.preflight)),
+    uiText('life.removal.inst.consent.title'),
+    quote(localizedInstallationRemovalDisclosure(pf.preflight)),
   );
   if (!proceed) return decline();
   if (!await showTransactionStep(ctx, {
     ...boundModel,
     step: 'Plan',
-    details: installationRemovalDisclosure(pf.preflight).split('\n'),
+    details: localizedInstallationRemovalDisclosure(pf.preflight).split('\n'),
   })) return decline();
   if (!await showTransactionStep(ctx, {
     ...boundModel,
     step: 'Commit',
-    details: ['Commit removal to this scope document under the held Attempt Fence'],
+    details: [uiText('life.removal.inst.commit')],
   })) return decline();
   await attemptReport(ctx, await confirmInstallationRemoval(pf.preflight, true, opts));
 }
