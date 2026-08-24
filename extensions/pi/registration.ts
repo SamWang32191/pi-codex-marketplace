@@ -17,7 +17,8 @@ import {
 import type { Scope } from '../../src/bridge-state/types.js';
 import { sortFindings, type ValidationFinding } from '../../src/registration/findings.js';
 import type { AttemptReceipt } from '../../src/registration/receipt.js';
-import { attemptSummaryText, findingOutcomeText, uiText, verdictText } from './ui-strings.js';
+import { attemptSummaryText, findingOutcomeText, uiText, verdictText,
+  scopeOptions } from './ui-strings.js';
 import { quoteTerminalText } from './terminal-presentation.js';
 import { openTransactionSheet, type TransactionSheetModel } from './transaction-sheet.js';
 
@@ -77,10 +78,7 @@ export async function runLocalRegistrationFlow(
   const ui: ExtensionUIContext = ctx.ui;
   let scope = target.scope;
   if (!scope) {
-    const scopeLabels = new Map<string, Scope>([
-      [uiText('common.scope.global'), 'global'],
-      [uiText('common.scope.project'), 'project'],
-    ]);
+    const scopeLabels = scopeOptions();
     const scopeChoice = await ui.select(uiText('reg.select.scope'), [...scopeLabels.keys()]);
     if (!scopeChoice) {
       ui.notify(uiText('reg.cancelled'), 'info');

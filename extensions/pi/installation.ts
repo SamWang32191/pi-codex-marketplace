@@ -28,7 +28,8 @@ import {
   reportTerminalPreflightOutcome,
   validationDisclosureLines,
 } from './registration.js';
-import { findingOutcomeText, uiText } from './ui-strings.js';
+import { findingOutcomeText, uiText,
+  scopeOptions } from './ui-strings.js';
 import { quoteTerminalText } from './terminal-presentation.js';
 import { openTransactionSheet, type TransactionSheetModel } from './transaction-sheet.js';
 
@@ -134,10 +135,7 @@ export async function runPluginInstallationFlow(
   const ui: ExtensionUIContext = ctx.ui;
   let scope = target.scope;
   if (!scope) {
-    const scopeLabels = new Map<string, Scope>([
-      [uiText('common.scope.global'), 'global'],
-      [uiText('common.scope.project'), 'project'],
-    ]);
+    const scopeLabels = scopeOptions();
     const scopeChoice = await ui.select(uiText('inst.select.scope'), [...scopeLabels.keys()]);
     if (!scopeChoice) return;
     scope = scopeLabels.get(scopeChoice);
@@ -399,10 +397,7 @@ export async function runPluginStateFlow(
   const ui: ExtensionUIContext = ctx.ui;
   let scope = target.scope;
   if (!scope) {
-    const scopeLabels = new Map<string, Scope>([
-      [uiText('common.scope.global'), 'global'],
-      [uiText('common.scope.project'), 'project'],
-    ]);
+    const scopeLabels = scopeOptions();
     const scopeChoice = await ui.select(uiText('inst.select.installedScope'), [...scopeLabels.keys()]);
     if (!scopeChoice) return;
     scope = scopeLabels.get(scopeChoice);

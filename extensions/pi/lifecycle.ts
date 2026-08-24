@@ -34,7 +34,8 @@ import {
   reportOutcome,
   validationDisclosureLines,
 } from './registration.js';
-import { attemptSummaryText, uiText } from './ui-strings.js';
+import { attemptSummaryText, uiText,
+  scopeOptions } from './ui-strings.js';
 import { quoteTerminalText } from './terminal-presentation.js';
 import { openTransactionSheet, type TransactionSheetModel } from './transaction-sheet.js';
 
@@ -132,10 +133,7 @@ function lifecycleOptions(ctx: ExtensionCommandContext): LifecycleFlowOptions {
 }
 
 async function pickScope(ui: ExtensionUIContext): Promise<Scope | undefined> {
-  const labels = new Map<string, Scope>([
-    [uiText('common.scope.global'), 'global'],
-    [uiText('common.scope.project'), 'project'],
-  ]);
+  const labels = scopeOptions();
   const choice = await ui.select(uiText('life.pick.scope'), [...labels.keys()]);
   return choice ? labels.get(choice) : undefined;
 }

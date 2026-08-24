@@ -15,7 +15,8 @@ import {
 } from '../../src/registration/git-flow.js';
 import type { GitSelectorInput } from '../../src/registration/git-selector.js';
 import type { Scope } from '../../src/bridge-state/types.js';
-import { uiText } from './ui-strings.js';
+import { uiText,
+  scopeOptions } from './ui-strings.js';
 import {
   fullValidationDisclosureLines,
   reportOutcome,
@@ -42,10 +43,7 @@ export async function runGitRegistrationFlow(
   const ui: ExtensionUIContext = ctx.ui;
   let scope = target.scope;
   if (!scope) {
-    const scopeLabels = new Map<string, Scope>([
-      [uiText('common.scope.global'), 'global'],
-      [uiText('common.scope.project'), 'project'],
-    ]);
+    const scopeLabels = scopeOptions();
     const scopeChoice = await ui.select(uiText('reg.select.scope.git'), [...scopeLabels.keys()]);
     if (!scopeChoice) {
       ui.notify(uiText('reg.git.cancelled'), 'info');

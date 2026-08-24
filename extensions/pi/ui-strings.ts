@@ -1,10 +1,11 @@
 /**
  * Centralized presentation-string module for the /codex-marketplace TUI (Issue #41).
  *
- * Every user-visible TUI string is addressed by a stable message id and resolved from
- * the active locale dictionary (zh_TW). Components never hard-code display English;
+ * Every user-visible string on TUI surfaces is addressed by a stable message id and resolved
+ * from the active locale dictionary (zh_TW). Components never hard-code display English;
  * remaining Latin text on screen is limited to canonical glossary terms, closed values,
- * rule codes, and target identities, exactly as required by Issue #41.
+ * rule codes, and target identities, exactly as required by Issue #41. The non-TUI
+ * `list`/`inspect` plain-text output is explicitly out of scope and stays canonical English.
  *
  * Locale seam: switching dictionaries is intentionally out of scope, but the module
  * shape (locale-keyed dictionaries behind `uiText`) leaves that seam in place.
@@ -15,6 +16,7 @@
 
 import type { AttemptSummary, RecoveryAction } from '../../src/registration/receipt.js';
 import type { ValidationFinding } from '../../src/registration/findings.js';
+import type { Scope } from '../../src/bridge-state/types.js';
 import type { TransactionStep } from './transaction-sheet.js';
 
 /** Supported presentation locales. Only zh_TW ships today; the seam stays explicit. */
@@ -594,6 +596,14 @@ export function uiText(id: MessageId, params?: Record<string, string | number>):
 /** Canonical-first closed value rendering: `Canonical（中文釋義）`. */
 export function closedValue(canonical: string, gloss: string): string {
   return `${canonical}（${gloss}）`;
+}
+
+/** Localized scope-selection options bound to their structured Scope values. */
+export function scopeOptions(): Map<string, Scope> {
+  return new Map([
+    [uiText('common.scope.global'), 'global'],
+    [uiText('common.scope.project'), 'project'],
+  ]);
 }
 
 const ATTEMPT_SUMMARY_GLOSS: Record<AttemptSummary, MessageId> = {

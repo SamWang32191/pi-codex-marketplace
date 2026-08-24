@@ -17,7 +17,8 @@ import { acquireAttemptFence } from '../../src/registration/fence.js';
 import { blocking, CODE, notice, RULE, type ValidationFinding } from '../../src/registration/findings.js';
 import { createReceipt, type AttemptReceipt } from '../../src/registration/receipt.js';
 import { fullValidationDisclosureLines, reportOutcome } from './registration.js';
-import { attemptSummaryText, uiText } from './ui-strings.js';
+import { attemptSummaryText, uiText,
+  scopeOptions } from './ui-strings.js';
 import { quoteTerminalText } from './terminal-presentation.js';
 import { openTransactionSheet, type TransactionSheetModel } from './transaction-sheet.js';
 
@@ -31,10 +32,7 @@ async function pickScope(
   explicit?: Scope,
 ): Promise<Scope | undefined> {
   if (explicit) return explicit;
-  const labels = new Map<string, Scope>([
-    [uiText('common.scope.global'), 'global'],
-    [uiText('common.scope.project'), 'project'],
-  ]);
+  const labels = scopeOptions();
   const selected = await ui.select(prompt, [...labels.keys()]);
   return selected ? labels.get(selected) : undefined;
 }
