@@ -9,8 +9,15 @@ import {
 
 import type { Scope } from '../../src/bridge-state/types.js';
 import { sortFindings } from '../../src/registration/findings.js';
-import type { AttemptReceipt } from '../../src/registration/receipt.js';
-import { padTerminalLine, quoteTerminalText } from './terminal-presentation.js';
+import type { AttemptReceipt, AttemptSummary } from '../../src/registration/receipt.js';
+import {
+  padTerminalLine,
+  quoteTerminalText,
+  renderBadge,
+  renderPanel,
+  type BadgeTone,
+  type PresentationTheme,
+} from './terminal-presentation.js';
 
 export const TRANSACTION_STEPS = ['Intent', 'Validation', 'Consent', 'Plan', 'Commit', 'Receipt'] as const;
 
@@ -27,7 +34,7 @@ export interface TransactionSheetModel {
   receipt?: AttemptReceipt;
 }
 
-export type TransactionSheetTheme = Pick<Theme, 'fg' | 'bold'>;
+export type TransactionSheetTheme = PresentationTheme;
 
 function field(theme: TransactionSheetTheme, label: string, value: unknown): string {
   return `${theme.fg('dim', `${label}:`)} ${theme.fg('text', quoteTerminalText(value))}`;
@@ -73,9 +80,9 @@ function receiptAxes(receipt: AttemptReceipt, theme: TransactionSheetTheme): [st
   return [durable, findings, runtime];
 }
 
-function renderWideAxes(axes: [string[], string[], string[]], width: number): string[] {
-  const separator = ' | ';
-  const available = Math.max(0, width - separator.length * 2);
+function renderWideAxes(axes: [string[], string[], string[]], theme: TransactionSheetTheme, width: number): string[] {
+  const separator = theme.fg('borderMuted', ' │ ');
+  const available = Math.max(0, width - 5);
   const firstWidth = Math.floor(available / 3);
   const secondWidth = Math.floor(available / 3);
   const widths = [firstWidth, secondWidth, available - firstWidth - secondWidth];
@@ -102,25 +109,51 @@ function renderStackedAxes(axes: [string[], string[], string[]], width: number):
   return lines;
 }
 
+/** Stage indicator cells: done ✓, active ▸ … ACTIVE, pending numbered. */
+function stageSegments(theme: TransactionSheetTheme, step: TransactionStep): string[] {
+  const activeIndex = TRANSACTION_STEPS.indexOf(step);
+  return TRANSACTION_STEPS.map((name, index) => {
+    if (index < activeIndex) return theme.fg('success', `✓ ${index + 1} ${name}`);
+    if (index === activeIndex) {
+      return theme.fg('accent', theme.bold(`▸ ${index + 1} ${name} ACTIVE`));
+    }
+    return theme.fg('muted', `${index + 1} ${name}`);
+  });
+}
+
+function stageRows(theme: TransactionSheetTheme, step: TransactionStep, width: number): string[] {
+  const segments = stageSegments(theme, step);
+  const connector = theme.fg('borderMuted', ' ─ ');
+  return [segments.slice(0, 3), segments.slice(3)].flatMap((row) =>
+    wrapTextWithAnsi(row.join(connector), Math.max(1, width)));
+}
+
+const SUMMARY_TONES: Record<AttemptSummary, { tone: BadgeTone; label: string }> = {
+  'Completed': { tone: 'success', label: 'COMPLETED' },
+  'Completed with diagnostics': { tone: 'warning', label: 'DIAGNOSTICS' },
+  'Declined': { tone: 'warning', label: 'DECLINED' },
+  'Blocked': { tone: 'error', label: 'BLOCKED' },
+  'Rejected as Stale': { tone: 'warning', label: 'STALE' },
+  'Persistence Failed': { tone: 'error', label: 'PERSISTENCE FAILED' },
+  'Persistence Indeterminate': { tone: 'error', label: 'INDETERMINATE' },
+  'Pending Application': { tone: 'warning', label: 'PENDING' },
+};
+
 export function renderTransactionSheet(
   model: TransactionSheetModel,
   theme: TransactionSheetTheme,
   width: number,
 ): string[] {
-  const sequence = TRANSACTION_STEPS.map((step, index) =>
-    step === model.step
-      ? theme.fg('accent', theme.bold(`[${index + 1} ${step} ACTIVE]`))
-      : theme.fg('muted', `[${index + 1} ${step}]`),
-  );
+  const totalWidth = Math.max(4, Math.floor(width));
+  const innerWidth = Math.max(1, totalWidth - 3);
   const receipt = model.receipt;
   const authority = model.authority ?? receipt?.scope;
   const stateRevision = model.stateRevision ?? receipt?.observedStateRevision ?? receipt?.expectedStateRevision;
   const validationSnapshot = model.validationSnapshot ?? receipt?.validationSnapshot;
-  const lines = [
-    theme.fg('accent', theme.bold('Transaction Sheet')),
+  const body: string[] = [
+    ...stageRows(theme, model.step, innerWidth),
+    '',
     field(theme, 'Action', model.actionLabel),
-    sequence.slice(0, 3).join(' -> '),
-    sequence.slice(3).join(' -> '),
     ...(authority === undefined ? [] : [field(theme, 'Authority', authorityLabel(authority))]),
     ...(model.target === undefined ? [] : [field(theme, 'Target', model.target)]),
     ...(stateRevision === undefined ? [] : [field(theme, 'State Revision', stateRevision)]),
@@ -129,12 +162,16 @@ export function renderTransactionSheet(
   ];
 
   if (receipt) {
-    lines.push('');
+    body.push('');
     const axes = receiptAxes(receipt, theme);
-    lines.push(...(width >= 64 ? renderWideAxes(axes, width) : renderStackedAxes(axes, width)));
-    lines.push('');
-    lines.push(`${theme.fg('accent', theme.bold('Attempt Summary:'))} ${quoteTerminalText(receipt.summary)}`);
-    lines.push(
+    body.push(...(innerWidth >= 64 ? renderWideAxes(axes, theme, innerWidth) : renderStackedAxes(axes, innerWidth)));
+    body.push('');
+    const summaryTone = SUMMARY_TONES[receipt.summary];
+    body.push(
+      `${theme.fg('accent', theme.bold('Attempt Summary:'))} ${quoteTerminalText(receipt.summary)} ` +
+        renderBadge(theme, summaryTone.tone, summaryTone.label),
+    );
+    body.push(
       `${theme.fg('accent', theme.bold('Recovery Actions:'))} ${
         receipt.recoveryActions.length > 0
           ? receipt.recoveryActions.map((action) => quoteTerminalText(action)).join(', ')
@@ -143,9 +180,11 @@ export function renderTransactionSheet(
     );
   }
 
-  lines.push('');
-  lines.push(theme.fg('dim', 'Enter: continue | Esc/q/Ctrl-C: cancel'));
-  return lines.flatMap((line) => wrapTextWithAnsi(line, Math.max(1, Math.floor(width))));
+  body.push('');
+  body.push(theme.fg('dim', 'Enter: continue | Esc/q/Ctrl-C: cancel'));
+  // Wrap every content line to the panel interior so no tail is lost inside the frame.
+  const wrappedBody = body.flatMap((line) => wrapTextWithAnsi(line, Math.max(1, totalWidth - 3)));
+  return renderPanel(theme, { title: 'Transaction Sheet', lines: wrappedBody, width: totalWidth });
 }
 
 export class TransactionSheetComponent implements Component {
@@ -217,6 +256,7 @@ export class TransactionSheetComponent implements Component {
 
 const PLAIN_THEME: TransactionSheetTheme = {
   fg: (_color, text) => text,
+  bg: (_token, text) => text,
   bold: (text) => text,
 };
 

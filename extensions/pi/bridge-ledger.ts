@@ -7,7 +7,7 @@
  */
 
 import type { Theme } from '@earendil-works/pi-coding-agent';
-import { Key, matchesKey, type Component, type TUI } from '@earendil-works/pi-tui';
+import { Key, matchesKey, wrapTextWithAnsi, type Component, type TUI } from '@earendil-works/pi-tui';
 
 import { checkGlobalPendingBarrier, type GlobalBarrierStatus } from '../../src/barrier/global-barrier.js';
 import { readBothStates } from '../../src/bridge-state/store.js';
@@ -34,8 +34,11 @@ import type { ValidationFinding } from '../../src/registration/findings.js';
 import type { AttemptReceipt } from '../../src/registration/receipt.js';
 import {
   fitTerminalLine,
-  padTerminalLine,
   quoteTerminalText,
+  renderBadge,
+  renderPanel,
+  renderSelectableRow,
+  renderSideBySidePanels,
 } from './terminal-presentation.js';
 
 export type LedgerSectionId =
@@ -762,6 +765,21 @@ export function buildBridgeLedgerModel(snapshot: BridgeLedgerSnapshot): BridgeLe
 
 // The custom component is added below the presentation model so callers can use the
 // pure buildBridgeLedgerModel seam independently of Pi's runtime objects.
+
+/** Widths at or above this breakpoint render the two-column panel workspace. */
+const WIDE_WORKSPACE_WIDTH = 96;
+
+const HEALTH_BADGES: Record<LedgerHealth, { tone: 'success' | 'warning' | 'error'; label: string }> = {
+  healthy: { tone: 'success', label: 'HEALTHY' },
+  incompatible: { tone: 'error', label: 'INCOMPATIBLE' },
+  indeterminate: { tone: 'warning', label: 'INDETERMINATE' },
+};
+
+const AVAILABILITY = {
+  ready: { icon: '\u25cf', token: 'success', word: 'Ready' },
+  blocked: { icon: '\u25cb', token: 'warning', word: 'Blocked' },
+} as const;
+
 export class BridgeLedgerComponent implements Component {
   private readonly model: BridgeLedgerModel;
   private readonly theme: Theme;
@@ -771,7 +789,10 @@ export class BridgeLedgerComponent implements Component {
   private rowIndex = 0;
   private browseFocus: Scope = 'global';
   private helpVisible = false;
-  private narrowDetail = false;
+  /** Single-column drill-down state for sub-96-column workspaces. */
+  private sectionDetail = false;
+  /** Expanded metadata layer for the selected entry; never consulted by dispatch. */
+  private metadataExpanded = false;
   private lastWidth = 80;
 
   constructor(
@@ -799,64 +820,75 @@ export class BridgeLedgerComponent implements Component {
     if (matchesKey(data, Key.escape)) {
       if (this.helpVisible) {
         this.helpVisible = false;
-        this.tui.requestRender();
-      } else if (this.lastWidth < 64 && this.narrowDetail) {
-        this.narrowDetail = false;
+      } else if (this.metadataExpanded) {
+        this.metadataExpanded = false;
+      } else if (this.lastWidth < WIDE_WORKSPACE_WIDTH && this.sectionDetail) {
+        this.sectionDetail = false;
         this.rowIndex = 0;
-        this.tui.requestRender();
       } else {
         this.onDone(undefined);
+        return;
       }
+      this.tui.requestRender();
       return;
     }
+    if (this.helpVisible) return;
+
     if (matchesKey(data, 'g') || matchesKey(data, 'p')) {
       const nextFocus: Scope = matchesKey(data, 'g') ? 'global' : 'project';
       if (nextFocus !== this.browseFocus) {
         this.browseFocus = nextFocus;
         this.rowIndex = 0;
+        this.metadataExpanded = false;
         this.tui.requestRender();
       }
       return;
     }
-    if (this.helpVisible) return;
+    if (matchesKey(data, 'i')) {
+      this.metadataExpanded = !this.metadataExpanded;
+      this.tui.requestRender();
+      return;
+    }
 
-    const narrowSections = this.lastWidth < 64 && !this.narrowDetail;
+    const wide = this.lastWidth >= WIDE_WORKSPACE_WIDTH;
     if (matchesKey(data, Key.right)) {
-      if (this.lastWidth < 64) {
-        if (!this.narrowDetail) {
-          this.narrowDetail = true;
-          this.rowIndex = 0;
-          this.tui.requestRender();
-        }
-      } else {
+      if (!wide && !this.sectionDetail) {
+        this.sectionDetail = true;
+        this.rowIndex = 0;
+        this.metadataExpanded = false;
+        this.tui.requestRender();
+      } else if (wide) {
         this.moveSection(1);
       }
       return;
     }
     if (matchesKey(data, Key.left)) {
-      if (this.lastWidth < 64 && this.narrowDetail) {
-        this.narrowDetail = false;
+      if (!wide && this.sectionDetail) {
+        this.sectionDetail = false;
         this.rowIndex = 0;
+        this.metadataExpanded = false;
         this.tui.requestRender();
-      } else if (this.lastWidth >= 64) {
+      } else if (wide) {
         this.moveSection(-1);
       }
       return;
     }
+    const listView = !wide && !this.sectionDetail;
     if (matchesKey(data, 'j') || matchesKey(data, Key.down)) {
-      if (narrowSections) this.moveSection(1);
+      if (listView) this.moveSection(1);
       else this.moveRow(1);
       return;
     }
     if (matchesKey(data, 'k') || matchesKey(data, Key.up)) {
-      if (narrowSections) this.moveSection(-1);
+      if (listView) this.moveSection(-1);
       else this.moveRow(-1);
       return;
     }
     if (matchesKey(data, Key.enter)) {
-      if (narrowSections) {
-        this.narrowDetail = true;
+      if (listView) {
+        this.sectionDetail = true;
         this.rowIndex = 0;
+        this.metadataExpanded = false;
         this.tui.requestRender();
         return;
       }
@@ -872,13 +904,20 @@ export class BridgeLedgerComponent implements Component {
 
   render(width: number): string[] {
     this.lastWidth = Math.max(1, Math.floor(width));
-    const out = this.authorityHeader(this.lastWidth);
+    const out = [
+      this.fit('CODEX MARKETPLACE / BRIDGE LEDGER', this.lastWidth, 'accent'),
+      ...this.railPanels(this.lastWidth),
+    ];
     if (this.helpVisible) {
-      out.push(...this.helpLines(this.lastWidth));
-    } else if (this.lastWidth >= 64) {
+      out.push(...renderPanel(this.theme, {
+        title: 'Help',
+        lines: this.helpLines().map((line) => this.fit(line, Math.max(1, this.lastWidth - 3), 'text')),
+        width: this.lastWidth,
+      }));
+    } else if (this.lastWidth >= WIDE_WORKSPACE_WIDTH) {
       out.push(...this.wideWorkspace(this.lastWidth));
     } else {
-      out.push(...this.narrowWorkspace(this.lastWidth));
+      out.push(...this.drilldownWorkspace(this.lastWidth));
     }
     out.push(this.fit(this.statusText(), this.lastWidth, 'dim'));
     out.push(this.fit(this.keyHints(), this.lastWidth, 'dim'));
@@ -895,6 +934,7 @@ export class BridgeLedgerComponent implements Component {
     if (count === 0) return;
     this.sectionIndex = (this.sectionIndex + delta + count) % count;
     this.rowIndex = 0;
+    this.metadataExpanded = false;
     this.tui.requestRender();
   }
 
@@ -902,6 +942,7 @@ export class BridgeLedgerComponent implements Component {
     const count = this.actionEntries().length;
     if (count === 0) return;
     this.rowIndex = (this.rowIndex + delta + count) % count;
+    this.metadataExpanded = false;
     this.tui.requestRender();
   }
 
@@ -909,117 +950,201 @@ export class BridgeLedgerComponent implements Component {
     return fitTerminalLine(this.theme.fg(token, text), width);
   }
 
-  private authorityHeader(width: number): string[] {
-    const global = this.model.rails.global;
-    const project = this.model.rails.project;
-    const globalLine = width < 96
-      ? `G rev ${quoteTerminalText(global.revision)} | reg ${global.registrationCount} | ` +
-        `inst ${global.installationEnabledCount} on/${global.installationDisabledCount} off | health ${global.health}`
-      : `G rev ${quoteTerminalText(global.revision)} | registrations ${global.registrationCount} | ` +
-        `installations ${global.installationEnabledCount} enabled/${global.installationDisabledCount} disabled | ` +
-        `health ${global.health}: ${quoteTerminalText(global.healthText)}`;
-    const projectLine = width < 96
-      ? `P rev ${quoteTerminalText(project.revision)} | reg ${project.registrationCount} | ` +
-        `inst ${project.installationEnabledCount} on/${project.installationDisabledCount} off | ` +
-        `ovr ${project.overrideCount} | health ${project.health}`
-      : `P rev ${quoteTerminalText(project.revision)} | registrations ${project.registrationCount} | ` +
-        `installations ${project.installationEnabledCount} enabled/${project.installationDisabledCount} disabled | ` +
-        `overrides ${project.overrideCount} | health ${project.health}: ${quoteTerminalText(project.healthText)}`;
-    const barrier = this.model.barrier.active
-      ? `Barrier: ACTIVE ${quoteTerminalText(this.model.barrier.text)}`
-      : 'Barrier: Clear';
-    return [
-      this.fit('CODEX MARKETPLACE / BRIDGE LEDGER', width, 'accent'),
-      this.fit(globalLine, width, global.health === 'healthy' ? 'text' : 'error'),
-      this.fit(projectLine, width, project.health === 'healthy' ? 'text' : 'error'),
-      this.fit(project.trustText, width, this.model.projectTrusted ? 'success' : 'warning'),
-      this.fit(barrier, width, this.model.barrier.active ? 'warning' : 'success'),
-    ];
+  // --- Authority rails -----------------------------------------------------
+
+  private railPanels(width: number): string[] {
+    if (width < WIDE_WORKSPACE_WIDTH) {
+      return [
+        ...renderPanel(this.theme, {
+          title: this.model.rails.global.label,
+          lines: this.railContentLines('global', width - 3),
+          width,
+          borderToken: 'borderMuted',
+        }),
+        ...renderPanel(this.theme, {
+          title: this.model.rails.project.label,
+          lines: this.railContentLines('project', width - 3),
+          width,
+          borderToken: 'borderAccent',
+        }),
+      ];
+    }
+    const leftWidth = Math.max(24, Math.floor((width - 2) / 2));
+    const rightWidth = Math.max(24, width - 2 - leftWidth);
+    return renderSideBySidePanels(this.theme, {
+      left: {
+        title: this.model.rails.global.label,
+        lines: this.railContentLines('global', leftWidth - 3),
+        width: leftWidth,
+        borderToken: 'borderMuted',
+      },
+      right: {
+        title: this.model.rails.project.label,
+        lines: this.railContentLines('project', rightWidth - 3),
+        width: rightWidth,
+        borderToken: 'borderAccent',
+      },
+      totalWidth: width,
+    });
   }
 
-  private helpLines(width: number): string[] {
-    return [
-      this.fit('Help', width, 'accent'),
-      this.fit('Up/Down or j/k: move selection', width),
-      this.fit('Left/Right: change section in wide layout', width),
-      this.fit('Enter: open section or activate available structured action', width),
-      this.fit('g/p: browse Global/Project only; mutation authority remains explicit', width),
-      this.fit('Esc: back/cancel | q or Ctrl-C: exit | ?: close help', width),
-    ];
+  private railBadge(scope: Scope): string {
+    const rail = scope === 'global' ? this.model.rails.global : this.model.rails.project;
+    const badges = [renderBadge(this.theme, HEALTH_BADGES[rail.health].tone, HEALTH_BADGES[rail.health].label)];
+    if (scope === 'project') {
+      badges.push(renderBadge(
+        this.theme,
+        this.model.projectTrusted ? 'success' : 'warning',
+        this.model.projectTrusted ? 'TRUST GRANTED' : 'NO PROJECT TRUST',
+      ));
+    } else {
+      badges.push(renderBadge(this.theme, this.model.barrier.active ? 'error' : 'success',
+        this.model.barrier.active ? 'BARRIER ACTIVE' : 'BARRIER CLEAR'));
+    }
+    return badges.join(' ');
   }
 
-  private wideWorkspace(width: number): string[] {
-    const separator = this.theme.fg('borderMuted', ' | ');
-    const navWidth = Math.min(30, Math.max(20, Math.floor(width * 0.28)));
-    const detailWidth = Math.max(1, width - navWidth - 3);
-    const nav = [
-      this.theme.fg('accent', 'Navigation'),
-      ...this.model.sections.map((section, index) =>
-        this.theme.fg(index === this.sectionIndex ? 'accent' : 'text',
-          `${index === this.sectionIndex ? '>' : ' '} ${section.label}`)),
+  private railContentLines(scope: Scope, width: number): string[] {
+    const rail = scope === 'global' ? this.model.rails.global : this.model.rails.project;
+    const marker = scope === 'global' ? 'G' : 'P';
+    const fitDim = (text: string): string => this.fit(text, width, 'dim');
+    const lines = [
+      this.railBadge(scope),
+      `${marker} rev ${quoteTerminalText(rail.revision)}`,
+      `registrations ${rail.registrationCount}`,
+      `installations ${rail.installationEnabledCount} enabled / ${rail.installationDisabledCount} disabled`,
     ];
-    const section = this.currentSection();
-    const detail = [
-      this.theme.fg('accent', section.label),
-      this.theme.fg('dim', section.description),
-      ...this.actionLines(section),
-    ];
-    const height = Math.max(nav.length, detail.length);
-    const lines: string[] = [];
-    for (let index = 0; index < height; index++) {
-      const left = padTerminalLine(nav[index] ?? '', navWidth);
-      const right = fitTerminalLine(detail[index] ?? '', detailWidth);
-      lines.push(fitTerminalLine(left + separator + right, width));
+    if (scope === 'project') lines.push(`overrides ${rail.overrideCount}`);
+    if (rail.health !== 'healthy') lines.push(fitDim(quoteTerminalText(rail.healthText)));
+    if (scope === 'project') lines.push(fitDim(rail.trustText));
+    if (scope === 'global' && this.model.barrier.active) {
+      lines.push(this.fit(`\u21b3 Barrier reason: ${quoteTerminalText(this.model.barrier.text)}`, width, 'warning'));
     }
     return lines;
   }
 
-  private narrowWorkspace(width: number): string[] {
-    if (!this.narrowDetail) {
-      return [
-        this.fit('Sections', width, 'accent'),
-        ...this.model.sections.map((section, index) =>
-          this.fit(`${index === this.sectionIndex ? '>' : ' '} ${section.label}`, width,
-            index === this.sectionIndex ? 'accent' : 'text')),
-      ];
-    }
-    const section = this.currentSection();
-    return [
-      this.fit(`Section: ${section.label}`, width, 'accent'),
-      this.fit(section.description, width, 'dim'),
-      ...this.actionLines(section).map((line) => fitTerminalLine(line, width)),
-    ];
+  // --- Workspaces ----------------------------------------------------------
+
+  private sectionNavLines(width: number): string[] {
+    return this.model.sections.map((section, index) =>
+      renderSelectableRow(this.theme, {
+        selected: index === this.sectionIndex,
+        text: this.theme.fg(index === this.sectionIndex ? 'accent' : 'text', section.label),
+        width,
+      }));
   }
 
-  private actionLines(section: LedgerSection): string[] {
-    const rows = this.visibleRows(section);
-    if (rows.length === 0) return [this.theme.fg('muted', 'No rows in this section')];
+  private wideWorkspace(width: number): string[] {
+    const navWidth = Math.min(34, Math.max(22, Math.floor(width * 0.28)));
+    const detailWidth = Math.max(24, width - navWidth - 2);
+    const section = this.currentSection();
+    return renderSideBySidePanels(this.theme, {
+      left: {
+        title: 'Navigation',
+        lines: this.sectionNavLines(navWidth - 3),
+        width: navWidth,
+        borderToken: 'borderMuted',
+      },
+      right: {
+        title: section.label,
+        lines: [
+          this.fit(section.description, detailWidth - 3, 'dim'),
+          '',
+          ...this.actionEntryLines(detailWidth - 3),
+        ],
+        width: detailWidth,
+        borderToken: 'borderAccent',
+      },
+      totalWidth: width,
+    });
+  }
+
+  private drilldownWorkspace(width: number): string[] {
+    if (!this.sectionDetail) {
+      return renderPanel(this.theme, {
+        title: 'Sections',
+        lines: this.sectionNavLines(Math.max(1, width - 3)),
+        width,
+        borderToken: 'borderAccent',
+      });
+    }
+    const section = this.currentSection();
+    return renderPanel(this.theme, {
+      title: section.label,
+      lines: [
+        this.fit(section.description, Math.max(1, width - 3), 'dim'),
+        '',
+        ...this.actionEntryLines(Math.max(1, width - 3)),
+      ],
+      width,
+      borderToken: 'borderAccent',
+    });
+  }
+
+  // --- Action entries ------------------------------------------------------
+
+  /**
+   * Renders every visible row in the panel visual language: availability is an
+   * icon+token+word state, selection combines a background wash with a text
+   * cursor, and structured field dumps live only in the expandable metadata layer.
+   */
+  private actionEntryLines(width: number): string[] {
+    const rows = this.visibleRows();
+    if (rows.length === 0) return [this.fit('No rows in this section', width, 'muted')];
     let actionIndex = 0;
-    return rows.flatMap((row) => {
+    const lines: string[] = [];
+    for (const row of rows) {
       if (row.actions.length === 0) {
-        return [
-          this.theme.fg('warning', `  [Unavailable] ${quoteTerminalText(row.label)}`),
-          this.theme.fg('dim',
-            `  detail ${quoteTerminalText(row.detail ?? '(none)')} | target ${row.targetKind ?? 'none'} ` +
-            `${quoteTerminalText(row.targetId ?? '(none)')} | scope ${row.scope ?? 'none'} | actions none`),
-        ];
+        lines.push(
+          this.fit(`${AVAILABILITY.blocked.icon} Unavailable \u00b7 ${quoteTerminalText(row.label)}`, width, 'warning'),
+          this.fit(`   ${quoteTerminalText(row.detail ?? '(no findings reported)')}`, width, 'dim'),
+        );
+        continue;
       }
-      return row.actions.flatMap((action) => {
+      for (const action of row.actions) {
         const selected = actionIndex === this.rowIndex;
         actionIndex += 1;
-        const availabilityText = action.enabled
-          ? 'available'
-          : `disabled: ${quoteTerminalText(action.disabledReason ?? 'unavailable')}`;
-        return [
-          this.theme.fg(selected ? 'accent' : 'text',
-            `${selected ? '>' : ' '} [${availabilityText}] ${action.label} / ${quoteTerminalText(row.label)}`),
-          this.theme.fg('dim',
-            `  detail ${quoteTerminalText(row.detail ?? '(none)')} | target ${action.intent.targetKind ?? 'none'} ` +
-            `${quoteTerminalText(action.intent.targetId ?? '(none)')} | scope ${action.intent.scope ?? 'none'} | ` +
-            `mode ${action.intent.mode}`),
-        ];
-      });
-    });
+        const availability = action.enabled ? AVAILABILITY.ready : AVAILABILITY.blocked;
+        const text =
+          this.theme.fg(availability.token, `${availability.icon} ${availability.word} ${action.label}`) +
+          this.theme.fg('dim', ` \u00b7 ${quoteTerminalText(row.label)}`);
+        lines.push(renderSelectableRow(this.theme, { selected, text, width }));
+        if (!selected) continue;
+        if (!action.enabled) {
+          lines.push(...this.wrapContext(
+            `\u21b3 Blocked: ${quoteTerminalText(action.disabledReason ?? 'unavailable')}`,
+            width, 'warning', 4));
+        }
+        if (this.metadataExpanded) {
+          const intent = action.intent;
+          const meta = [
+            `target ${intent.targetKind ?? row.targetKind ?? 'none'} ` +
+              quoteTerminalText(intent.targetId ?? row.targetId ?? '(none)'),
+            `scope ${intent.scope ?? row.scope ?? 'none'}`,
+            `mode ${intent.mode}`,
+          ];
+          if (row.detail !== undefined) meta.push(`detail ${quoteTerminalText(row.detail)}`);
+          lines.push(...meta.flatMap((entry) => this.wrapContext(`  ${entry}`, width, 'muted', 4)));
+        }
+      }
+    }
+    return lines;
+  }
+
+  private wrapContext(text: string, width: number, token: Parameters<Theme['fg']>[0], maxLines: number): string[] {
+    const wrapped = wrapTextWithAnsi(this.theme.fg(token, text), Math.max(1, width)).slice(0, maxLines);
+    return wrapped.map((line) => fitTerminalLine(line, width));
+  }
+
+  private helpLines(): string[] {
+    return [
+      'Up/Down or j/k: move selection',
+      'Left/Right: change section (wide layout) or drill down',
+      'Enter: open section or activate available structured action',
+      'i: expand or collapse the selected entry metadata',
+      'g/p: browse Global/Project only; mutation authority remains explicit',
+      'Esc: back/cancel | q or Ctrl-C: exit | ?: close help',
+    ];
   }
 
   private visibleRows(section = this.currentSection()): LedgerObjectRow[] {
@@ -1042,15 +1167,15 @@ export class BridgeLedgerComponent implements Component {
 
   private statusText(): string {
     const section = this.currentSection();
-    const pane = this.lastWidth < 64 && !this.narrowDetail ? 'sections' : 'actions';
+    const pane = this.lastWidth >= WIDE_WORKSPACE_WIDTH || this.sectionDetail ? 'actions' : 'sections';
     return `Status: browsing ${this.browseFocus === 'global' ? 'G' : 'P'} | ${section.label} | ${pane}`;
   }
 
   private keyHints(): string {
     if (this.helpVisible) return 'Keys: ?/Esc close help | q/Ctrl-C exit | Esc/q cancel context';
-    if (this.lastWidth < 64 && !this.narrowDetail) {
-      return 'Keys: Esc/q cancel | Enter drill down | j/k move | g/p | ?';
+    if (this.lastWidth < WIDE_WORKSPACE_WIDTH && !this.sectionDetail) {
+      return 'Keys: Esc/q cancel | Enter drill down | j/k move | g/p | ? help';
     }
-    return 'Keys: Esc/q cancel | Enter activate | j/k or arrows move | g/p browse | ? help';
+    return 'Keys: Esc/q cancel | Enter activate | j/k or arrows move | i details | g/p browse | ? help';
   }
 }

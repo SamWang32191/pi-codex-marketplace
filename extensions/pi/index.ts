@@ -44,6 +44,7 @@ import { renderTransactionSheet } from './transaction-sheet.js';
 
 const STARTUP_RECEIPT_THEME = {
   fg: (_color: string, text: string) => text,
+  bg: (_token: string, text: string) => text,
   bold: (text: string) => text,
 };
 

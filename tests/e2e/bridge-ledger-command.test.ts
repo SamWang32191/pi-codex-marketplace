@@ -27,6 +27,7 @@ function captureCodexMarketplaceCommand(): CapturedCommand {
 
 const identityTheme = {
   fg: (_color: string, text: string) => text,
+  bg: (_token: string, text: string) => text,
   bold: (text: string) => text,
 };
 
@@ -125,7 +126,8 @@ describe('/codex-marketplace Bridge Ledger command seam', () => {
         );
         screens.push(component.render(80));
         if (customCalls === 1) {
-          component.handleInput?.('\r');
+          component.handleInput?.('\r'); // drill into the section (single-column layout at 80)
+          component.handleInput?.('\r'); // activate the first available structured action
           await commitBridgeState(
             'global',
             (state) => ({
@@ -212,9 +214,12 @@ describe('/codex-marketplace Bridge Ledger command seam', () => {
       },
     });
 
-    expect(screen).toMatch(/Barrier: ACTIVE/);
-    expect(screen).toMatch(/Project.*Register local Marketplace.*disabled:.*Global Pen/s);
-    expect(screen).toMatch(/Global.*Register local Marketplace.*available/s);
+    expect(screen).toMatch(/BARRIER ACTIVE/);
+    // Blocked Project mutation: availability is icon+word, and its reason is visible on selection.
+    expect(screen).toMatch(/○ Blocked Register local Marketplace/);
+    expect(screen).toMatch(/Global Pending Barrier/);
+    expect(screen).not.toMatch(/\[available\]|\[Unavailable\]|disabled:/);
+    expect(screen).toMatch(/● Ready Register local Marketplace/);
   });
 
   it.each([
