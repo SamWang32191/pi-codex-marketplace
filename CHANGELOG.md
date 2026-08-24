@@ -2,7 +2,7 @@
 
 All notable changes to `pi-codex-marketplace` are documented here. Format follows Keep a Changelog and SemVer (starting at `0.1.0`; Git tags `v*` mirror npm versions).
 
-## [Unreleased]
+## [0.1.8] - 2026-08-24
 
 ### Added
 - **Bridge Ledger TUI** (#38): replace the flat `/codex-marketplace` menu with a responsive five-section workspace, simultaneous Global / Project authority rails, persistent Project Trust and Global Pending Barrier status, structured canonical action intents, scope-partitioned browsing focus, Entry-level Plugin rows with directly bound install paths, eligibility-aware State Repair, and 120/80/60-column keyboard navigation.
