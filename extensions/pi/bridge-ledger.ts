@@ -34,11 +34,11 @@ import type { ValidationFinding } from '../../src/registration/findings.js';
 import type { AttemptReceipt } from '../../src/registration/receipt.js';
 import {
   fitTerminalLine,
-  padTerminalLine,
   quoteTerminalText,
   renderBadge,
   renderPanel,
   renderSelectableRow,
+  renderSideBySidePanels,
 } from './terminal-presentation.js';
 
 export type LedgerSectionId =
@@ -969,26 +969,23 @@ export class BridgeLedgerComponent implements Component {
         }),
       ];
     }
-    const gutter = '  ';
-    const leftWidth = Math.max(24, Math.floor((width - gutter.length) / 2));
-    const rightWidth = Math.max(24, width - gutter.length - leftWidth);
-    const leftFrame = renderPanel(this.theme, {
-      title: this.model.rails.global.label,
-      lines: this.railContentLines('global', leftWidth - 3),
-      width: leftWidth,
-      borderToken: 'borderMuted',
+    const leftWidth = Math.max(24, Math.floor((width - 2) / 2));
+    const rightWidth = Math.max(24, width - 2 - leftWidth);
+    return renderSideBySidePanels(this.theme, {
+      left: {
+        title: this.model.rails.global.label,
+        lines: this.railContentLines('global', leftWidth - 3),
+        width: leftWidth,
+        borderToken: 'borderMuted',
+      },
+      right: {
+        title: this.model.rails.project.label,
+        lines: this.railContentLines('project', rightWidth - 3),
+        width: rightWidth,
+        borderToken: 'borderAccent',
+      },
+      totalWidth: width,
     });
-    const rightFrame = renderPanel(this.theme, {
-      title: this.model.rails.project.label,
-      lines: this.railContentLines('project', rightWidth - 3),
-      width: rightWidth,
-      borderToken: 'borderAccent',
-    });
-    const height = Math.max(leftFrame.length, rightFrame.length);
-    return Array.from({ length: height }, (_, index) =>
-      padTerminalLine(leftFrame[index] ?? '', leftWidth) +
-      gutter +
-      padTerminalLine(rightFrame[index] ?? '', rightWidth));
   }
 
   private railBadge(scope: Scope): string {
@@ -1040,28 +1037,26 @@ export class BridgeLedgerComponent implements Component {
   private wideWorkspace(width: number): string[] {
     const navWidth = Math.min(34, Math.max(22, Math.floor(width * 0.28)));
     const detailWidth = Math.max(24, width - navWidth - 2);
-    const navFrame = renderPanel(this.theme, {
-      title: 'Navigation',
-      lines: this.sectionNavLines(navWidth - 3),
-      width: navWidth,
-      borderToken: 'borderMuted',
-    });
     const section = this.currentSection();
-    const detailContent = [
-      this.fit(section.description, detailWidth - 3, 'dim'),
-      '',
-      ...this.actionEntryLines(detailWidth - 3),
-    ];
-    const detailFrame = renderPanel(this.theme, {
-      title: section.label,
-      lines: detailContent,
-      width: detailWidth,
-      borderToken: 'borderAccent',
+    return renderSideBySidePanels(this.theme, {
+      left: {
+        title: 'Navigation',
+        lines: this.sectionNavLines(navWidth - 3),
+        width: navWidth,
+        borderToken: 'borderMuted',
+      },
+      right: {
+        title: section.label,
+        lines: [
+          this.fit(section.description, detailWidth - 3, 'dim'),
+          '',
+          ...this.actionEntryLines(detailWidth - 3),
+        ],
+        width: detailWidth,
+        borderToken: 'borderAccent',
+      },
+      totalWidth: width,
     });
-    const height = Math.max(navFrame.length, detailFrame.length);
-    return Array.from({ length: height }, (_, index) =>
-      padTerminalLine(navFrame[index] ?? '', navWidth) + '  ' +
-      padTerminalLine(detailFrame[index] ?? '', detailWidth));
   }
 
   private drilldownWorkspace(width: number): string[] {

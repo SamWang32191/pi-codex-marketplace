@@ -89,6 +89,30 @@ export function renderBadge(theme: PresentationTheme, tone: BadgeTone, label: st
   );
 }
 
+/**
+ * Renders two framed panels side by side inside `totalWidth`, equalizing their
+ * heights by padding the shorter content so both frames bottom-align.
+ */
+export function renderSideBySidePanels(
+  theme: PresentationTheme,
+  options: { left: PanelOptions; right: PanelOptions; totalWidth: number; gutter?: string },
+): string[] {
+  const gutter = options.gutter ?? '  ';
+  const leftWidth = Math.max(3, Math.floor(options.left.width));
+  const rightWidth = Math.max(3, options.totalWidth - gutter.length - leftWidth);
+  const height = Math.max(options.left.lines.length, options.right.lines.length);
+  const padToHeight = (lines: string[]): string[] => [
+    ...lines,
+    ...Array.from({ length: height - lines.length }, () => ''),
+  ];
+  const leftFrame = renderPanel(theme, { ...options.left, lines: padToHeight(options.left.lines), width: leftWidth });
+  const rightFrame = renderPanel(theme, { ...options.right, lines: padToHeight(options.right.lines), width: rightWidth });
+  return Array.from({ length: Math.max(leftFrame.length, rightFrame.length) }, (_, index) =>
+    padTerminalLine(leftFrame[index] ?? '', leftWidth) +
+    gutter +
+    padTerminalLine(rightFrame[index] ?? '', rightWidth));
+}
+
 export interface SelectableRowOptions {
   selected: boolean;
   /** Pre-styled row text (may already contain theme sequences). */
