@@ -9,7 +9,15 @@ import {
 
 import type { Scope } from '../../src/bridge-state/types.js';
 import { sortFindings } from '../../src/registration/findings.js';
-import type { AttemptReceipt, AttemptSummary } from '../../src/registration/receipt.js';
+import type { AttemptReceipt, AttemptSummary, RecoveryAction } from '../../src/registration/receipt.js';
+import {
+  attemptSummaryGloss,
+  closedValue,
+  findingOutcomeText,
+  recoveryActionGloss,
+  transactionStepLabel,
+  uiText,
+} from './ui-strings.js';
 import {
   padTerminalLine,
   quoteTerminalText,
@@ -41,7 +49,15 @@ function field(theme: TransactionSheetTheme, label: string, value: unknown): str
 }
 
 function authorityLabel(scope: Scope): string {
-  return scope === 'global' ? '[G] GLOBAL' : '[P] PROJECT';
+  return scope === 'global' ? '[G] Global Scope' : '[P] Project Scope';
+}
+
+function findingLine(theme: TransactionSheetTheme, finding: AttemptReceipt['findings'][number]): string {
+  return (
+    `${theme.fg('warning', `[${finding.classification}]`)} ${quoteTerminalText(finding.code)} ` +
+    `${quoteTerminalText(finding.rule)}: ${quoteTerminalText(findingOutcomeText(finding))}` +
+    `${finding.pointer ? ` @${quoteTerminalText(finding.pointer)}` : ''}`
+  );
 }
 
 function receiptAxes(receipt: AttemptReceipt, theme: TransactionSheetTheme): [string[], string[], string[]] {
@@ -52,30 +68,36 @@ function receiptAxes(receipt: AttemptReceipt, theme: TransactionSheetTheme): [st
     notice: orderedFindings.filter((finding) => finding.classification === 'notice').length,
   };
   const durable = [
-    theme.fg('accent', theme.bold('Durable')),
-    field(theme, 'Outcome', receipt.durableOutcome),
-    field(theme, 'Expected revision', receipt.expectedStateRevision),
-    ...(receipt.targetStateRevision === undefined ? [] : [field(theme, 'Target revision', receipt.targetStateRevision)]),
-    ...(receipt.observedStateRevision === undefined ? [] : [field(theme, 'Observed revision', receipt.observedStateRevision)]),
-    field(theme, 'State changed', receipt.stateChanged ? 'yes' : 'no'),
+    theme.fg('accent', theme.bold(uiText('sheet.axis.durable'))),
+    field(theme, uiText('sheet.field.outcome'), receipt.durableOutcome),
+    field(theme, uiText('sheet.field.expectedRevision'), receipt.expectedStateRevision),
+    ...(receipt.targetStateRevision === undefined
+      ? []
+      : [field(theme, uiText('sheet.field.targetRevision'), receipt.targetStateRevision)]),
+    ...(receipt.observedStateRevision === undefined
+      ? []
+      : [field(theme, uiText('sheet.field.observedRevision'), receipt.observedStateRevision)]),
+    field(
+      theme,
+      uiText('sheet.field.stateChanged'),
+      receipt.stateChanged ? uiText('common.yes') : uiText('common.no'),
+    ),
   ];
   const findings = [
-    theme.fg('accent', theme.bold('Findings')),
-    field(theme, 'Count', orderedFindings.length),
+    theme.fg('accent', theme.bold(uiText('sheet.axis.findings'))),
+    field(theme, uiText('sheet.field.count'), orderedFindings.length),
     field(theme, 'Blocking', classifications.blocking),
     field(theme, 'Warning', classifications.warning),
     field(theme, 'Notice', classifications.notice),
-    ...orderedFindings.map((finding) =>
-      `${theme.fg('warning', `[${finding.classification}]`)} ${quoteTerminalText(finding.code)} ${quoteTerminalText(finding.rule)}: ${quoteTerminalText(finding.outcome)}${finding.pointer ? ` @${quoteTerminalText(finding.pointer)}` : ''}`,
-    ),
+    ...orderedFindings.map((finding) => findingLine(theme, finding)),
   ];
   const runtime = [
-    theme.fg('accent', theme.bold('Runtime')),
-    field(theme, 'Outcome', receipt.runtimeOutcome),
-    field(theme, 'Receipt', receipt.id),
-    field(theme, 'Kind', receipt.kind),
-    field(theme, 'Operation', receipt.operation),
-    field(theme, 'Trigger', receipt.trigger),
+    theme.fg('accent', theme.bold(uiText('sheet.axis.runtime'))),
+    field(theme, uiText('sheet.field.outcome'), receipt.runtimeOutcome),
+    field(theme, uiText('sheet.field.receipt'), receipt.id),
+    field(theme, uiText('sheet.field.kind'), receipt.kind),
+    field(theme, uiText('sheet.field.operation'), receipt.operation),
+    field(theme, uiText('sheet.field.trigger'), receipt.trigger),
   ];
   return [durable, findings, runtime];
 }
@@ -109,15 +131,16 @@ function renderStackedAxes(axes: [string[], string[], string[]], width: number):
   return lines;
 }
 
-/** Stage indicator cells: done ✓, active ▸ … ACTIVE, pending numbered. */
+/** Stage indicator cells: done ✓, active ▸ …（進行中）, pending numbered. Labels are zh_TW. */
 function stageSegments(theme: TransactionSheetTheme, step: TransactionStep): string[] {
   const activeIndex = TRANSACTION_STEPS.indexOf(step);
   return TRANSACTION_STEPS.map((name, index) => {
-    if (index < activeIndex) return theme.fg('success', `✓ ${index + 1} ${name}`);
+    const label = transactionStepLabel(name);
+    if (index < activeIndex) return theme.fg('success', `✓ ${index + 1} ${label}`);
     if (index === activeIndex) {
-      return theme.fg('accent', theme.bold(`▸ ${index + 1} ${name} ACTIVE`));
+      return theme.fg('accent', theme.bold(`▸ ${index + 1} ${label}（${uiText('step.activeSuffix')}）`));
     }
-    return theme.fg('muted', `${index + 1} ${name}`);
+    return theme.fg('muted', `${index + 1} ${label}`);
   });
 }
 
@@ -128,16 +151,23 @@ function stageRows(theme: TransactionSheetTheme, step: TransactionStep, width: n
     wrapTextWithAnsi(row.join(connector), Math.max(1, width)));
 }
 
-const SUMMARY_TONES: Record<AttemptSummary, { tone: BadgeTone; label: string }> = {
-  'Completed': { tone: 'success', label: 'COMPLETED' },
-  'Completed with diagnostics': { tone: 'warning', label: 'DIAGNOSTICS' },
-  'Declined': { tone: 'warning', label: 'DECLINED' },
-  'Blocked': { tone: 'error', label: 'BLOCKED' },
-  'Rejected as Stale': { tone: 'warning', label: 'STALE' },
-  'Persistence Failed': { tone: 'error', label: 'PERSISTENCE FAILED' },
-  'Persistence Indeterminate': { tone: 'error', label: 'INDETERMINATE' },
-  'Pending Application': { tone: 'warning', label: 'PENDING' },
+const SUMMARY_TONES: Record<AttemptSummary, { tone: BadgeTone; labelId: Parameters<typeof uiText>[0] }> = {
+  'Completed': { tone: 'success', labelId: 'ledger.badge.healthy' },
+  'Completed with diagnostics': { tone: 'warning', labelId: 'summary.badge.diagnostics' },
+  'Declined': { tone: 'warning', labelId: 'summary.badge.declined' },
+  'Blocked': { tone: 'error', labelId: 'summary.badge.blocked' },
+  'Rejected as Stale': { tone: 'warning', labelId: 'summary.badge.stale' },
+  'Persistence Failed': { tone: 'error', labelId: 'summary.badge.persistenceFailed' },
+  'Persistence Indeterminate': { tone: 'error', labelId: 'ledger.badge.indeterminate' },
+  'Pending Application': { tone: 'warning', labelId: 'summary.badge.pending' },
 };
+
+/** Recovery Action closed values rendered quoted-canonical + zh_TW gloss outside the quotes. */
+function recoveryActionsText(actions: RecoveryAction[]): string {
+  return actions
+    .map((action) => closedValue(quoteTerminalText(action), recoveryActionGloss(action)))
+    .join(', ');
+}
 
 export function renderTransactionSheet(
   model: TransactionSheetModel,
@@ -153,12 +183,12 @@ export function renderTransactionSheet(
   const body: string[] = [
     ...stageRows(theme, model.step, innerWidth),
     '',
-    field(theme, 'Action', model.actionLabel),
-    ...(authority === undefined ? [] : [field(theme, 'Authority', authorityLabel(authority))]),
-    ...(model.target === undefined ? [] : [field(theme, 'Target', model.target)]),
+    field(theme, uiText('sheet.field.action'), model.actionLabel),
+    ...(authority === undefined ? [] : [field(theme, uiText('sheet.field.authority'), authorityLabel(authority))]),
+    ...(model.target === undefined ? [] : [field(theme, uiText('sheet.field.target'), model.target)]),
     ...(stateRevision === undefined ? [] : [field(theme, 'State Revision', stateRevision)]),
     ...(validationSnapshot === undefined ? [] : [field(theme, 'Validation Snapshot', validationSnapshot)]),
-    ...(model.details ?? []).map((detail) => field(theme, 'Detail', detail)),
+    ...(model.details ?? []).map((detail) => field(theme, uiText('sheet.field.detail'), detail)),
   ];
 
   if (receipt) {
@@ -168,23 +198,22 @@ export function renderTransactionSheet(
     body.push('');
     const summaryTone = SUMMARY_TONES[receipt.summary];
     body.push(
-      `${theme.fg('accent', theme.bold('Attempt Summary:'))} ${quoteTerminalText(receipt.summary)} ` +
-        renderBadge(theme, summaryTone.tone, summaryTone.label),
+      `${theme.fg('accent', theme.bold(`${uiText('sheet.attemptSummary')}:`))} ` +
+        `${closedValue(quoteTerminalText(receipt.summary), attemptSummaryGloss(receipt.summary))} ` +
+        renderBadge(theme, summaryTone.tone, uiText(summaryTone.labelId)),
     );
     body.push(
-      `${theme.fg('accent', theme.bold('Recovery Actions:'))} ${
-        receipt.recoveryActions.length > 0
-          ? receipt.recoveryActions.map((action) => quoteTerminalText(action)).join(', ')
-          : 'none'
+      `${theme.fg('accent', theme.bold(`${uiText('sheet.recoveryActions')}:`))} ${
+        receipt.recoveryActions.length > 0 ? recoveryActionsText(receipt.recoveryActions) : uiText('common.none')
       }`,
     );
   }
 
   body.push('');
-  body.push(theme.fg('dim', 'Enter: continue | Esc/q/Ctrl-C: cancel'));
+  body.push(theme.fg('dim', uiText('sheet.keys')));
   // Wrap every content line to the panel interior so no tail is lost inside the frame.
   const wrappedBody = body.flatMap((line) => wrapTextWithAnsi(line, Math.max(1, totalWidth - 3)));
-  return renderPanel(theme, { title: 'Transaction Sheet', lines: wrappedBody, width: totalWidth });
+  return renderPanel(theme, { title: uiText('sheet.title'), lines: wrappedBody, width: totalWidth });
 }
 
 export class TransactionSheetComponent implements Component {
@@ -230,7 +259,7 @@ export class TransactionSheetComponent implements Component {
   private validationPreview(): string[] {
     const details = this.model.details ?? [];
     const verdictAndCounts = details.filter((detail) =>
-      /^Verdict(?:\s|:)/.test(detail) || /^Findings(?:\s|:)/.test(detail));
+      detail.startsWith(uiText('verdict.label')) || detail.startsWith(uiText('findings.count.label')));
     return verdictAndCounts.length > 0 ? verdictAndCounts : details.slice(0, 2);
   }
 
@@ -245,10 +274,10 @@ export class TransactionSheetComponent implements Component {
     return {
       ...this.model,
       details: this.validationDetailsExpanded
-        ? [...details, 'Full Validation Disclosure expanded (press d to collapse)']
+        ? [...details, uiText('sheet.disclosure.expanded')]
         : [
             ...this.validationPreview(),
-            `Full Validation Disclosure collapsed (${details.length} lines; press d to expand)`,
+            uiText('sheet.disclosure.collapsed', { count: details.length }),
           ],
     };
   }

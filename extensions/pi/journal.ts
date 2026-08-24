@@ -1,5 +1,6 @@
 /**
  * TUI flows for Receipt Journal inspection and State Repair action (Issue #23).
+ * All user-visible strings come from the centralized ui-strings module (Issue #41).
  */
 
 import type { ExtensionCommandContext, ExtensionUIContext } from '@earendil-works/pi-coding-agent';
@@ -16,6 +17,8 @@ import { acquireAttemptFence } from '../../src/registration/fence.js';
 import { blocking, CODE, notice, RULE, type ValidationFinding } from '../../src/registration/findings.js';
 import { createReceipt, type AttemptReceipt } from '../../src/registration/receipt.js';
 import { fullValidationDisclosureLines, reportOutcome } from './registration.js';
+import { attemptSummaryText, uiText,
+  scopeOptions } from './ui-strings.js';
 import { quoteTerminalText } from './terminal-presentation.js';
 import { openTransactionSheet, type TransactionSheetModel } from './transaction-sheet.js';
 
@@ -29,10 +32,7 @@ async function pickScope(
   explicit?: Scope,
 ): Promise<Scope | undefined> {
   if (explicit) return explicit;
-  const labels = new Map<string, Scope>([
-    ['Global Scope', 'global'],
-    ['Project Scope', 'project'],
-  ]);
+  const labels = scopeOptions();
   const selected = await ui.select(prompt, [...labels.keys()]);
   return selected ? labels.get(selected) : undefined;
 }
@@ -52,7 +52,9 @@ function receiptPersistenceFailureFinding(
     scope: receipt.scope,
     pointer: '',
     rule: RULE.RECEIPT_PERSISTENCE_FAILED,
-    outcome: `Failed to persist Attempt Receipt to journal: ${appended.error ?? 'unknown append failure'}`,
+    outcome: uiText('journal.finding.persistFailed', {
+      error: appended.error ?? uiText('common.unknown'),
+    }),
   });
 }
 
@@ -252,7 +254,7 @@ async function runRetryApplicationUnderFence(
         scope,
         CODE.REJECTED_AS_STALE,
         RULE.REJECTED_AS_STALE,
-        'The selected Pending Application recovery chain is no longer active; reopen the Bridge Ledger',
+        uiText('journal.retry.chainStale'),
       )],
     });
     return;
@@ -270,7 +272,7 @@ async function runRetryApplicationUnderFence(
         scope,
         CODE.PERSISTENCE_INDETERMINATE,
         RULE.STATE_CORRUPT,
-        state.error ?? 'Bridge State is unreadable; Runtime Application cannot be verified',
+        state.error ?? uiText('journal.retry.unreadable'),
         'persistence',
       )],
       attachToChain: true,
@@ -288,7 +290,10 @@ async function runRetryApplicationUnderFence(
         scope,
         CODE.REJECTED_AS_STALE,
         RULE.REJECTED_AS_STALE,
-        `State Revision changed (${chain.stateRevision} → ${state.state!.stateRevision}); reopen the Bridge Ledger`,
+        uiText('journal.retry.staleDuringConfirm', {
+          expected: chain.stateRevision,
+          observed: state.state!.stateRevision,
+        }),
         'persistence',
       )],
       attachToChain: true,
@@ -305,7 +310,7 @@ async function runRetryApplicationUnderFence(
         scope,
         CODE.REJECTED_AS_STALE,
         RULE.REJECTED_AS_STALE,
-        'The active Pending Application root has no bound Validation Snapshot; fail closed and revalidate from a fresh Intent',
+        uiText('journal.retry.noSnapshot'),
       )],
       attachToChain: true,
     });
@@ -322,7 +327,7 @@ async function runRetryApplicationUnderFence(
         scope,
         CODE.REJECTED_AS_STALE,
         RULE.REJECTED_AS_STALE_SNAPSHOT,
-        'The bound Validation Snapshot no longer matches live source material; reopen the Bridge Ledger and revalidate',
+        uiText('journal.retry.snapshotMismatch'),
         'validation',
       )],
       attachToChain: true,
@@ -340,7 +345,7 @@ async function runRetryApplicationUnderFence(
         scope,
         CODE.PROJECT_TRUST_DENIED,
         RULE.PROJECT_TRUST_DENIED,
-        'Project Trust is not granted; Project Runtime Application is unavailable',
+        uiText('journal.retry.trustDenied'),
       )],
       attachToChain: true,
     });
@@ -359,7 +364,7 @@ async function runRetryApplicationUnderFence(
           scope,
           CODE.GLOBAL_PENDING_BARRIER,
           RULE.GLOBAL_PENDING_BARRIER,
-          barrier.reason ?? 'Global recovery is required first',
+          barrier.reason ?? uiText('journal.retry.barrierRequired'),
         )],
         attachToChain: true,
       });
@@ -368,7 +373,7 @@ async function runRetryApplicationUnderFence(
   }
 
   const model = {
-    actionLabel: 'Retry Runtime Application',
+    actionLabel: uiText('ledger.action.retry-application'),
     authority: scope,
     target: receiptId,
     stateRevision: chain.stateRevision,
@@ -386,36 +391,38 @@ async function runRetryApplicationUnderFence(
   if (!await showTransactionStep(ctx, {
     ...model,
     step: 'Intent',
-    details: ['Retry only the selected active Pending Application chain; Bridge State is not rewritten'],
+    details: [uiText('journal.retry.intent.details')],
   })) return void await decline();
   if (!await showTransactionStep(ctx, {
     ...model,
     step: 'Validation',
     details: [
       ...fullValidationDisclosureLines(rootReceipt.findings),
-      `Active recovery root ${quote(receiptId)}`,
-      `Exact State Revision ${quote(chain.stateRevision)}`,
-      `Bound Validation Snapshot ${quote(rootReceipt.validationSnapshot ?? '(not recorded)')}`,
+      uiText('journal.retry.validation.root', { receiptId: quote(receiptId) }),
+      uiText('journal.retry.validation.revision', { revision: quote(chain.stateRevision) }),
+      uiText('journal.retry.validation.snapshot', {
+        snapshot: quote(rootReceipt.validationSnapshot ?? uiText('journal.retry.validation.snapshotMissing')),
+      }),
     ],
   })) return void await decline();
   if (!await showTransactionStep(ctx, {
     ...model,
     step: 'Consent',
-    details: ['Retry Application Confirmation is explicit and defaults to No'],
+    details: [uiText('journal.retry.consent.details')],
   })) return void await decline();
   if (!await ctx.ui.confirm(
-    'Retry Application Confirmation — 預設 No',
-    `重新載入 Bridge resources 並驗證 ${scope} State Revision ${quote(chain.stateRevision)}？`,
+    uiText('journal.retry.consent.title'),
+    uiText('journal.retry.consent.body', { scope, revision: quote(chain.stateRevision) }),
   )) return void await decline();
   if (!await showTransactionStep(ctx, {
     ...model,
     step: 'Plan',
-    details: ['Ask the Pi host to reload, then verify Bridge re-entry at the exact bound State Revision'],
+    details: [uiText('journal.retry.plan.details')],
   })) return void await decline();
   if (!await showTransactionStep(ctx, {
     ...model,
     step: 'Commit',
-    details: ['No Bridge State write; append a resolving Receipt only after exact post-reload verification'],
+    details: [uiText('journal.retry.commit.details')],
   })) return void await decline();
 
   // Consent can remain open while either Bridge State or live source material changes.
@@ -432,7 +439,7 @@ async function runRetryApplicationUnderFence(
         scope,
         CODE.PERSISTENCE_INDETERMINATE,
         RULE.STATE_CORRUPT,
-        preReloadState.error ?? 'Bridge State became unreadable before Runtime Application',
+        preReloadState.error ?? uiText('journal.retry.persistenceBeforeReload'),
         'persistence',
       )],
       attachToChain: true,
@@ -450,7 +457,10 @@ async function runRetryApplicationUnderFence(
         scope,
         CODE.REJECTED_AS_STALE,
         RULE.REJECTED_AS_STALE,
-        `State Revision changed during confirmation (${chain.stateRevision} → ${preReloadState.state!.stateRevision}); Runtime Application was not requested`,
+        uiText('journal.retry.staleDuringConfirm', {
+          expected: chain.stateRevision,
+          observed: preReloadState.state!.stateRevision,
+        }),
         'persistence',
       )],
       attachToChain: true,
@@ -468,7 +478,7 @@ async function runRetryApplicationUnderFence(
         scope,
         CODE.REJECTED_AS_STALE,
         RULE.REJECTED_AS_STALE_SNAPSHOT,
-        'The bound Validation Snapshot changed during confirmation; Runtime Application was not requested',
+        uiText('journal.retry.staleDuringConfirmSnapshot'),
         'validation',
       )],
       attachToChain: true,
@@ -486,7 +496,7 @@ async function runRetryApplicationUnderFence(
         scope,
         CODE.PROJECT_TRUST_DENIED,
         RULE.PROJECT_TRUST_DENIED,
-        'Project Trust was revoked during confirmation; Runtime Application was not requested',
+        uiText('journal.retry.trustRevoked'),
       )],
       attachToChain: true,
     });
@@ -505,7 +515,7 @@ async function runRetryApplicationUnderFence(
           scope,
           CODE.GLOBAL_PENDING_BARRIER,
           RULE.GLOBAL_PENDING_BARRIER,
-          barrier.reason ?? 'Global recovery became required during confirmation',
+          barrier.reason ?? uiText('journal.retry.barrierDuringConfirm'),
         )],
         attachToChain: true,
       });
@@ -532,7 +542,7 @@ async function runRetryApplicationUnderFence(
           scope,
           CODE.PROJECT_TRUST_DENIED,
           RULE.PROJECT_TRUST_DENIED,
-          'Project Trust was revoked during host reload; Project Runtime Application remains blocked',
+          uiText('journal.retry.trustRevokedReload'),
         );
         throw postReloadGuardBlocked;
       }
@@ -543,7 +553,7 @@ async function runRetryApplicationUnderFence(
             scope,
             CODE.GLOBAL_PENDING_BARRIER,
             RULE.GLOBAL_PENDING_BARRIER,
-            barrier.reason ?? 'Global recovery became required during host reload',
+            barrier.reason ?? uiText('journal.retry.barrierDuringReload'),
           );
           throw postReloadGuardBlocked;
         }
@@ -577,14 +587,14 @@ export async function runReceiptJournalView(
   target: ReceiptJournalViewTarget = {},
 ): Promise<void> {
   const ui: ExtensionUIContext = ctx.ui;
-  const scope = await pickScope(ui, 'Receipt Journal — 選擇 Scope', target.scope);
+  const scope = await pickScope(ui, uiText('journal.pick.scope'), target.scope);
   if (!scope) return;
 
   const journal = await readReceiptJournal(scope, { cwd: ctx.cwd });
   if (target.receiptId) {
     const receipt = journal.receipts.find((item) => item.id === target.receiptId);
     if (!receipt) {
-      ui.notify(`Receipt Journal 找不到精確 Receipt ID ${quote(target.receiptId)}。`, 'warning');
+      ui.notify(uiText('journal.notFound', { receiptId: quote(target.receiptId) }), 'warning');
       return;
     }
     await reportOutcome(ctx, { receipt });
@@ -592,31 +602,48 @@ export async function runReceiptJournalView(
   }
 
   const lines: string[] = [
-    `=== ${scope === 'global' ? 'Global' : 'Project'} Receipt Journal ===`,
-    `Total Receipts: ${journal.receipts.length}`,
-    `Degraded: ${journal.isDegraded ? `Yes (${journal.corruptedLineCount} corrupted lines)` : 'No'}`,
-    `Active Recovery Chains: ${journal.activeChains.length === 0 ? 'None' : ''}`,
+    uiText('journal.view.header', { scopeWord: scope === 'global' ? uiText('common.scope.word.global') : uiText('common.scope.word.project') }),
+    uiText('journal.view.total', { count: journal.receipts.length }),
+    journal.isDegraded
+      ? uiText('journal.view.degraded.yes', { count: journal.corruptedLineCount })
+      : uiText('journal.view.degraded.no'),
+    uiText('journal.view.chains.header', {
+      value: journal.activeChains.length === 0 ? uiText('journal.view.chains.none') : '',
+    }),
   ];
 
   for (const chain of journal.activeChains) {
-    lines.push(`  Chain ${quote(chain.rootReceiptId)} condition: ${quote(chain.condition)} (length: ${chain.receipts.length})`);
+    lines.push('  ' + uiText('journal.view.chain.line', {
+      receiptId: quote(chain.rootReceiptId),
+      condition: quote(chain.condition),
+      length: chain.receipts.length,
+    }));
   }
 
   lines.push('');
-  lines.push('--- Recent Receipts ---');
+  lines.push(uiText('journal.view.recent.header'));
   const recent = journal.receipts.slice(-10).reverse();
   if (recent.length === 0) {
-    lines.push('  (Journal is empty)');
+    lines.push('  ' + uiText('journal.view.recent.empty'));
   } else {
     for (const rc of recent) {
       lines.push(`${quote(rc.id)} ${quote(rc.completedAt)} · ${quote(rc.operation)} (${rc.scope})`);
-      lines.push(`  Summary: ${quote(rc.summary)} | Durable: ${quote(rc.durableOutcome)} | Runtime: ${quote(rc.runtimeOutcome)}`);
-      lines.push(`  Revision: ${quote(rc.expectedStateRevision)} → ${quote(rc.observedStateRevision ?? rc.targetStateRevision ?? '?')}`);
+      lines.push('  ' + uiText('journal.view.receipt.summary', {
+        summary: attemptSummaryText(rc.summary),
+        durable: quote(rc.durableOutcome),
+        runtime: quote(rc.runtimeOutcome),
+      }));
+      lines.push('  ' + uiText('journal.view.receipt.revision', {
+        expected: quote(rc.expectedStateRevision),
+        observed: quote(rc.observedStateRevision ?? rc.targetStateRevision ?? '?'),
+      }));
       if (rc.recoversReceiptId) {
-        lines.push(`  Recovers: ${quote(rc.recoversReceiptId)}`);
+        lines.push('  ' + uiText('journal.view.receipt.recovers', { receiptId: quote(rc.recoversReceiptId) }));
       }
       if (rc.findings.length > 0) {
-        lines.push(`  Findings: ${rc.findings.map((finding) => `${finding.classification} ${quote(finding.code)}`).join(', ')}`);
+        lines.push('  ' + uiText('journal.view.receipt.findings', {
+          findings: rc.findings.map((finding) => `${finding.classification} ${quote(finding.code)}`).join(', '),
+        }));
       }
       lines.push('');
     }
@@ -635,7 +662,7 @@ export async function runRepairStateFlow(
   target: RepairStateTarget = {},
 ): Promise<void> {
   const ui: ExtensionUIContext = ctx.ui;
-  const scope = await pickScope(ui, 'Repair State — 選擇 Scope', target.scope);
+  const scope = await pickScope(ui, uiText('journal.repair.pick.scope'), target.scope);
   if (!scope) return;
 
   const [initial, initialJournal] = await Promise.all([
@@ -649,7 +676,7 @@ export async function runRepairStateFlow(
     stateRevision: selectedStateRevision,
   };
   const model = {
-    actionLabel: 'Repair State',
+    actionLabel: uiText('ledger.action.repair-state'),
     authority: scope,
     target: `${scope} Bridge State`,
     stateRevision: selectedStateRevision,
@@ -660,7 +687,7 @@ export async function runRepairStateFlow(
         scope,
         initial.status === 'incompatible' ? CODE.PERSISTENCE_INDETERMINATE : CODE.PERSISTENCE_INDETERMINATE,
         initial.status === 'incompatible' ? RULE.STATE_SCHEMA_UNKNOWN : RULE.STATE_CORRUPT,
-        initial.error ?? `Bridge State is ${initial.status}`,
+        initial.error ?? uiText('journal.repair.stateError', { status: initial.status }),
         'persistence',
       )];
   const repairFindings = [...stateFindings, ...initialJournal.findings];
@@ -672,30 +699,34 @@ export async function runRepairStateFlow(
   if (!await showTransactionStep(ctx, {
     ...model,
     step: 'Intent',
-    details: ['Verify the exact authoritative Bridge State and reconstruct degraded Receipt Journal lines when eligible'],
+    details: [uiText('journal.repair.intent.details')],
   })) return void await decline();
   if (!await showTransactionStep(ctx, {
     ...model,
     step: 'Validation',
     details: [
       ...fullValidationDisclosureLines(repairFindings),
-      `Current read status: ${initial.status}`,
-      `Current diagnostic: ${quote(initial.error ?? 'none')}`,
-      `Receipt Journal: ${initialJournal.isDegraded ? `${initialJournal.corruptedLineCount} corrupted line(s)` : 'healthy'}`,
-      `Receipt Journal revision: ${initialJournal.revision}`,
-      `Receipt Journal repair eligibility: ${expected.journalEligibility}`,
-      'The domain Recovery Action will revalidate under the Attempt Fence; this presentation result does not authorize repair',
+      uiText('journal.repair.validation.status', { status: initial.status }),
+      uiText('journal.repair.validation.diagnostic', { error: quote(initial.error ?? uiText('journal.repair.validation.diagnosticNone')) }),
+      initialJournal.isDegraded
+        ? uiText('journal.repair.validation.journalDegraded', { count: initialJournal.corruptedLineCount })
+        : uiText('journal.repair.validation.journalHealthy'),
+      uiText('journal.repair.validation.journalRevision', { revision: initialJournal.revision }),
+      uiText('journal.repair.validation.eligibility', { eligibility: expected.journalEligibility }),
+      uiText('journal.repair.validation.domainGuard'),
     ],
   })) return void await decline();
   if (!await showTransactionStep(ctx, {
     ...model,
     step: 'Consent',
-    details: ['Repair State Confirmation remains a separate Default No decision'],
+    details: [uiText('journal.repair.consent.details')],
   })) return void await decline();
 
   const confirmed = await ui.confirm(
-    'Repair State Confirmation — 預設 No',
-    `執行 ${scope === 'global' ? 'Global' : 'Project'} Scope 的 State Repair？\n將在 Attempt Fence 保護下驗證 Bridge State，重建可辨識的 Receipt Journal，並解除相應的 Indeterminate/Degraded recovery chain。`,
+    uiText('journal.repair.consent.title'),
+    uiText('journal.repair.consent.body', {
+      scopeWord: scope === 'global' ? uiText('common.scope.word.global') : uiText('common.scope.word.project'),
+    }),
   );
   if (!confirmed) {
     return void await decline();
@@ -704,12 +735,12 @@ export async function runRepairStateFlow(
   if (!await showTransactionStep(ctx, {
     ...model,
     step: 'Plan',
-    details: ['Validate state readability/schema and atomically retain only verified Receipt lines; do not retry a lifecycle operation or roll state back'],
+    details: [uiText('journal.repair.plan.details')],
   })) return void await decline();
   if (!await showTransactionStep(ctx, {
     ...model,
     step: 'Commit',
-    details: ['The domain guard will acquire the scope Attempt Fence and append the resulting immutable Receipt'],
+    details: [uiText('journal.repair.commit.details')],
   })) return void await decline();
 
   const res = await repairBridgeState(scope, {

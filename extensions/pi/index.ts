@@ -41,6 +41,7 @@ import {
 } from './bridge-ledger.js';
 import { quoteTerminalText } from './terminal-presentation.js';
 import { renderTransactionSheet } from './transaction-sheet.js';
+import { uiText } from './ui-strings.js';
 
 const STARTUP_RECEIPT_THEME = {
   fg: (_color: string, text: string) => text,
@@ -119,6 +120,46 @@ function overrideTarget(intent: LedgerActionIntent): {
   return { targetKind: kind, targetId, expectedStateRevision };
 }
 
+/** Localized state summary for TUI surfaces (the non-TUI list/inspect output stays canonical English). */
+function formatLocalizedStateSummary(result: ReadResult, scope: 'global' | 'project'): string {
+  const scopeLabel = scope === 'project' ? uiText('common.scope.project') : uiText('common.scope.global');
+  if (result.status === 'missing') {
+    const s = result.state!;
+    return uiText('cmd.state.empty', {
+      scope: scopeLabel,
+      version: s.schemaVersion,
+      revision: s.stateRevision,
+    });
+  }
+  if (result.status === 'ok') {
+    const s = result.state!;
+    const regCount = s.registrations.length;
+    const instEnabled = s.installations.filter((i) => i.installationState === 'enabled').length;
+    const instDisabled = s.installations.filter((i) => i.installationState === 'disabled').length;
+    const base = uiText('cmd.state.ok', {
+      scope: scopeLabel,
+      revision: s.stateRevision,
+      registrations: regCount,
+      enabled: instEnabled,
+      disabled: instDisabled,
+    });
+    const ovPart = scope === 'project'
+      ? uiText('cmd.state.ok.overrides', { overrides: s.scopeOverrides.length })
+      : '';
+    return base + ovPart;
+  }
+  if (result.status === 'incompatible') {
+    return uiText('cmd.state.incompatible', {
+      scope: scopeLabel,
+      error: quoteTerminalText(result.error ?? uiText('common.unknown')),
+    });
+  }
+  return uiText('cmd.state.corrupted', {
+    scope: scopeLabel,
+    error: quoteTerminalText(result.error ?? uiText('common.unknown')),
+  });
+}
+
 /** Dispatches only by stable semantic identity; display labels never select behavior. */
 export async function dispatchLedgerAction(
   ctx: ExtensionCommandContext,
@@ -129,7 +170,7 @@ export async function dispatchLedgerAction(
       const global = readBridgeStateSync('global', { cwd: ctx.cwd });
       const project = readBridgeStateSync('project', { cwd: ctx.cwd });
       ctx.ui.notify(
-        `${formatStateSummary(global, 'Global Scope')}\n${formatStateSummary(project, 'Project Scope')}`,
+        `${formatLocalizedStateSummary(global, 'global')}\n${formatLocalizedStateSummary(project, 'project')}`,
         'info',
       );
       return;
@@ -267,7 +308,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand('codex-marketplace', {
-    description: 'Manage Codex Marketplaces in the Global / Project Bridge Ledger workspace',
+    description: uiText('cmd.description'),
     handler: async (args, ctx) => {
       const cwd = ctx.cwd;
 

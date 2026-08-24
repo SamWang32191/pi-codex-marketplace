@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import registerBridgeExtension from '../../extensions/pi/index.js';
+import { uiText } from '../../extensions/pi/ui-strings.js';
 import { commitBridgeState } from '../../src/bridge-state/store.js';
 import { appendReceipt } from '../../src/journal/journal.js';
 import { createReceipt } from '../../src/registration/receipt.js';
@@ -96,7 +97,7 @@ describe('/codex-marketplace Bridge Ledger command seam', () => {
       expect(screen).toMatch(/GLOBAL|\bG\b/);
       expect(screen).toMatch(/PROJECT|\bP\b/);
       expect(screen).toMatch(/rev(?:ision)?\s+"?0"?/i);
-      expect(screen).toMatch(/Project Trust.*(?:granted|trusted)/i);
+      expect(screen).toContain(uiText('ledger.rail.trust.granted'));
       expect(screen).toMatch(/Esc.*q|q.*Esc/i);
     }
   });
@@ -158,9 +159,9 @@ describe('/codex-marketplace Bridge Ledger command seam', () => {
     });
 
     expect(customCalls).toBe(2);
-    expect(screens[0]!.join('\n')).toMatch(/G rev "0"/);
-    expect(screens[1]!.join('\n')).toMatch(/G rev "1"/);
-    expect(screens[1]!.join('\n')).toMatch(/reg(?:istrations)? 1/);
+    expect(screens[0]!.join('\n')).toContain(uiText('ledger.rail.revision', { marker: 'G', revision: '"0"' }));
+    expect(screens[1]!.join('\n')).toContain(uiText('ledger.rail.revision', { marker: 'G', revision: '"1"' }));
+    expect(screens[1]!.join('\n')).toContain(uiText('ledger.rail.registrations', { count: 1 }));
   });
 
   it('keeps the Global Pending Barrier visible while disabling Project mutations', async () => {
@@ -214,12 +215,12 @@ describe('/codex-marketplace Bridge Ledger command seam', () => {
       },
     });
 
-    expect(screen).toMatch(/BARRIER ACTIVE/);
+    expect(screen).toContain(uiText('ledger.badge.barrierActive'));
     // Blocked Project mutation: availability is icon+word, and its reason is visible on selection.
-    expect(screen).toMatch(/○ Blocked Register local Marketplace/);
+    expect(screen).toContain(`○ ${uiText('ledger.availability.blocked')} ${uiText('ledger.action.register-local')}`);
     expect(screen).toMatch(/Global Pending Barrier/);
     expect(screen).not.toMatch(/\[available\]|\[Unavailable\]|disabled:/);
-    expect(screen).toMatch(/● Ready Register local Marketplace/);
+    expect(screen).toContain(`● ${uiText('ledger.availability.ready')} ${uiText('ledger.action.register-local')}`);
   });
 
   it.each([

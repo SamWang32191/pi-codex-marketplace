@@ -2,6 +2,11 @@
 
 All notable changes to `pi-codex-marketplace` are documented here. Format follows Keep a Changelog and SemVer (starting at `0.1.0`; Git tags `v*` mirror npm versions).
 
+## [Unreleased]
+
+### Added
+- **TUI 正體中文化** (#41)：新增集中式呈現字串模組 `extensions/pi/ui-strings.ts`（以穩定訊息 ID 索引的 zh_TW 字典，保留 locale 切換模組縫），`/codex-marketplace` TUI 全部使用者可見字串改由字串模組供應——分區名與描述、列標籤、按鍵提示、狀態列、確認與 consent 文案、help 全譯；Attempt Summary／Recovery Action／Verdict 封閉值以正典在前、中文釋義在後並列（如 `Blocked（受阻）`）；findings 於呈現邊界依 rule code 對應中文文案（rule code／classification／順序不變）；glossary 術語（Bridge State、Receipt Journal…）維持英文；CJK 雙寬字元於 120/80/60 欄寬度安全（無溢位、面板框線完整）；分派續用結構化 intent，顯示語言不影響任何行為。非 TUI 的 `list`/`inspect` 輸出依議題範圍維持原樣。
+
 ## [0.1.8] - 2026-08-24
 
 ### Added

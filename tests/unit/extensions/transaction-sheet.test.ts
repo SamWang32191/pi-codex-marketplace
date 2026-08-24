@@ -14,6 +14,7 @@ import {
   renderTransactionSheet,
   type TransactionSheetModel,
 } from '../../../extensions/pi/transaction-sheet.js';
+import { transactionStepLabel, uiText, verdictText } from '../../../extensions/pi/ui-strings.js';
 import type { AttemptReceipt, AttemptSummary } from '../../../src/registration/receipt.js';
 
 const identityTheme = {
@@ -67,13 +68,14 @@ describe('Transaction Sheet presentation', () => {
     const output = renderTransactionSheet(model, identityTheme, 80).join('\n');
     expect(TRANSACTION_STEPS).toEqual(['Intent', 'Validation', 'Consent', 'Plan', 'Commit', 'Receipt']);
 
-    const positions = TRANSACTION_STEPS.map((step, index) => output.indexOf(`${index + 1} ${step}`));
+    // Canonical step ids stay stable internally; presentation labels are zh_TW.
+    const positions = TRANSACTION_STEPS.map((step, index) => output.indexOf(`${index + 1} ${transactionStepLabel(step)}`));
     expect(positions.every((position) => position >= 0)).toBe(true);
     expect([...positions].sort((a, b) => a - b)).toEqual(positions);
-    expect(output).toContain('▸ 2 Validation ACTIVE');
-    expect(output).toContain('✓ 1 Intent');
-    expect(output).not.toContain('[1 Intent] ->');
-    expect(output).toContain('Authority: "[G] GLOBAL"');
+    expect(output).toContain(`▸ 2 ${transactionStepLabel('Validation')}（${uiText('step.activeSuffix')}）`);
+    expect(output).toContain(`✓ 1 ${transactionStepLabel('Intent')}`);
+    expect(output).not.toContain('[1 意圖] ->');
+    expect(output).toContain('授權範圍: "[G] Global Scope"');
     expect(output).toContain('State Revision: "18"');
     expect(output).toContain('Validation Snapshot: "snapshot-18"');
     expect(renderTransactionSheet(model, identityTheme, 80).every((line) => visibleWidth(line) <= 80)).toBe(true);
@@ -91,7 +93,7 @@ describe('Transaction Sheet presentation', () => {
       expect(lines[0]).toContain('┌─ Transaction Sheet');
       expect(lines.at(-1)).toContain('┘');
       expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
-      expect(lines.join('\n')).toContain('5 Commit ACTIVE');
+      expect(lines.join('\n')).toContain(`5 ${transactionStepLabel('Commit')}（${uiText('step.activeSuffix')}）`);
     }
   });
 
@@ -113,7 +115,7 @@ describe('Transaction Sheet presentation', () => {
       actionLabel: 'Lifecycle operation',
       receipt: { ...receipt(summary), recoveryActions: [] },
     }, spyingTheme, 60).join('\n');
-    expect(output).toContain(`Attempt Summary: "${summary}"`);
+    expect(output).toContain(`Attempt Summary: "${summary}"（`);
     expect(tokens).toContain(`tool${tone === 'success' ? 'Success' : tone === 'error' ? 'Error' : 'Pending'}Bg`);
     expect(renderTransactionSheet({
       step: 'Receipt',
@@ -147,12 +149,13 @@ describe('Transaction Sheet presentation', () => {
       receipt: receipt(),
     }, identityTheme, width);
 
-    const axisHeader = lines.find((line) => line.includes('Durable') && line.includes('Findings') && line.includes('Runtime'));
+    const axisHeader = lines.find((line) => line.includes(uiText('sheet.axis.durable')) && line.includes(uiText('sheet.axis.findings')) && line.includes(uiText('sheet.axis.runtime')));
     expect(axisHeader).toBeDefined();
-    expect(axisHeader!.indexOf('Durable')).toBeLessThan(axisHeader!.indexOf('Findings'));
-    expect(axisHeader!.indexOf('Findings')).toBeLessThan(axisHeader!.indexOf('Runtime'));
+    expect(axisHeader!.indexOf(uiText('sheet.axis.durable'))).toBeLessThan(axisHeader!.indexOf(uiText('sheet.axis.findings')));
+    expect(axisHeader!.indexOf(uiText('sheet.axis.findings'))).toBeLessThan(axisHeader!.indexOf(uiText('sheet.axis.runtime')));
     expect(lines.join('\n')).toContain('Attempt Summary: "Pending Application"');
-    expect(lines.join('\n')).toContain('Recovery Actions: "Retry Application", "Inspect"');
+    expect(lines.join('\n')).toContain('"Retry Application"（重試運行時套用）');
+    expect(lines.join('\n')).toContain('"Inspect"（檢視）');
     expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
   });
 
@@ -166,8 +169,9 @@ describe('Transaction Sheet presentation', () => {
       receipt: receipt(),
     }, identityTheme, 60);
     const axisLines = lines.map((line) => stripTerminalSequences(line));
-    const positions = ['Durable', 'Findings', 'Runtime'].map((header) =>
-      axisLines.findIndex((line) => line.trim().startsWith(`│ ${header}`) || line.trim() === header));
+    const headers = [uiText('sheet.axis.durable'), uiText('sheet.axis.findings'), uiText('sheet.axis.runtime')];
+    const positions = headers.map((header) =>
+      axisLines.findIndex((line) => line.includes(header)));
     expect(positions.every((position) => position >= 0)).toBe(true);
     expect([...positions].sort((a, b) => a - b)).toEqual(positions);
     expect(lines.every((line) => visibleWidth(line) <= 60)).toBe(true);
@@ -214,7 +218,7 @@ describe('Transaction Sheet presentation', () => {
       receipt: { ...receipt(summary), recoveryActions: [] },
     }, identityTheme, 60).join('\n');
     expect(output).toContain(`Attempt Summary: "${summary}"`);
-    expect(output).toContain('Recovery Actions: none');
+    expect(output).toContain(`${uiText('sheet.recoveryActions')}: ${uiText('common.none')}`);
   });
 
   it.each([120, 80, 60])('prevents malicious terminal text from forging rows or exceeding width %i', (width) => {
@@ -268,7 +272,7 @@ describe('Transaction Sheet presentation', () => {
     component.handleInput(input);
     component.handleInput(input);
     expect(results).toEqual([expected]);
-    expect(component.render(60).some((line) => line.includes('Intent ACTIVE'))).toBe(true);
+    expect(component.render(60).some((line) => line.includes(`1 ${transactionStepLabel('Intent')}`))).toBe(true);
   });
 
   it('starts Validation with verdict/counts and toggles the full disclosure with d', () => {
@@ -280,8 +284,8 @@ describe('Transaction Sheet presentation', () => {
         actionLabel: 'Inspect candidate',
         details: [
           'Source /marketplace',
-          'Verdict Passed with diagnostics',
-          'Findings 0 blocking · 1 warning · 0 notice',
+          `${uiText('verdict.label')}：${verdictText('Blocked')}`,
+          `${uiText('findings.count.label')}：${uiText('findings.count.line', { blocking: 0, warning: 1, notice: 0 })}`,
           'FULL-DISCLOSURE-TAIL',
         ],
       },
@@ -292,17 +296,16 @@ describe('Transaction Sheet presentation', () => {
     );
 
     const collapsed = component.render(60).join('\n');
-    expect(collapsed).toContain('Verdict Passed with diagnostics');
-    expect(collapsed).toContain('Findings 0 blocking');
-    expect(collapsed).toContain('press d to expand');
+    expect(collapsed).toContain(`${uiText('verdict.label')}：${verdictText('Blocked')}`);
+    expect(collapsed).toContain(uiText('findings.count.line', { blocking: 0, warning: 1, notice: 0 }));
+    expect(collapsed).toContain(uiText('sheet.disclosure.collapsed', { count: 4 }).split('；')[0]!);
     expect(collapsed).not.toContain('FULL-DISCLOSURE-TAIL');
 
     component.handleInput('d');
     const expanded = component.render(60).join('\n');
     expect(expanded).toContain('FULL-DISCLOSURE-TAIL');
     // At 60 columns the hint may wrap inside the panel frame; both fragments must survive.
-    expect(expanded).toMatch(/press d to/);
-    expect(expanded).toMatch(/collapse/);
+    expect(expanded).toContain(uiText('sheet.disclosure.expanded'));
     expect(results).toEqual([]);
     expect(renderRequests).toBe(1);
   });
@@ -327,7 +330,7 @@ describe('Transaction Sheet presentation', () => {
     );
 
     expect(result).toBe(expected);
-    expect(rendered.some((line) => line.includes('Consent ACTIVE'))).toBe(true);
+    expect(rendered.some((line) => line.includes(transactionStepLabel('Consent')))).toBe(true);
   });
 
   it('uses escaped notification text and continues when custom TUI is unavailable', async () => {

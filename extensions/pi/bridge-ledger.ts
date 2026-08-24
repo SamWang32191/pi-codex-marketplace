@@ -40,6 +40,7 @@ import {
   renderSelectableRow,
   renderSideBySidePanels,
 } from './terminal-presentation.js';
+import { attemptSummaryText, findingOutcomeText, uiText } from './ui-strings.js';
 
 export type LedgerSectionId =
   | 'observe'
@@ -286,14 +287,16 @@ function rail(scope: Scope, result: ReadResult, projectTrusted: boolean): Ledger
       ? 'indeterminate'
       : 'healthy';
   const healthText = health === 'healthy'
-    ? result.status === 'missing' ? 'Healthy (empty initial state)' : 'Healthy'
+    ? result.status === 'missing'
+      ? uiText('ledger.rail.health.healthyEmpty')
+      : uiText('ledger.rail.health.healthy')
     : health === 'incompatible'
-      ? `Incompatible: ${result.error ?? 'unknown schema'}`
-      : `Persistence Indeterminate: ${result.error ?? 'unreadable Bridge State'}`;
+      ? uiText('ledger.rail.health.incompatible', { error: result.error ?? uiText('common.unknown') })
+      : uiText('ledger.rail.health.indeterminate', { error: result.error ?? uiText('common.unknown') });
   return {
     scope,
-    label: scope === 'global' ? 'Global Scope' : 'Project Scope',
-    revision: state?.stateRevision ?? 'unavailable',
+    label: scope === 'global' ? uiText('common.scope.global') : uiText('common.scope.project'),
+    revision: state?.stateRevision ?? uiText('ledger.revision.unavailable'),
     registrationCount: state?.registrations.length ?? 0,
     installationEnabledCount:
       state?.installations.filter((item) => item.installationState === 'enabled').length ?? 0,
@@ -303,8 +306,8 @@ function rail(scope: Scope, result: ReadResult, projectTrusted: boolean): Ledger
     health,
     healthText,
     trustText: scope === 'global'
-      ? 'Project Trust: not applicable'
-      : projectTrusted ? 'Project Trust: granted' : 'Project Trust: not granted',
+      ? uiText('ledger.rail.trust.notApplicable')
+      : projectTrusted ? uiText('ledger.rail.trust.granted') : uiText('ledger.rail.trust.notGranted'),
   };
 }
 
@@ -316,14 +319,15 @@ function availability(
   if (intent.scope === 'project' && snapshot.barrier.active) {
     return {
       enabled: false,
-      disabledReason: `Global Pending Barrier: ${snapshot.barrier.reason ?? 'global recovery is required'}; ` +
-        'open Recovery & receipts and complete an eligible Global Recovery Action',
+      disabledReason: uiText('ledger.disabledReason.barrier', {
+        reason: snapshot.barrier.reason ?? uiText('ledger.barrier.defaultReason'),
+      }),
     };
   }
   if (intent.scope === 'project' && !snapshot.projectTrusted) {
     return {
       enabled: false,
-      disabledReason: 'Project Trust is not granted; Project Scope mutation is unavailable',
+      disabledReason: uiText('ledger.disabledReason.trust'),
     };
   }
   const authority = intent.scope === 'global' ? snapshot.global : snapshot.project;
@@ -334,7 +338,7 @@ function availability(
     if (!chain?.receipts[0]?.validationSnapshot) {
       return {
         enabled: false,
-        disabledReason: 'Pending Application has no bound Validation Snapshot; start a fresh validated Lifecycle Intent instead of replaying it',
+        disabledReason: uiText('ledger.disabledReason.retryNoSnapshot'),
       };
     }
   }
@@ -343,7 +347,9 @@ function availability(
     if (authority.status === 'incompatible') {
       return {
         enabled: false,
-        disabledReason: `Bridge State schema is incompatible: ${authority.error ?? 'unknown schema'}; update the Bridge Package`,
+        disabledReason: uiText('ledger.disabledReason.incompatible', {
+          error: authority.error ?? uiText('common.unknown'),
+        }),
       };
     }
     if (snapshot.journals[intent.scope].isDegraded) return { enabled: true };
@@ -353,52 +359,56 @@ function availability(
     if (repairable) return { enabled: true };
     const activeConditions = snapshot.journals[intent.scope].activeChains.map((chain) =>
       chain.condition === 'pending-application'
-        ? 'Pending Application'
+        ? uiText('ledger.condition.pending-application')
         : chain.condition === 'persistence-failed'
-          ? 'Persistence Failed'
+          ? uiText('ledger.condition.persistence-failed')
           : chain.condition,
     );
     return {
       enabled: false,
       disabledReason: activeConditions.length > 0
-        ? `State Repair is not eligible for ${activeConditions.join(', ')}; use the exact declared Recovery Action`
-        : 'State Repair has no eligible Persistence Indeterminate recovery chain or unreadable state',
+        ? uiText('ledger.disabledReason.repairIneligible', { conditions: activeConditions.join(', ') })
+        : uiText('ledger.disabledReason.repairNothing'),
     };
   }
   if (authority.status === 'incompatible') {
     return {
       enabled: false,
-      disabledReason: `Bridge State is incompatible: ${authority.error ?? 'unknown schema'}; update the Bridge Package before mutation`,
+      disabledReason: uiText('ledger.disabledReason.incompatibleMutation', {
+        error: authority.error ?? uiText('common.unknown'),
+      }),
     };
   }
   if (authority.status === 'corrupted') {
     return {
       enabled: false,
-      disabledReason: `Persistence Indeterminate: ${authority.error ?? 'Bridge State is unreadable'}; use Repair State`,
+      disabledReason: uiText('ledger.disabledReason.corrupted', {
+        error: authority.error ?? uiText('ledger.disabledReason.corruptState'),
+      }),
     };
   }
   return { enabled: true };
 }
 
 const ACTION_LABELS: Record<LedgerActionId, string> = {
-  'observe-partitions': 'Inspect authority partitions',
-  'observe-effective-state': 'Inspect Effective State and Projected Skills',
-  'register-local': 'Register local Marketplace',
-  'register-git': 'Register Git Marketplace',
-  'refresh-registration': 'Refresh Marketplace',
-  'rebind-registration': 'Rebind Registration',
-  'remove-registration': 'Remove Registration',
-  'install-disabled': 'Install Disabled',
-  'install-and-enable': 'Install and Enable',
-  'enable-installation': 'Enable Installation',
-  'disable-installation': 'Disable Installation',
-  'remove-installation': 'Remove Installation',
-  'create-scope-override': 'Create Scope Override',
-  'remove-scope-override': 'Remove Scope Override',
-  'view-receipt-journal': 'View Receipt Journal',
-  'repair-state': 'Repair Bridge State',
-  'retry-application': 'Retry Runtime Application',
-  'inspect-receipt': 'Inspect Attempt Receipt',
+  'observe-partitions': uiText('ledger.action.observe-partitions'),
+  'observe-effective-state': uiText('ledger.action.observe-effective-state'),
+  'register-local': uiText('ledger.action.register-local'),
+  'register-git': uiText('ledger.action.register-git'),
+  'refresh-registration': uiText('ledger.action.refresh-registration'),
+  'rebind-registration': uiText('ledger.action.rebind-registration'),
+  'remove-registration': uiText('ledger.action.remove-registration'),
+  'install-disabled': uiText('ledger.action.install-disabled'),
+  'install-and-enable': uiText('ledger.action.install-and-enable'),
+  'enable-installation': uiText('ledger.action.enable-installation'),
+  'disable-installation': uiText('ledger.action.disable-installation'),
+  'remove-installation': uiText('ledger.action.remove-installation'),
+  'create-scope-override': uiText('ledger.action.create-scope-override'),
+  'remove-scope-override': uiText('ledger.action.remove-scope-override'),
+  'view-receipt-journal': uiText('ledger.action.view-receipt-journal'),
+  'repair-state': uiText('ledger.action.repair-state'),
+  'retry-application': uiText('ledger.action.retry-application'),
+  'inspect-receipt': uiText('ledger.action.inspect-receipt'),
 };
 
 function action(snapshot: BridgeLedgerSnapshot, intent: LedgerActionIntent): LedgerActionRow {
@@ -432,7 +442,9 @@ function scopeRegistrationRows(
 ): LedgerObjectRow[] {
   const createRow: LedgerObjectRow = {
     id: `registration-create:${scope}`,
-    label: `${scope === 'global' ? 'Global' : 'Project'} registration actions`,
+    label: uiText('ledger.row.registrationActions', {
+      scopeWord: scope === 'global' ? uiText('common.scope.word.global') : uiText('common.scope.word.project'),
+    }),
     scope,
     targetKind: 'scope',
     targetId: scope,
@@ -444,7 +456,7 @@ function scopeRegistrationRows(
   const records = (state?.registrations ?? []).map((registration): LedgerObjectRow => ({
     id: `registration:${scope}:${registration.id}`,
     label: registrationName(registration),
-    detail: `${registration.sourceKind ?? 'unknown source'} · ${registration.source ?? '(source unavailable)'}`,
+    detail: `${registration.sourceKind ?? uiText('ledger.row.registration.sourceUnknown')} · ${registration.source ?? uiText('ledger.row.registration.sourceUnavailable')}`,
     scope,
     targetKind: 'registration',
     targetId: registration.id,
@@ -466,13 +478,13 @@ function pluginRows(
     if (!('marketplaceEntryId' in entry)) {
       const findings = entry.findings.length > 0
         ? entry.findings.map((finding) =>
-            `${finding.code} · ${finding.rule} · ${finding.outcome}`,
+            `${finding.code} · ${finding.rule} · ${findingOutcomeText(finding)}`,
           ).join('; ')
-        : 'no Marketplace Entries were reported';
+        : uiText('ledger.row.diagnostic.noEntries');
       return {
         id: `marketplace-diagnostic:${scope}:${entry.registrationId}`,
         label: entry.name,
-        detail: `Unavailable · ${findings}`,
+        detail: uiText('ledger.row.diagnostic.unavailable', { findings }),
         scope,
         targetKind: 'registration',
         targetId: entry.registrationId,
@@ -487,15 +499,21 @@ function pluginRows(
         installation.pluginId === compatiblePluginId);
     const skillDetail = entry.plugin?.skills.length
       ? entry.plugin.skills.map((skill) =>
-          `${skill.name} ${skill.invocationPolicy} resources ${skill.resources.length > 0 ? skill.resources.join(', ') : 'none'}`,
+          uiText('ledger.row.skills.resources', {
+            name: skill.name,
+            policy: skill.invocationPolicy,
+            resources: skill.resources.length > 0 ? skill.resources.join(', ') : uiText('ledger.row.skills.noResources'),
+          }),
         ).join('; ')
-      : 'skills none';
+      : uiText('ledger.row.skills.none');
     const unavailableReason = installed
-      ? 'this Marketplace Entry already has a scope-local Installation'
+      ? uiText('ledger.row.install.alreadyInstalled')
       : entry.unavailableReason
         ?? (entry.classification === 'compatible' && !entry.validationSnapshot
-          ? 'Validation Snapshot is unavailable; reopen Plugins after source inspection'
-          : entry.classification === 'compatible' ? undefined : `${entry.classification} Marketplace Entry`);
+          ? uiText('ledger.row.install.snapshotMissing')
+          : entry.classification === 'compatible'
+            ? undefined
+            : uiText('ledger.row.install.classification', { classification: entry.classification }));
     const installAction = (
       actionId: 'install-disabled' | 'install-and-enable',
       desiredInstallationState: 'disabled' | 'enabled',
@@ -560,7 +578,7 @@ function createOverrideRow(
   return {
     id: `inherited:${kind}:${targetId}`,
     label,
-    detail: `Inherited Global ${kind} · canonical target ${targetId}`,
+    detail: uiText('ledger.row.override.inherited', { kind, targetId }),
     scope: 'global',
     targetKind: kind,
     targetId,
@@ -600,8 +618,8 @@ function overrideRows(
     const canonicalOverrideId = `${override.kind}/${override.targetId}`;
     return {
       id: `scope-override:${canonicalOverrideId}`,
-      label: `${override.kind} override`,
-      detail: `Suppresses inherited ${override.targetId}`,
+      label: uiText('ledger.row.override.label', { kind: override.kind }),
+      detail: uiText('ledger.row.override.suppresses', { targetId: override.targetId }),
       scope: 'project',
       targetKind: 'scope-override',
       targetId: canonicalOverrideId,
@@ -622,7 +640,7 @@ function overrideRows(
 function receiptRow(receipt: AttemptReceipt, snapshot: BridgeLedgerSnapshot): LedgerObjectRow {
   return {
     id: `receipt:${receipt.scope}:${receipt.id}`,
-    label: `${receipt.summary} · ${receipt.operation}`,
+    label: `${attemptSummaryText(receipt.summary)} · ${receipt.operation}`,
     detail: `${receipt.createdAt} · ${receipt.id}`,
     scope: receipt.scope,
     targetKind: 'receipt',
@@ -639,8 +657,13 @@ function retryApplicationRows(snapshot: BridgeLedgerSnapshot): LedgerObjectRow[]
       .filter((chain) => chain.condition === 'pending-application')
       .map((chain): LedgerObjectRow => ({
         id: `retry-application:${scope}:${chain.rootReceiptId}`,
-        label: `${scope === 'global' ? 'Global' : 'Project'} Pending Application`,
-        detail: `Active recovery chain ${chain.rootReceiptId} · revision ${chain.stateRevision}`,
+        label: uiText('ledger.row.retry.label', {
+          scopeWord: scope === 'global' ? uiText('common.scope.word.global') : uiText('common.scope.word.project'),
+        }),
+        detail: uiText('ledger.row.retry.detail', {
+          receiptId: chain.rootReceiptId,
+          revision: chain.stateRevision,
+        }),
         scope,
         targetKind: 'receipt',
         targetId: chain.rootReceiptId,
@@ -661,30 +684,35 @@ export function buildBridgeLedgerModel(snapshot: BridgeLedgerSnapshot): BridgeLe
   const effective = snapshot.effective;
   const observe: LedgerSection = {
     id: 'observe',
-    label: 'Observe',
-    description: 'Inspect authoritative partitions and the derived Effective State',
+    label: uiText('ledger.section.observe.label'),
+    description: uiText('ledger.section.observe.description'),
     rows: [
       {
         id: 'observe:partitions',
-        label: 'Global / Project authority partitions',
-        detail: `Global revision ${snapshot.global.state?.stateRevision ?? 'unavailable'} · ` +
-          `Project revision ${snapshot.project.state?.stateRevision ?? 'unavailable'}`,
+        label: uiText('ledger.row.observe.partitions'),
+        detail: uiText('ledger.row.observe.partitionsDetail', {
+          global: snapshot.global.state?.stateRevision ?? uiText('ledger.revision.unavailable'),
+          project: snapshot.project.state?.stateRevision ?? uiText('ledger.revision.unavailable'),
+        }),
         actions: [action(snapshot, { actionId: 'observe-partitions', mode: 'read' })],
       },
       {
         id: 'observe:effective',
-        label: 'Effective State and Projected Skills',
-        detail: `registrations ${effective?.registrations.length ?? 0} · ` +
-          `installations ${effective?.installations.length ?? 0} · ` +
-          `suppressed ${effective?.suppressed.length ?? 0} · excluded ${effective?.excluded.length ?? 0}`,
+        label: uiText('ledger.row.observe.effective'),
+        detail: uiText('ledger.row.observe.effectiveDetail', {
+          registrations: effective?.registrations.length ?? 0,
+          installations: effective?.installations.length ?? 0,
+          suppressed: effective?.suppressed.length ?? 0,
+          excluded: effective?.excluded.length ?? 0,
+        }),
         actions: [action(snapshot, { actionId: 'observe-effective-state', mode: 'read' })],
       },
     ],
   };
   const sources: LedgerSection = {
     id: 'sources',
-    label: 'Sources',
-    description: 'Marketplace Registrations and source lifecycle actions',
+    label: uiText('ledger.section.sources.label'),
+    description: uiText('ledger.section.sources.description'),
     rows: [
       ...scopeRegistrationRows('global', globalState, snapshot),
       ...scopeRegistrationRows('project', projectState, snapshot),
@@ -693,8 +721,8 @@ export function buildBridgeLedgerModel(snapshot: BridgeLedgerSnapshot): BridgeLe
   let pluginRowCache: LedgerObjectRow[] | undefined;
   const plugins: LedgerSection = {
     id: 'plugins',
-    label: 'Plugins',
-    description: 'Compatible candidates and scope-local Installation state',
+    label: uiText('ledger.section.plugins.label'),
+    description: uiText('ledger.section.plugins.description'),
     get rows() {
       pluginRowCache ??= [
         ...pluginRows('global', globalState, snapshot),
@@ -705,22 +733,26 @@ export function buildBridgeLedgerModel(snapshot: BridgeLedgerSnapshot): BridgeLe
   };
   const inheritance: LedgerSection = {
     id: 'scope-inheritance',
-    label: 'Scope & inheritance',
-    description: 'Project Scope overrides suppress inherited Global records without mutating them',
+    label: uiText('ledger.section.scope-inheritance.label'),
+    description: uiText('ledger.section.scope-inheritance.description'),
     rows: overrideRows(globalState, projectState, snapshot),
   };
   const recovery: LedgerSection = {
     id: 'recovery-receipts',
-    label: 'Recovery & receipts',
-    description: 'Non-authoritative Attempt Receipt history and explicit State Repair',
+    label: uiText('ledger.section.recovery-receipts.label'),
+    description: uiText('ledger.section.recovery-receipts.description'),
     rows: [
       ...(['global', 'project'] as const).flatMap((scope): LedgerObjectRow[] => [
         {
           id: `journal:${scope}`,
-          label: `${scope === 'global' ? 'Global' : 'Project'} Receipt Journal`,
-          detail: `${snapshot.journals[scope].receipts.length} receipts · ` +
-            `${snapshot.journals[scope].activeChains.length} active recovery chains · ` +
-            `degraded ${snapshot.journals[scope].isDegraded ? 'yes' : 'no'}`,
+          label: uiText('ledger.row.journal.label', {
+            scopeWord: scope === 'global' ? uiText('common.scope.word.global') : uiText('common.scope.word.project'),
+          }),
+          detail: uiText('ledger.row.journal.detail', {
+            receipts: snapshot.journals[scope].receipts.length,
+            chains: snapshot.journals[scope].activeChains.length,
+            degraded: snapshot.journals[scope].isDegraded ? uiText('common.yes') : uiText('common.no'),
+          }),
           scope,
           targetKind: 'scope',
           targetId: scope,
@@ -728,7 +760,9 @@ export function buildBridgeLedgerModel(snapshot: BridgeLedgerSnapshot): BridgeLe
         },
         {
           id: `repair:${scope}`,
-          label: `${scope === 'global' ? 'Global' : 'Project'} State Repair`,
+          label: uiText('ledger.row.repair.label', {
+            scopeWord: scope === 'global' ? uiText('common.scope.word.global') : uiText('common.scope.word.project'),
+          }),
           scope,
           targetKind: 'scope',
           targetId: scope,
@@ -750,8 +784,8 @@ export function buildBridgeLedgerModel(snapshot: BridgeLedgerSnapshot): BridgeLe
     barrier: {
       active: snapshot.barrier.active,
       text: snapshot.barrier.active
-        ? snapshot.barrier.reason ?? 'global recovery is required'
-        : 'Clear',
+        ? snapshot.barrier.reason ?? uiText('ledger.barrier.defaultReason')
+        : uiText('ledger.barrier.clear'),
     },
     effective: {
       registrationCount: effective?.registrations.length ?? 0,
@@ -769,15 +803,15 @@ export function buildBridgeLedgerModel(snapshot: BridgeLedgerSnapshot): BridgeLe
 /** Widths at or above this breakpoint render the two-column panel workspace. */
 const WIDE_WORKSPACE_WIDTH = 96;
 
-const HEALTH_BADGES: Record<LedgerHealth, { tone: 'success' | 'warning' | 'error'; label: string }> = {
-  healthy: { tone: 'success', label: 'HEALTHY' },
-  incompatible: { tone: 'error', label: 'INCOMPATIBLE' },
-  indeterminate: { tone: 'warning', label: 'INDETERMINATE' },
+const HEALTH_BADGES: Record<LedgerHealth, { tone: 'success' | 'warning' | 'error'; labelId: Parameters<typeof uiText>[0] }> = {
+  healthy: { tone: 'success', labelId: 'ledger.badge.healthy' },
+  incompatible: { tone: 'error', labelId: 'ledger.badge.incompatible' },
+  indeterminate: { tone: 'warning', labelId: 'ledger.badge.indeterminate' },
 };
 
 const AVAILABILITY = {
-  ready: { icon: '\u25cf', token: 'success', word: 'Ready' },
-  blocked: { icon: '\u25cb', token: 'warning', word: 'Blocked' },
+  ready: { icon: '\u25cf', token: 'success', word: uiText('ledger.availability.ready') },
+  blocked: { icon: '\u25cb', token: 'warning', word: uiText('ledger.availability.blocked') },
 } as const;
 
 export class BridgeLedgerComponent implements Component {
@@ -910,7 +944,7 @@ export class BridgeLedgerComponent implements Component {
     ];
     if (this.helpVisible) {
       out.push(...renderPanel(this.theme, {
-        title: 'Help',
+        title: uiText('ledger.panel.help'),
         lines: this.helpLines().map((line) => this.fit(line, Math.max(1, this.lastWidth - 3), 'text')),
         width: this.lastWidth,
       }));
@@ -990,16 +1024,16 @@ export class BridgeLedgerComponent implements Component {
 
   private railBadge(scope: Scope): string {
     const rail = scope === 'global' ? this.model.rails.global : this.model.rails.project;
-    const badges = [renderBadge(this.theme, HEALTH_BADGES[rail.health].tone, HEALTH_BADGES[rail.health].label)];
+    const badges = [renderBadge(this.theme, HEALTH_BADGES[rail.health].tone, uiText(HEALTH_BADGES[rail.health].labelId))];
     if (scope === 'project') {
       badges.push(renderBadge(
         this.theme,
         this.model.projectTrusted ? 'success' : 'warning',
-        this.model.projectTrusted ? 'TRUST GRANTED' : 'NO PROJECT TRUST',
+        this.model.projectTrusted ? uiText('ledger.badge.trustGranted') : uiText('ledger.badge.noTrust'),
       ));
     } else {
       badges.push(renderBadge(this.theme, this.model.barrier.active ? 'error' : 'success',
-        this.model.barrier.active ? 'BARRIER ACTIVE' : 'BARRIER CLEAR'));
+        this.model.barrier.active ? uiText('ledger.badge.barrierActive') : uiText('ledger.badge.barrierClear')));
     }
     return badges.join(' ');
   }
@@ -1010,15 +1044,21 @@ export class BridgeLedgerComponent implements Component {
     const fitDim = (text: string): string => this.fit(text, width, 'dim');
     const lines = [
       this.railBadge(scope),
-      `${marker} rev ${quoteTerminalText(rail.revision)}`,
-      `registrations ${rail.registrationCount}`,
-      `installations ${rail.installationEnabledCount} enabled / ${rail.installationDisabledCount} disabled`,
+      uiText('ledger.rail.revision', { marker, revision: quoteTerminalText(rail.revision) }),
+      uiText('ledger.rail.registrations', { count: rail.registrationCount }),
+      uiText('ledger.rail.installations', {
+        enabled: rail.installationEnabledCount,
+        disabled: rail.installationDisabledCount,
+      }),
     ];
-    if (scope === 'project') lines.push(`overrides ${rail.overrideCount}`);
+    if (scope === 'project') lines.push(uiText('ledger.rail.overrides', { count: rail.overrideCount }));
     if (rail.health !== 'healthy') lines.push(fitDim(quoteTerminalText(rail.healthText)));
     if (scope === 'project') lines.push(fitDim(rail.trustText));
     if (scope === 'global' && this.model.barrier.active) {
-      lines.push(this.fit(`\u21b3 Barrier reason: ${quoteTerminalText(this.model.barrier.text)}`, width, 'warning'));
+      lines.push(this.fit(
+        uiText('ledger.rail.barrierReason', { reason: quoteTerminalText(this.model.barrier.text) }),
+        width, 'warning',
+      ));
     }
     return lines;
   }
@@ -1040,7 +1080,7 @@ export class BridgeLedgerComponent implements Component {
     const section = this.currentSection();
     return renderSideBySidePanels(this.theme, {
       left: {
-        title: 'Navigation',
+        title: uiText('ledger.panel.navigation'),
         lines: this.sectionNavLines(navWidth - 3),
         width: navWidth,
         borderToken: 'borderMuted',
@@ -1062,7 +1102,7 @@ export class BridgeLedgerComponent implements Component {
   private drilldownWorkspace(width: number): string[] {
     if (!this.sectionDetail) {
       return renderPanel(this.theme, {
-        title: 'Sections',
+        title: uiText('ledger.panel.sections'),
         lines: this.sectionNavLines(Math.max(1, width - 3)),
         width,
         borderToken: 'borderAccent',
@@ -1090,14 +1130,14 @@ export class BridgeLedgerComponent implements Component {
    */
   private actionEntryLines(width: number): string[] {
     const rows = this.visibleRows();
-    if (rows.length === 0) return [this.fit('No rows in this section', width, 'muted')];
+    if (rows.length === 0) return [this.fit(uiText('ledger.rows.empty'), width, 'muted')];
     let actionIndex = 0;
     const lines: string[] = [];
     for (const row of rows) {
       if (row.actions.length === 0) {
         lines.push(
-          this.fit(`${AVAILABILITY.blocked.icon} Unavailable \u00b7 ${quoteTerminalText(row.label)}`, width, 'warning'),
-          this.fit(`   ${quoteTerminalText(row.detail ?? '(no findings reported)')}`, width, 'dim'),
+          this.fit(`${AVAILABILITY.blocked.icon} ${uiText('ledger.entry.unavailableRow', { label: quoteTerminalText(row.label) })}`, width, 'warning'),
+          this.fit(`   ${quoteTerminalText(row.detail ?? uiText('ledger.entry.noFindings'))}`, width, 'dim'),
         );
         continue;
       }
@@ -1112,18 +1152,20 @@ export class BridgeLedgerComponent implements Component {
         if (!selected) continue;
         if (!action.enabled) {
           lines.push(...this.wrapContext(
-            `\u21b3 Blocked: ${quoteTerminalText(action.disabledReason ?? 'unavailable')}`,
+            `\u21b3 ${uiText('ledger.entry.blocked', { reason: quoteTerminalText(action.disabledReason ?? uiText('common.unavailable')) })}`,
             width, 'warning', 4));
         }
         if (this.metadataExpanded) {
           const intent = action.intent;
           const meta = [
-            `target ${intent.targetKind ?? row.targetKind ?? 'none'} ` +
-              quoteTerminalText(intent.targetId ?? row.targetId ?? '(none)'),
-            `scope ${intent.scope ?? row.scope ?? 'none'}`,
-            `mode ${intent.mode}`,
+            uiText('ledger.meta.target', {
+              kind: intent.targetKind ?? row.targetKind ?? uiText('common.none'),
+              target: quoteTerminalText(intent.targetId ?? row.targetId ?? uiText('common.none')),
+            }),
+            uiText('ledger.meta.scope', { scope: intent.scope ?? row.scope ?? uiText('common.none') }),
+            uiText('ledger.meta.mode', { mode: intent.mode }),
           ];
-          if (row.detail !== undefined) meta.push(`detail ${quoteTerminalText(row.detail)}`);
+          if (row.detail !== undefined) meta.push(uiText('ledger.meta.detail', { detail: quoteTerminalText(row.detail) }));
           lines.push(...meta.flatMap((entry) => this.wrapContext(`  ${entry}`, width, 'muted', 4)));
         }
       }
@@ -1138,12 +1180,12 @@ export class BridgeLedgerComponent implements Component {
 
   private helpLines(): string[] {
     return [
-      'Up/Down or j/k: move selection',
-      'Left/Right: change section (wide layout) or drill down',
-      'Enter: open section or activate available structured action',
-      'i: expand or collapse the selected entry metadata',
-      'g/p: browse Global/Project only; mutation authority remains explicit',
-      'Esc: back/cancel | q or Ctrl-C: exit | ?: close help',
+      uiText('ledger.help.move'),
+      uiText('ledger.help.sections'),
+      uiText('ledger.help.enter'),
+      uiText('ledger.help.metadata'),
+      uiText('ledger.help.browse'),
+      uiText('ledger.help.close'),
     ];
   }
 
@@ -1167,15 +1209,21 @@ export class BridgeLedgerComponent implements Component {
 
   private statusText(): string {
     const section = this.currentSection();
-    const pane = this.lastWidth >= WIDE_WORKSPACE_WIDTH || this.sectionDetail ? 'actions' : 'sections';
-    return `Status: browsing ${this.browseFocus === 'global' ? 'G' : 'P'} | ${section.label} | ${pane}`;
+    const pane = this.lastWidth >= WIDE_WORKSPACE_WIDTH || this.sectionDetail
+      ? uiText('ledger.status.pane.actions')
+      : uiText('ledger.status.pane.sections');
+    return uiText('ledger.status.browsing', {
+      marker: this.browseFocus === 'global' ? 'G' : 'P',
+      section: section.label,
+      pane,
+    });
   }
 
   private keyHints(): string {
-    if (this.helpVisible) return 'Keys: ?/Esc close help | q/Ctrl-C exit | Esc/q cancel context';
+    if (this.helpVisible) return uiText('ledger.keys.help');
     if (this.lastWidth < WIDE_WORKSPACE_WIDTH && !this.sectionDetail) {
-      return 'Keys: Esc/q cancel | Enter drill down | j/k move | g/p | ? help';
+      return uiText('ledger.keys.drilldown');
     }
-    return 'Keys: Esc/q cancel | Enter activate | j/k or arrows move | i details | g/p browse | ? help';
+    return uiText('ledger.keys.wide');
   }
 }

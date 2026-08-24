@@ -9,6 +9,9 @@ import { declinePluginDisable, preflightPluginDisable } from '../../../src/insta
 import { inspectMarketplaceEntries } from '../../../src/installation/inspection.js';
 import { appendReceipt, readReceiptJournal } from '../../../src/journal/journal.js';
 import { dispatchLedgerAction, formatStartupReceipt } from '../../../extensions/pi/index.js';
+import { TRANSACTION_STEPS } from '../../../extensions/pi/transaction-sheet.js';
+import { transactionStepLabel, uiText, verdictText, findingOutcomeText } from '../../../extensions/pi/ui-strings.js';
+import { quoteTerminalText } from '../../../extensions/pi/terminal-presentation.js';
 import {
   fullValidationDisclosureLines,
   reportOutcome,
@@ -31,7 +34,8 @@ function sheetCustom(
   return async (factory: any): Promise<unknown> => new Promise((resolve) => {
     const component = factory({}, theme, {}, resolve);
     const rendered = component.render(120).join('\n');
-    const active = rendered.match(/\b(Intent|Validation|Consent|Plan|Commit|Receipt) ACTIVE\b/)?.[1];
+    const active = TRANSACTION_STEPS.find((step, index) =>
+      rendered.includes(`▸ ${index + 1} ${transactionStepLabel(step)}（${uiText('step.activeSuffix')}）`));
     if (active) events.push(active);
     component.handleInput?.(active && decide(active) === 'cancel' ? '\u001b' : '\r');
   });
@@ -45,7 +49,8 @@ function terminalPreflightSheetCustom(
   return async (factory: any): Promise<unknown> => new Promise((resolve) => {
     const component = factory({ requestRender: () => {} }, theme, {}, resolve);
     let rendered = component.render(120).join('\n');
-    const active = rendered.match(/\b(Intent|Validation|Consent|Plan|Commit|Receipt) ACTIVE\b/)?.[1];
+    const active = TRANSACTION_STEPS.find((step, index) =>
+      rendered.includes(`▸ ${index + 1} ${transactionStepLabel(step)}（${uiText('step.activeSuffix')}）`));
     if (active) {
       events.push(active);
       if (active === 'Validation') {
@@ -110,10 +115,19 @@ describe('Bridge Ledger transaction flow adapters', () => {
       rule: 'RULE-01',
       outcome: 'blocked by policy',
     }])).toEqual([
-      'Verdict Blocked',
-      'Findings 1 blocking · 0 warning · 0 notice',
-      'Finding classification blocking | scope project | phase validation | target skill | ' +
-        'pointer "/skills/build" | code "RULE_CODE" | rule "RULE-01" | outcome "blocked by policy"',
+      `${uiText('verdict.label')}：${verdictText('Blocked')}`,
+      `${uiText('findings.count.label')}：${uiText('findings.count.line', { blocking: 1, warning: 0, notice: 0 })}`,
+      // Unknown rule codes (RULE-01 is test-local) fall back to the canonical outcome text.
+      uiText('finding.line', {
+        classification: 'blocking',
+        scope: 'project',
+        phase: 'validation',
+        target: 'skill',
+        pointer: '"/skills/build"',
+        code: '"RULE_CODE"',
+        rule: '"RULE-01"',
+        outcome: quoteTerminalText(findingOutcomeText({ rule: 'RULE-01', outcome: 'blocked by policy' })),
+      }),
     ]);
   });
 
@@ -284,8 +298,8 @@ describe('Bridge Ledger transaction flow adapters', () => {
       ui: {
         select: async (prompt: string, options: string[]) => {
           selectPrompts.push(prompt);
-          if (prompt.startsWith('Marketplace Entries')) return options[0];
-          if (prompt === 'Installation path') return 'Install Disabled';
+          if (prompt.startsWith(uiText('inst.select.entry'))) return options[0];
+          if (prompt === uiText('inst.select.path')) return uiText('inst.path.disabled');
           return undefined;
         },
         input: async () => undefined,
@@ -301,8 +315,8 @@ describe('Bridge Ledger transaction flow adapters', () => {
     await runPluginInstallationFlow(ctx as never, { scope: 'global', registrationId: secondId });
 
     expect(selectPrompts).toEqual([
-      'Marketplace Entries（顯示 Marketplace Entry ID 與可安裝/Unavailable 原因）',
-      'Installation path',
+      uiText('inst.select.entry'),
+      uiText('inst.select.path'),
     ]);
     expect(confirms).toEqual([]);
     const state = await readBridgeState('global', { cwd, agentDir });
@@ -341,7 +355,8 @@ describe('Bridge Ledger transaction flow adapters', () => {
         custom: async (factory: any): Promise<unknown> => new Promise((resolve) => {
           const component = factory({ requestRender: () => {} }, theme, {}, resolve);
           const rendered = component.render(120).join('\n');
-          const active = rendered.match(/\b(Intent|Validation|Consent|Plan|Commit|Receipt) ACTIVE\b/)?.[1];
+          const active = TRANSACTION_STEPS.find((step, index) =>
+      rendered.includes(`▸ ${index + 1} ${transactionStepLabel(step)}（${uiText('step.activeSuffix')}）`));
           if (active) events.push(active);
           void (async () => {
             if (active === 'Intent' && !revisionAdvanced) {
@@ -482,7 +497,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
 
     expect(events).toEqual(['Intent', 'Validation', 'Receipt']);
     expect(renderedByStep.get('Intent')).toMatch(
-      new RegExp(`Target:.*${registrationId}/acme-marketplace/plugins/0.*State Revision:.*${selected.newRevision}`, 's'),
+      new RegExp(`目標:.*${registrationId}/acme-marketplace/plugins/0.*State Revision:.*${selected.newRevision}`, 's'),
     );
     expect(renderedByStep.get('Validation')).toMatch(/Verdict.*Blocked.*REJECTED_AS_STALE/s);
     expect((await readReceiptJournal('global', { cwd, agentDir })).receipts.at(-1)).toEqual(
@@ -686,7 +701,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
 
     expect(events).toEqual(['Intent', 'Validation', 'Receipt']);
     expect(renderedByStep.get('Validation')).toMatch(
-      /Verdict.*Blocked.*INSTALLATION_NOT_FOUND.*INSTALL-01.*unsupported\s+source kind/s,
+      new RegExp(`Verdict.*Blocked.*INSTALLATION_NOT_FOUND.*INSTALL-01.*${findingOutcomeText({ rule: 'INSTALL-01', outcome: 'unsupported source kind' })}`, 's'),
     );
     expect((await readReceiptJournal('global', { cwd, agentDir })).receipts.at(-1)).toEqual(
       expect.objectContaining({
@@ -707,7 +722,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
       ui: {
         select: async (prompt: string) => {
           selectPrompts.push(prompt);
-          if (prompt.startsWith('Git Selector')) return 'default (跟隨遠端預設分支 HEAD)';
+          if (prompt.startsWith(uiText('reg.git.selector.prompt').split(' — ')[0]!)) return uiText('reg.git.selector.default');
           return undefined;
         },
         input: async () => 'not-a-git-locator',
@@ -734,7 +749,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
       isProjectTrusted: () => true,
       ui: {
         select: async (prompt: string) => {
-          if (prompt.startsWith('Git Selector')) return 'default (跟隨遠端預設分支 HEAD)';
+          if (prompt.startsWith(uiText('reg.git.selector.prompt').split(' — ')[0]!)) return uiText('reg.git.selector.default');
           throw new Error('explicit scope must not open another selector');
         },
         input: async () => 'not-a-git-locator',
@@ -874,7 +889,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
 
     expect(events).toEqual(['Intent', 'Validation', 'Receipt']);
     expect(renderedByStep.get('Intent')).toMatch(
-      /Action:.*Plugin Enablement.*Target:.*global\/acme-market\/missing-plugin.*State Revision:.*0/s,
+      /動作:.*Plugin Enablement.*目標:.*global\/acme-market\/missing-plugin.*State Revision:.*0/s,
     );
     expect(renderedByStep.get('Validation')).toMatch(/INSTALLATION_NOT_FOUND.*INSTALL-01/s);
     expect((await readReceiptJournal('global', { cwd, agentDir })).receipts).toEqual([
@@ -915,7 +930,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
 
     expect(events).toEqual(['Intent', 'Validation', 'Receipt']);
     expect(renderedByStep.get('Intent')).toMatch(
-      /Action:.*Plugin Disablement.*Target:.*global\/acme-market\/missing-plugin.*State Revision:.*0/s,
+      /動作:.*Plugin Disablement.*目標:.*global\/acme-market\/missing-plugin.*State Revision:.*0/s,
     );
     expect(renderedByStep.get('Validation')).toMatch(/INSTALLATION_NOT_FOUND.*INSTALL-01/s);
     expect((await readReceiptJournal('global', { cwd, agentDir })).receipts).toEqual([
@@ -1073,7 +1088,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
 
     expect(events).toEqual(['Intent', 'Validation', 'Consent', 'Plan', 'Commit', 'Receipt']);
     expect(renderedByStep.get('Intent')).toMatch(
-      new RegExp(`Target:.*${registrationId}.*State Revision:.*${selected.newRevision}`, 's'),
+      new RegExp(`目標:.*${registrationId}.*State Revision:.*${selected.newRevision}`, 's'),
     );
     expect((await readBridgeState('project', { cwd, agentDir })).state?.scopeOverrides).toEqual([]);
     expect((await readReceiptJournal('project', { cwd, agentDir })).receipts.at(-1)).toEqual(
@@ -1116,7 +1131,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
 
     expect(events).toEqual(['Intent', 'Validation', 'Consent', 'Plan', 'Commit', 'Receipt']);
     expect(renderedByStep.get('Intent')).toMatch(
-      new RegExp(`Target:.*project Bridge State.*State Revision:.*${selected.newRevision}`, 's'),
+      new RegExp(`目標:.*project Bridge State.*State Revision:.*${selected.newRevision}`, 's'),
     );
     expect((await readBridgeState('project', { cwd, agentDir })).state?.stateRevision).toBe('2');
     expect((await readReceiptJournal('project', { cwd, agentDir })).receipts.at(-1)).toEqual(
@@ -1204,7 +1219,8 @@ describe('Bridge Ledger transaction flow adapters', () => {
           const result = new Promise<unknown>((resolve) => { finish = resolve; });
           const component = factory({}, theme, {}, finish);
           const rendered = component.render(120).join('\n');
-          const active = rendered.match(/\b(Intent|Validation|Consent|Plan|Commit|Receipt) ACTIVE\b/)?.[1];
+          const active = TRANSACTION_STEPS.find((step, index) =>
+      rendered.includes(`▸ ${index + 1} ${transactionStepLabel(step)}（${uiText('step.activeSuffix')}）`));
           if (active) events.push(active);
           if (active === 'Commit' && !drifted) {
             drifted = true;
@@ -1319,8 +1335,8 @@ describe('Bridge Ledger transaction flow adapters', () => {
       isProjectTrusted: () => true,
       ui: {
         select: async (prompt: string, options: string[]) => {
-          if (prompt.startsWith('Marketplace Entries')) return options[0];
-          if (prompt === 'Installation path') return 'Install Disabled';
+          if (prompt.startsWith(uiText('inst.select.entry'))) return options[0];
+          if (prompt === uiText('inst.select.path')) return uiText('inst.path.disabled');
           return undefined;
         },
         input: async () => undefined,
@@ -1349,10 +1365,10 @@ describe('Bridge Ledger transaction flow adapters', () => {
 
     expect(events).toEqual(['Intent', 'Validation', 'Consent', 'Plan', 'Commit', 'Receipt']);
     expect(confirms).toEqual([]);
-    expect(renderedSheets.find((sheet) => sheet.includes('Validation ACTIVE'))).toMatch(
+    expect(renderedSheets.find((sheet) => sheet.includes(`▸ 2 ${transactionStepLabel('Validation')}（${uiText('step.activeSuffix')}）`))).toMatch(
       /Verdict.*Passed.*Findings.*blocking.*warning.*notice/s,
     );
-    expect(renderedSheets.find((sheet) => sheet.includes('Consent ACTIVE'))).toMatch(/N\/A/);
+    expect(renderedSheets.find((sheet) => sheet.includes(`▸ 3 ${transactionStepLabel('Consent')}（${uiText('step.activeSuffix')}）`))).toMatch(new RegExp(uiText('common.notApplicable')));
   });
 
   it('expands the complete Plugin disclosure with source, precedence, skills, policy, and resources', async () => {
@@ -1383,7 +1399,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
         custom: async (factory: any) => new Promise((resolve) => {
           const component = factory({ requestRender: () => {} }, theme, {}, resolve);
           const first = component.render(120).join('\n');
-          if (first.includes('Validation ACTIVE')) {
+          if (first.includes(`▸ 2 ${transactionStepLabel('Validation')}（${uiText('step.activeSuffix')}）`)) {
             component.handleInput('d');
             expandedValidation = component.render(120).join('\n');
             component.handleInput('\u001b');
@@ -1403,9 +1419,9 @@ describe('Bridge Ledger transaction flow adapters', () => {
       targetState: 'disabled',
     });
 
-    expect(expandedValidation).toMatch(/Source:.*marketplace/s);
-    expect(expandedValidation).toContain('Projected precedence: Pi');
-    expect(expandedValidation).toContain('Skills: 1');
+    expect(expandedValidation).toMatch(/來源 .*marketplace/s);
+    expect(expandedValidation).toContain('投影優先序：Pi');
+    expect(expandedValidation).toContain('Skills：1');
     expect(expandedValidation).toMatch(/release-notes.*implicit.*guide\.md/s);
   });
 
@@ -1510,8 +1526,8 @@ describe('Bridge Ledger transaction flow adapters', () => {
       isProjectTrusted: () => true,
       ui: {
         select: async (prompt: string, options: string[]) => {
-          if (prompt.startsWith('Marketplace Entries')) return options[0];
-          if (prompt === 'Installation path') return 'Install and Enable';
+          if (prompt.startsWith(uiText('inst.select.entry'))) return options[0];
+          if (prompt === uiText('inst.select.path')) return uiText('inst.path.enabled');
           return undefined;
         },
         input: async () => join(root, 'marketplace'),

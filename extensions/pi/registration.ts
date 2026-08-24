@@ -5,6 +5,7 @@
  * commit → Attempt Summary + closed Recovery Action reporting.
  *
  * The flow logic itself lives in src/registration/flow.ts (the tested seam); this file renders it.
+ * All user-visible strings come from the centralized ui-strings module (Issue #41).
  */
 
 import type { ExtensionCommandContext, ExtensionUIContext } from '@earendil-works/pi-coding-agent';
@@ -16,16 +17,24 @@ import {
 import type { Scope } from '../../src/bridge-state/types.js';
 import { sortFindings, type ValidationFinding } from '../../src/registration/findings.js';
 import type { AttemptReceipt } from '../../src/registration/receipt.js';
+import { attemptSummaryText, findingOutcomeText, uiText, verdictText,
+  scopeOptions } from './ui-strings.js';
 import { quoteTerminalText } from './terminal-presentation.js';
 import { openTransactionSheet, type TransactionSheetModel } from './transaction-sheet.js';
 
 export function formatFindings(findings: ValidationFinding[]): string[] {
-  return sortFindings(findings).map((f) => {
-    return `Finding classification ${f.classification} | scope ${f.scope} | phase ${f.phase} | ` +
-      `target ${f.target} | pointer ${quoteTerminalText(f.pointer || '(none)')} | ` +
-      `code ${quoteTerminalText(f.code)} | rule ${quoteTerminalText(f.rule)} | ` +
-      `outcome ${quoteTerminalText(f.outcome)}`;
-  });
+  return sortFindings(findings).map((f) =>
+    uiText('finding.line', {
+      classification: f.classification,
+      scope: f.scope,
+      phase: f.phase,
+      target: f.target,
+      pointer: quoteTerminalText(f.pointer || `(${uiText('common.none')})`),
+      code: quoteTerminalText(f.code),
+      rule: quoteTerminalText(f.rule),
+      outcome: quoteTerminalText(findingOutcomeText(f)),
+    }),
+  );
 }
 
 export function validationDisclosureLines(findings: ValidationFinding[]): string[] {
@@ -34,14 +43,11 @@ export function validationDisclosureLines(findings: ValidationFinding[]): string
     warning: findings.filter((finding) => finding.classification === 'warning').length,
     notice: findings.filter((finding) => finding.classification === 'notice').length,
   };
-  const verdict = counts.blocking > 0
-    ? 'Blocked'
-    : counts.warning > 0 || counts.notice > 0
-      ? 'Passed with diagnostics'
-      : 'Passed';
+  const verdict = counts.blocking > 0 ? 'Blocked'
+    : counts.warning > 0 || counts.notice > 0 ? 'Passed with diagnostics' : 'Passed';
   return [
-    `Verdict ${verdict}`,
-    `Findings ${counts.blocking} blocking · ${counts.warning} warning · ${counts.notice} notice`,
+    `${uiText('verdict.label')}：${verdictText(verdict)}`,
+    `${uiText('findings.count.label')}：${uiText('findings.count.line', counts)}`,
   ];
 }
 
@@ -60,7 +66,7 @@ async function transactionStep(
 ): Promise<boolean> {
   if (await openTransactionSheet(ctx, model) === 'continue') return true;
   if (cancel) await cancel();
-  else ctx.ui.notify('已取消 Transaction；Bridge State 未變更。', 'info');
+  else ctx.ui.notify(uiText('common.cancelled.transaction'), 'info');
   return false;
 }
 
@@ -72,22 +78,19 @@ export async function runLocalRegistrationFlow(
   const ui: ExtensionUIContext = ctx.ui;
   let scope = target.scope;
   if (!scope) {
-    const scopeLabels = new Map<string, Scope>([
-      ['Global Scope', 'global'],
-      ['Project Scope', 'project'],
-    ]);
-    const scopeChoice = await ui.select('Marketplace Registration — 選擇 Scope', [...scopeLabels.keys()]);
+    const scopeLabels = scopeOptions();
+    const scopeChoice = await ui.select(uiText('reg.select.scope'), [...scopeLabels.keys()]);
     if (!scopeChoice) {
-      ui.notify('已取消 Registration', 'info');
+      ui.notify(uiText('reg.cancelled'), 'info');
       return;
     }
     scope = scopeLabels.get(scopeChoice);
     if (!scope) return;
   }
 
-  const rootPath = await ui.input('本地 Marketplace Root（需含 .agents/plugins/marketplace.json）', '.');
+  const rootPath = await ui.input(uiText('reg.input.localRoot'), '.');
   if (!rootPath) {
-    ui.notify('已取消 Registration', 'info');
+    ui.notify(uiText('reg.cancelled'), 'info');
     return;
   }
 
@@ -97,7 +100,7 @@ export async function runLocalRegistrationFlow(
     actionLabel,
     authority: scope,
     target: rootPath,
-    details: [`Source ${quoteTerminalText(rootPath)}`],
+    details: [uiText('reg.detail.source', { source: quoteTerminalText(rootPath) })],
   })) return;
 
   const opts = { cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() };
@@ -109,18 +112,26 @@ export async function runLocalRegistrationFlow(
 
   const pf = res.preflight;
   const validationDetails = [
-    `Registration ID ${quoteTerminalText(pf.registrationId)}`,
-    `Source ${quoteTerminalText(pf.canonicalPath)}`,
-    `Marketplace ${quoteTerminalText(pf.marketplaceName)}`,
-    `Entries ${pf.catalog.entries.length} (` +
-      `${pf.catalog.entries.filter((entry) => entry.available).length} locatable / ` +
-      `${pf.catalog.entries.filter((entry) => !entry.available).length} unavailable)`,
-    `Compatibility Profile ${quoteTerminalText(pf.snapshot.profile)}`,
-    `Ruleset ${quoteTerminalText(pf.snapshot.ruleset)}`,
-    `Validation Budget ${quoteTerminalText(pf.snapshot.budget)}`,
+    uiText('reg.detail.registrationId', { id: quoteTerminalText(pf.registrationId) }),
+    uiText('reg.detail.source', { source: quoteTerminalText(pf.canonicalPath) }),
+    uiText('reg.detail.marketplace', { name: quoteTerminalText(pf.marketplaceName) }),
+    uiText('reg.detail.entries', {
+      total: pf.catalog.entries.length,
+      locatable: pf.catalog.entries.filter((entry) => entry.available).length,
+      unavailable: pf.catalog.entries.filter((entry) => !entry.available).length,
+    }),
+    uiText('reg.detail.profile', { profile: quoteTerminalText(pf.snapshot.profile) }),
+    uiText('reg.detail.ruleset', { ruleset: quoteTerminalText(pf.snapshot.ruleset) }),
+    uiText('reg.detail.budget', { budget: quoteTerminalText(pf.snapshot.budget) }),
     ...fullValidationDisclosureLines(pf.findings),
     ...pf.catalog.entries.map((entry) =>
-      `Entry ${quoteTerminalText(entry.entryId)} ${quoteTerminalText(entry.name ?? '(unnamed)')} ${quoteTerminalText(entry.available ? 'locatable' : entry.unavailableReason ?? 'unavailable')}`,
+      uiText('reg.detail.entry', {
+        entryId: quoteTerminalText(entry.entryId),
+        name: quoteTerminalText(entry.name ?? `(${uiText('common.none')})`),
+        status: entry.available
+          ? uiText('reg.entry.locatable')
+          : uiText('reg.entry.unavailable', { reason: quoteTerminalText(entry.unavailableReason ?? uiText('common.unavailable')) }),
+      }),
     ),
   ];
   const boundModel = {
@@ -141,28 +152,31 @@ export async function runLocalRegistrationFlow(
   if (!await transactionStep(ctx, {
     ...boundModel,
     step: 'Consent',
-    details: ['Registration Confirmation: separate Default No host gate'],
+    details: [uiText('reg.consent.details')],
   }, cancel)) return;
 
   const yes = await ui.confirm(
-    'Registration Confirmation — 預設 No（綁定 State Revision + Validation Snapshot，不可記憶、不可批次）',
-    `確認 Registration ID ${quoteTerminalText(pf.registrationId)}：` +
-      `${quoteTerminalText(pf.canonicalPath)} 至 ${scope}？\n` +
-      `Validation Disclosure:\n${validationDetails.join('\n')}`,
+    uiText('reg.consent.title'),
+    uiText('reg.local.consent.body', {
+      registrationId: quoteTerminalText(pf.registrationId),
+      source: quoteTerminalText(pf.canonicalPath),
+      scope,
+      disclosure: validationDetails.join('\n'),
+    }),
   );
 
   if (yes) {
     if (!await transactionStep(ctx, {
       ...boundModel,
       step: 'Plan',
-      details: ['Update Plan: N/A — new Registration has no replacement plan'],
+      details: [uiText('reg.plan.details')],
     }, cancel)) return;
     if (!await transactionStep(ctx, {
       ...boundModel,
       step: 'Commit',
       details: [
-        `Persist Registration ID ${quoteTerminalText(pf.registrationId)}`,
-        `Write authority ${scope} at State Revision ${quoteTerminalText(pf.stateRevision)}`,
+        uiText('reg.commit.persist', { id: quoteTerminalText(pf.registrationId) }),
+        uiText('reg.commit.authority', { scope, revision: quoteTerminalText(pf.stateRevision) }),
       ],
     }, cancel)) return;
   }
@@ -210,5 +224,8 @@ export async function reportOutcome(
     validationSnapshot: rc.validationSnapshot,
     receipt: rc,
   });
-  ctx.ui.notify(`Attempt Summary: ${rc.summary} · Receipt ${quoteTerminalText(rc.id)}`, notifyType);
+  ctx.ui.notify(
+    uiText('reg.outcome.notify', { summary: attemptSummaryText(rc.summary), receiptId: quoteTerminalText(rc.id) }),
+    notifyType,
+  );
 }
