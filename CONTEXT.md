@@ -312,6 +312,10 @@ _Avoid_: Partially compatible Plugin, Pi package
 A skill of a Projected Plugin that survives Runtime Skill Collision resolution and is exposed to Pi under its Skill Descriptor name while retaining its Skill ID and provenance. A colliding skill that does not survive is unavailable without changing its Plugin's Compatible or Projected status.
 _Avoid_: Compatible Plugin, renamed skill
 
+**Runtime Skill Exposure**:
+The read-time participation of Projected Skills in Pi through host resource discovery contributed by the Bridge Extension at session start or runtime reload. It derives entirely from the current Effective State and its collision survivors, performs passive existence inspection only, creates no Attempt Receipt, and is neither Activation Confirmation nor activation admission; snapshot-bound validation remains bound to Lifecycle Operations and Runtime Applications. Exposure never establishes Skill Availability.
+_Avoid_: Installation, Marketplace Refresh, activation confirmation
+
 **Skill Availability**:
 The evidence status of an Installed Plugin skill, for which the Bridge may report snapshot-bound eligibility, known unavailability, or unverified availability while only independent host evidence may establish that it is Available. It does not alter Plugin classification or whole-state application, and zero Available skills can coexist with an Applied Runtime Application with diagnostics.
 _Avoid_: Compatibility, projection success, inferred availability
