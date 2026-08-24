@@ -28,6 +28,7 @@ const SECOND_REGISTRATION_ID = '22222222-2222-4222-8222-222222222222';
 
 const identityTheme = {
   fg: (_color: string, text: string) => text,
+  bg: (_token: string, text: string) => text,
   bold: (text: string) => text,
 };
 

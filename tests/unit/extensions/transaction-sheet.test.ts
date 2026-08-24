@@ -18,6 +18,7 @@ import type { AttemptReceipt, AttemptSummary } from '../../../src/registration/r
 
 const identityTheme = {
   fg: (_color: string, text: string) => text,
+  bg: (_token: string, text: string) => text,
   bold: (text: string) => text,
 };
 
@@ -69,12 +70,56 @@ describe('Transaction Sheet presentation', () => {
     const positions = TRANSACTION_STEPS.map((step, index) => output.indexOf(`${index + 1} ${step}`));
     expect(positions.every((position) => position >= 0)).toBe(true);
     expect([...positions].sort((a, b) => a - b)).toEqual(positions);
-    expect(output).toContain('2 Validation ACTIVE');
-    expect(output).toContain('[1 Intent] -> [2 Validation ACTIVE] -> [3 Consent]');
+    expect(output).toContain('▸ 2 Validation ACTIVE');
+    expect(output).toContain('✓ 1 Intent');
+    expect(output).not.toContain('[1 Intent] ->');
     expect(output).toContain('Authority: "[G] GLOBAL"');
     expect(output).toContain('State Revision: "18"');
     expect(output).toContain('Validation Snapshot: "snapshot-18"');
     expect(renderTransactionSheet(model, identityTheme, 80).every((line) => visibleWidth(line) <= 80)).toBe(true);
+  });
+
+  it('frames the sheet in a box-drawing panel at every width without overflow', () => {
+    const model: TransactionSheetModel = {
+      step: 'Commit',
+      actionLabel: 'Enable plugin',
+      authority: 'project',
+    };
+
+    for (const width of [120, 80, 60]) {
+      const lines = renderTransactionSheet(model, identityTheme, width);
+      expect(lines[0]).toContain('┌─ Transaction Sheet');
+      expect(lines.at(-1)).toContain('┘');
+      expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
+      expect(lines.join('\n')).toContain('5 Commit ACTIVE');
+    }
+  });
+
+  it.each<[AttemptSummary, 'success' | 'error' | 'warning']>([
+    ['Completed', 'success'],
+    ['Blocked', 'error'],
+    ['Pending Application', 'warning'],
+  ])("pairs Attempt Summary %s with a %s tone badge", (summary, tone) => {
+    const tokens: string[] = [];
+    const spyingTheme = {
+      ...identityTheme,
+      bg: (token: string, text: string) => {
+        tokens.push(token);
+        return text;
+      },
+    };
+    const output = renderTransactionSheet({
+      step: 'Receipt',
+      actionLabel: 'Lifecycle operation',
+      receipt: { ...receipt(summary), recoveryActions: [] },
+    }, spyingTheme, 60).join('\n');
+    expect(output).toContain(`Attempt Summary: "${summary}"`);
+    expect(tokens).toContain(`tool${tone === 'success' ? 'Success' : tone === 'error' ? 'Error' : 'Pending'}Bg`);
+    expect(renderTransactionSheet({
+      step: 'Receipt',
+      actionLabel: 'Lifecycle operation',
+      receipt: { ...receipt(summary), recoveryActions: [] },
+    }, identityTheme, 60).join('\n')).toContain(summary);
   });
 
   it('quotes terminal-controlled text and fits or pads by terminal cell width', () => {
@@ -120,8 +165,11 @@ describe('Transaction Sheet presentation', () => {
       validationSnapshot: 'snapshot-5',
       receipt: receipt(),
     }, identityTheme, 60);
-    const axisLines = lines.filter((line) => ['Durable', 'Findings', 'Runtime'].includes(line.trim()));
-    expect(axisLines.map((line) => line.trim())).toEqual(['Durable', 'Findings', 'Runtime']);
+    const axisLines = lines.map((line) => stripTerminalSequences(line));
+    const positions = ['Durable', 'Findings', 'Runtime'].map((header) =>
+      axisLines.findIndex((line) => line.trim().startsWith(`│ ${header}`) || line.trim() === header));
+    expect(positions.every((position) => position >= 0)).toBe(true);
+    expect([...positions].sort((a, b) => a - b)).toEqual(positions);
     expect(lines.every((line) => visibleWidth(line) <= 60)).toBe(true);
   });
 
@@ -252,7 +300,9 @@ describe('Transaction Sheet presentation', () => {
     component.handleInput('d');
     const expanded = component.render(60).join('\n');
     expect(expanded).toContain('FULL-DISCLOSURE-TAIL');
-    expect(expanded).toMatch(/press d to\s+collapse/);
+    // At 60 columns the hint may wrap inside the panel frame; both fragments must survive.
+    expect(expanded).toMatch(/press d to/);
+    expect(expanded).toMatch(/collapse/);
     expect(results).toEqual([]);
     expect(renderRequests).toBe(1);
   });
