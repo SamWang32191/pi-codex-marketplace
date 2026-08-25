@@ -13,20 +13,20 @@ The runtime portion of the Bridge Package that presents marketplace and plugin c
 _Avoid_: Bridge Package, Codex plugin
 
 **Bridge State**:
-The Bridge-owned durable desired state stored independently for global and project scopes. Each state document contains a schema version, scope-local Registration and Installation records, and any project-only Scope Overrides; source-derived catalogs, compatibility results, effective precedence, and diagnostics are recomputed.
+The Bridge-owned durable desired state stored in a single Global Scope document. It contains a schema version and Registration and Installation records; source-derived catalogs, compatibility results, effective precedence, and diagnostics are recomputed.
 _Avoid_: Pi settings, runtime snapshot, cache
 
 **State Revision**:
-An opaque identifier for one exact scope-local Bridge State version, bound with the applicable Validation Snapshot to every Lifecycle Operation and confirmation. If either changes before commit, the operation is rejected as stale and requires new preflight and confirmation without automatic merge.
+An opaque identifier for one exact Bridge State version, bound with the applicable Validation Snapshot to every Lifecycle Operation and confirmation. If either changes before commit, the operation is rejected as stale and requires new preflight and confirmation without automatic merge.
 _Avoid_: Schema version, Resolved Revision, last-write-wins
 
 **Lifecycle Operation**:
-An explicit user-requested change to one scope's Registration or Installation state, committed atomically with every disclosed same-scope effect required by that action. Independent Registrations and Installations are never combined into a best-effort batch.
+An explicit user-requested change to the Global scope's Registration or Installation state, committed atomically with every disclosed effect required by that action. Independent Registrations and Installations are never combined into a best-effort batch.
 _Avoid_: Runtime Application, partial record update, bulk confirmation
 
 **Attempt Fence**:
-The per-scope exclusivity and exact-state boundary shared by Lifecycle Operations and Runtime Applications. It admits only one attempt at a time and prevents an attempt from committing, becoming Applied, or resolving a receipt after its State Revision or applicable Validation Snapshots cease to be current.
-_Avoid_: Last-write-wins, attempt queue, cross-scope lock
+The exclusivity and exact-state boundary shared by Lifecycle Operations and Runtime Applications. It admits only one attempt at a time and prevents an attempt from committing, becoming Applied, or resolving a receipt after its State Revision or applicable Validation Snapshots cease to be current.
+_Avoid_: Last-write-wins, attempt queue, shared lock
 
 **Attempt Receipt**:
 A redacted, immutable, non-authoritative record of one Bridge-managed attempt, including explicit lifecycle, refresh, or retry attempts and startup reconciliation. It relates expected, target, and observed State Revisions with any available Validation Snapshots, outcomes, findings, and earlier receipt it seeks to recover; passive inspection creates none and a receipt never authorizes replay.
@@ -57,23 +57,11 @@ A stable next step eligible under the exact current State Revision, applicable V
 _Avoid_: Free-form advice, generic retry button, automatic remediation
 
 **Global Scope**:
-The Bridge scope whose registrations and installations form the baseline across Pi projects. Project-specific changes affect their effective use without mutating the global records.
+The single Bridge scope in which all Registrations and Installations are recorded. Former Project Scope mechanisms are retired; no other scope exists.
 _Avoid_: Project Scope, machine-wide effective state
 
-**Project Scope**:
-The Bridge scope associated with the current trusted Pi working directory and identified by the location of its Bridge State rather than a stored path or Git identity. It adds project registrations and installations plus sparse overrides to inherited Global Scope state.
-_Avoid_: Isolated scope, complete replacement state
-
-**Project Trust**:
-Pi's host-owned decision that permits Project Scope state, resources, and Lifecycle Operations to participate. The Bridge Package never grants or persists it; without Project Trust, project records remain stored but are excluded from Effective State and no Project Scope Lifecycle Operation may mutate them.
-_Avoid_: Registration Confirmation, Activation Confirmation, sandbox
-
-**Scope Override**:
-A Project Scope record keyed by canonical Registration ID or Installation ID that explicitly suppresses an inherited global record without modifying it. A Registration override suppresses its marketplace subtree, an Installation override suppresses only that Plugin, and removing either reveals the inherited record again.
-_Avoid_: Copy of global state, global mutation
-
 **Effective State**:
-The computed project view of inherited Global Scope records, Project Scope additions, and Scope Overrides. Only enabled Installations participate, and no selected record's independently persisted provenance is merged or mutated.
+The computed view of Global Scope Bridge State. Only enabled Installations participate, and no selected record's independently persisted provenance is merged or mutated.
 _Avoid_: Bridge State, persisted merged state
 
 **Marketplace**:
@@ -173,7 +161,7 @@ A Lifecycle Operation that replaces one Marketplace Registration's recorded Vali
 _Avoid_: Marketplace Refresh, Registration Rebind, automatic update
 
 **Marketplace Registration**:
-The user-approved association of a Marketplace Source with either a global or project scope in Pi. Each registration has an immutable Registration ID and independently scoped state; its source locator, Source Key, alias, and declared Marketplace name are attributes.
+The user-approved association of a Marketplace Source with the Global scope in Pi. Each registration has an immutable Registration ID; its source locator, Source Key, alias, and declared Marketplace name are attributes.
 _Avoid_: Subscription, automatic discovery
 
 **Registration Rebind**:
@@ -181,23 +169,23 @@ A Lifecycle Operation that explicitly replaces a Marketplace Registration's sour
 _Avoid_: Update Candidate, repeated registration, silent relocation
 
 **Registration Removal**:
-A Lifecycle Operation that removes one scope-local Marketplace Registration and all of its same-scope Installations as one disclosed atomic effect. It does not mutate other scopes or projects; references left there fail closed as unavailable and surface diagnostics until repaired or removed.
+A Lifecycle Operation that removes the Marketplace Registration and all of its Installations as one disclosed atomic effect.
 _Avoid_: Disablement, Scope Override, cross-project cascade
 
 **Registration Confirmation**:
-The user's Validation Snapshot- and State Revision-bound approval of one validated Marketplace Source, catalog summary, and target scope after a complete Validation Disclosure and an explicit yes-or-no choice that defaults to No. It cannot be remembered or applied in bulk and authorizes only the Marketplace Registration, not activation of any Plugin it lists.
+The user's Validation Snapshot- and State Revision-bound approval of one validated Marketplace Source, catalog summary, and the Global scope after a complete Validation Disclosure and an explicit yes-or-no choice that defaults to No. It cannot be remembered or applied in bulk and authorizes only the Marketplace Registration, not activation of any Plugin it lists.
 _Avoid_: Project trust, blanket Plugin approval
 
 **Registration ID**:
-An opaque, immutable lowercase UUIDv4 generated locally by the Bridge Package for a Marketplace Registration and associated with exactly one scope. It is allocated before preflight validation so findings can have stable derived identities, persisted only after Registration Confirmation, and never reused after a failed or declined attempt. It survives changes to registration attributes; a project record that duplicates a global Registration ID is invalid rather than an override.
+An opaque, immutable lowercase UUIDv4 generated locally by the Bridge Package for a Marketplace Registration and associated with the Global scope. It is allocated before preflight validation so findings can have stable derived identities, persisted only after Registration Confirmation, and never reused after a failed or declined attempt. It survives changes to registration attributes.
 _Avoid_: Marketplace name, alias, source path, Git URL
 
 **Source Key**:
-A deterministic, typed value used to compare Marketplace Sources for duplicate detection and repeated registration; it is not the identity of a Marketplace Registration. A local Source Key uses the Marketplace Root's canonical real path, while a Git Source Key combines a canonical remote URL with its exact selector; local and Git keys remain distinct, and equal keys across scopes do not merge registrations.
+A deterministic, typed value used to compare Marketplace Sources for duplicate detection and repeated registration; it is not the identity of a Marketplace Registration. A local Source Key uses the Marketplace Root's canonical real path, while a Git Source Key combines a canonical remote URL with its exact selector; local and Git keys remain distinct, and equal keys do not merge registrations.
 _Avoid_: Registration ID, user-facing alias
 
 **Registration Alias**:
-An optional, scope-local, human-readable handle for a Marketplace Registration, initially derived from a compatible declared Marketplace name. It is unique within its scope and can be explicitly renamed without changing the Registration ID.
+An optional, human-readable handle for a Marketplace Registration, initially derived from a compatible declared Marketplace name. It is unique within the Global scope and can be explicitly renamed without changing the Registration ID.
 _Avoid_: Registration ID, Marketplace name
 
 **Plugin**:
@@ -225,7 +213,7 @@ The canonical identity of a Plugin skill, composed of its Plugin ID and Skill De
 _Avoid_: Globally unique skill name, SKILL.md path
 
 **Runtime Skill Collision**:
-A conflict in Pi's flat skill namespace when different Skill IDs, or a Plugin skill and a pre-existing Pi skill, claim the same exact Skill Descriptor name. It changes only skill availability, never Plugin classification: candidates resolve per name in `Pi → Project Scope → Global Scope` order, all same-scope Bridge colliders are unavailable, and only a surviving higher-layer skill reserves the name, so a lower-layer candidate survives when no higher-layer skill does.
+A conflict in Pi's flat skill namespace when different Skill IDs, or a Plugin skill and a pre-existing Pi skill, claim the same exact Skill Descriptor name. It changes only skill availability, never Plugin classification: candidates resolve per name in `Pi → Global Scope` order, all same-layer Bridge colliders are unavailable, and only a surviving higher-layer skill reserves the name, so a lower-layer candidate survives when no higher-layer skill does.
 _Avoid_: Skill ID collision, canonical-path duplicate
 
 **Skill Agent Profile**:
@@ -265,11 +253,11 @@ A Plugin whose required identity or component structure cannot be safely parsed 
 _Avoid_: Incompatible Plugin, Plugin with warnings
 
 **Plugin Installation**:
-A Lifecycle Operation that creates an Installation in one scope after current compatibility validation and disclosure. `Install Disabled` creates disabled state without Activation Confirmation, while `Install and Enable` atomically creates enabled state only after Activation Confirmation.
+A Lifecycle Operation that creates an Installation in the Global scope after current compatibility validation and disclosure. `Install Disabled` creates disabled state without Activation Confirmation, while `Install and Enable` atomically creates enabled state only after Activation Confirmation.
 _Avoid_: Pi package installation, Marketplace Registration, implicit activation
 
 **Installed Plugin**:
-A Compatible Plugin selected from a Marketplace and durably recorded within either a global or project scope in Pi. Its Installation State determines whether it participates in Effective State, and an enabled project Installation of an inherited global Plugin ID takes precedence over its retained global Installation.
+A Compatible Plugin selected from a Marketplace and durably recorded within the Global scope in Pi. Its Installation State determines whether it participates in Effective State.
 _Avoid_: Marketplace entry, bundled plugin
 
 **Installation State**:
@@ -277,23 +265,23 @@ The durable `enabled` or `disabled` condition of an Installed Plugin. A disabled
 _Avoid_: Scope Override, Plugin classification, runtime status
 
 **Installation Removal**:
-A Lifecycle Operation that deletes one scope-local Installation while retaining its Marketplace Registration. Its disclosure identifies any inherited Installation that will become effective afterward.
+A Lifecycle Operation that deletes one Installation while retaining its Marketplace Registration.
 _Avoid_: Disablement, Registration Removal, Scope Override
 
 **Activation Confirmation**:
-The user's Validation Snapshot- and State Revision-bound approval of one Compatible Plugin for one target scope after a complete Validation Disclosure and an explicit yes-or-no choice that defaults to No. It cannot be remembered or applied in bulk, is separate from Registration Confirmation, expires when the confirmed source changes, and is required again when enabling a disabled Installation.
+The user's Validation Snapshot- and State Revision-bound approval of one Compatible Plugin for the Global scope after a complete Validation Disclosure and an explicit yes-or-no choice that defaults to No. It cannot be remembered or applied in bulk, is separate from Registration Confirmation, expires when the confirmed source changes, and is required again when enabling a disabled Installation.
 _Avoid_: Registration Confirmation, permanent source trust
 
 **Validation Disclosure**:
-The source, scope, identity, State Revision, Validation Snapshot, classification, and finding summary presented before a Bridge confirmation. Registration disclosure covers the Marketplace and its entry outcomes; activation disclosure covers the exact Plugin, skills, resources, Invocation Policies, and projected precedence.
+The source, identity, State Revision, Validation Snapshot, classification, and finding summary presented before a Bridge confirmation. Registration disclosure covers the Marketplace and its entry outcomes; activation disclosure covers the exact Plugin, skills, resources, Invocation Policies, and projected precedence.
 _Avoid_: Confirmation itself, raw diagnostic dump
 
 **Validation Finding**:
-A machine-readable validation result identified by a stable rule code and carrying its classification, scope, safe source and revision provenance, affected domain identity, file or data pointer, and operational outcome. Secret-bearing input is redacted, and presentation is derived from the finding rather than stored as authority.
+A machine-readable validation result identified by a stable rule code and carrying its classification, safe source and revision provenance, affected domain identity, file or data pointer, and operational outcome. Secret-bearing input is redacted, and presentation is derived from the finding rather than stored as authority.
 _Avoid_: Free-form log line, persisted source truth
 
 **Blocking Finding**:
-A structured finding that denies its stated target—Registration, whole-Plugin activation, individual skill availability, or one management attempt—rather than requesting consent. Source, trust, snapshot, safety, budget, classification, or identity failures deny their Registration or whole-Plugin target; a Runtime Skill Collision denies only its colliding skill candidates, an active Attempt Fence or Global Pending Barrier denies only the requested attempt, and none can be waived.
+A structured finding that denies its stated target—Registration, whole-Plugin activation, individual skill availability, or one management attempt—rather than requesting consent. Source, trust, snapshot, safety, budget, classification, or identity failures deny their Registration or whole-Plugin target; a Runtime Skill Collision denies only its colliding skill candidates, an active Attempt Fence denies only the requested attempt, and none can be waived.
 _Avoid_: Warning, confirmation prompt
 
 **Validation Warning**:
@@ -321,7 +309,7 @@ The evidence status of an Installed Plugin skill, for which the Bridge may repor
 _Avoid_: Compatibility, projection success, inferred availability
 
 **Installation ID**:
-The canonical identity of an Installed Plugin, composed of its scope and Plugin ID. It remains stable across Plugin version, source revision, Marketplace Entry ordinal, and path changes, while a new Plugin ID requires a new Installation ID.
+The canonical identity of an Installed Plugin within the Global scope, composed of its Plugin ID. It remains stable across Plugin version, source revision, Marketplace Entry ordinal, and path changes, while a new Plugin ID requires a new Installation ID.
 _Avoid_: Manifest name alone, install attempt ID
 
 **Runtime Application**:
@@ -332,6 +320,4 @@ _Avoid_: Lifecycle Operation, Marketplace Refresh, background retry
 The condition after Bridge State commits but Runtime Application has not been verified; Bridge State remains desired and no prior runtime is claimed valid. Recovery may verify the same state or explicitly commit a replacement, while inspection and Marketplace Refresh never supersede it and unrelated state changes, background retry, and automatic rollback remain prohibited.
 _Avoid_: Successful activation, reverted state, last-known-good runtime
 
-**Global Pending Barrier**:
-The Compatibility Profile v1 condition while a Global Scope Attempt Fence is held or global recovery is required by Pending Application, Persistence Indeterminate, or Receipt Journal degradation. It blocks every Project Scope state mutation or Runtime Application, including Lifecycle Operations, Repair State, and project startup reconciliation; global recovery remains available and precedes any project reconciliation, while inspection and Marketplace Refresh also remain available.
-_Avoid_: Affected-subtree barrier, independent Project Application, queued project mutation
+
