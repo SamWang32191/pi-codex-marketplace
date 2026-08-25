@@ -1,7 +1,7 @@
 /**
- * Effective State — computed project view of inherited Global Scope records,
- * Project Scope additions, and ID-keyed Scope Overrides.
- * See CONTEXT.md: Effective State, Scope Override, Project Trust, Installation State, Installed Plugin.
+ * Effective State — computed project view of inherited Global Scope records and
+ * Project Scope additions, with ID-keyed project-over-global precedence.
+ * See CONTEXT.md: Effective State, Project Trust, Installation State, Installed Plugin.
  *
  * This is a pure read-time computation over the two authoritative Bridge State documents.
  * Nothing here is persisted: no merged state document exists. Only enabled Installations
@@ -9,6 +9,10 @@
  * precedence over the retained global Installation, and no selected record's independently
  * persisted provenance is merged or mutated — each record carries exactly what its own
  * scope's document holds.
+ *
+ * Scope Overrides are retired (issue #59): any legacy persisted `scopeOverrides` entries in
+ * the project document are ignored entirely. Inherited Global records always participate;
+ * no suppression path exists.
  */
 
 import type { BridgeState, Installation, Registration } from '../bridge-state/types.js';
@@ -25,12 +29,12 @@ export interface EffectiveInstallation extends Installation {
 
 /** Why one inherited Global Scope record does not participate in this Effective State. */
 export interface SuppressedGlobalRecord {
-  kind: 'registration' | 'installation';
-  /** Canonical Registration ID or Installation ID of the suppressed record. */
+  kind: 'installation';
+  /** Canonical Installation ID of the suppressed record. */
   targetId: string;
   pluginId?: string;
-  reason: 'scope-override-registration' | 'scope-override-installation' | 'project-precedence';
-  /** For precedence suppression: the project Installation that supersedes the global one. */
+  reason: 'project-precedence';
+  /** The project Installation that supersedes the global one. */
   supersededBy?: string;
 }
 
@@ -39,7 +43,7 @@ export interface SuppressedGlobalRecord {
  * Project Trust not granted, or an invalid duplicate of an inherited Registration ID.
  */
 export interface ExcludedProjectRecord {
-  kind: 'registration' | 'installation' | 'scope-override';
+  kind: 'registration' | 'installation';
   id: string;
   reason: 'project-trust-not-granted' | 'invalid-duplicate-registration-id';
 }
@@ -54,7 +58,7 @@ export interface EffectiveState {
 export interface EffectiveStateOptions {
   /**
    * Pi host-owned Project Trust. Defaults to false: project records remain stored but are
-   * excluded, and overrides do not participate, until the host grants trust.
+   * excluded until the host grants trust.
    */
   projectTrusted?: boolean;
 }
@@ -73,16 +77,13 @@ export function computeEffectiveState(
   const excluded: ExcludedProjectRecord[] = [];
 
   // Without Project Trust every project-side record stays durable but non-participating.
+  // Legacy persisted Scope Overrides are ignored entirely (retired, issue #59).
   if (!projectTrusted) {
     for (const registration of projectState.registrations) {
       excluded.push({ kind: 'registration', id: registration.id, reason: 'project-trust-not-granted' });
     }
     for (const installation of projectState.installations) {
       excluded.push({ kind: 'installation', id: installation.id, reason: 'project-trust-not-granted' });
-    }
-    for (const override of projectState.scopeOverrides) {
-      const id = `${override.kind}/${override.targetId}`;
-      excluded.push({ kind: 'scope-override', id, reason: 'project-trust-not-granted' });
     }
     return {
       registrations: globalState.registrations.map((registration) => ({ ...registration, sourceScope: 'global' })),
@@ -94,54 +95,14 @@ export function computeEffectiveState(
     };
   }
 
-  // Overrides are keyed by canonical Registration ID / Installation ID and suppress only
-  // inherited Global Scope records.
-  const overriddenRegistrationIds = new Set(
-    projectState.scopeOverrides.filter((o) => o.kind === 'registration').map((o) => o.targetId),
-  );
-  const overriddenInstallationIds = new Set(
-    projectState.scopeOverrides.filter((o) => o.kind === 'installation').map((o) => o.targetId),
-  );
-
-  const survivingGlobalRegistrations = globalState.registrations.filter((registration) => {
-    if (!overriddenRegistrationIds.has(registration.id)) return true;
-    suppressed.push({ kind: 'registration', targetId: registration.id, reason: 'scope-override-registration' });
-    return false;
-  });
-
-  // A project record that duplicates a global Registration ID is invalid rather than an
-  // override; it stays durable but cannot participate in Effective State.
-  const globalRegistrationIds = new Set(survivingGlobalRegistrations.map((registration) => registration.id));
+  // A project record that duplicates a global Registration ID is invalid; it stays durable
+  // but cannot participate in Effective State.
+  const globalRegistrationIds = new Set(globalState.registrations.map((registration) => registration.id));
   const projectRegistrations = projectState.registrations.filter((registration) => {
     if (!globalRegistrationIds.has(registration.id)) return true;
     excluded.push({ kind: 'registration', id: registration.id, reason: 'invalid-duplicate-registration-id' });
     return false;
   });
-
-  // A Registration Override suppresses its whole marketplace subtree: every Installation
-  // supplied by that Registration disappears with it.
-  const survivingGlobalInstallations: Installation[] = [];
-  for (const installation of globalState.installations) {
-    if (installation.registrationId && overriddenRegistrationIds.has(installation.registrationId)) {
-      suppressed.push({
-        kind: 'installation',
-        targetId: installation.id,
-        pluginId: installation.pluginId,
-        reason: 'scope-override-registration',
-      });
-      continue;
-    }
-    if (overriddenInstallationIds.has(installation.id)) {
-      suppressed.push({
-        kind: 'installation',
-        targetId: installation.id,
-        pluginId: installation.pluginId,
-        reason: 'scope-override-installation',
-      });
-      continue;
-    }
-    survivingGlobalInstallations.push(installation);
-  }
 
   // Only enabled Installations ever participate; a disabled project Installation neither
   // participates nor supersedes its inherited global twin.
@@ -150,7 +111,7 @@ export function computeEffectiveState(
   );
   const projectPluginIds = new Set(enabledProjectInstallations.map((installation) => installation.pluginId));
 
-  for (const installation of survivingGlobalInstallations) {
+  for (const installation of globalState.installations) {
     if (installation.installationState !== 'enabled') continue;
     if (!projectPluginIds.has(installation.pluginId)) continue;
     const supersedingId = enabledProjectInstallations.find((item) => item.pluginId === installation.pluginId)!.id;
@@ -163,19 +124,17 @@ export function computeEffectiveState(
     });
   }
 
-  const supersededIds = new Set(suppressed.filter((s) => s.reason === 'project-precedence').map((s) => s.targetId));
-
   return {
     registrations: [
-      ...survivingGlobalRegistrations.map((registration): EffectiveRegistration => ({ ...registration, sourceScope: 'global' })),
+      ...globalState.registrations.map((registration): EffectiveRegistration => ({ ...registration, sourceScope: 'global' })),
       ...projectRegistrations.map((registration): EffectiveRegistration => ({ ...registration, sourceScope: 'project' })),
     ],
     installations: [
-      ...survivingGlobalInstallations
-        .filter((installation) => installation.installationState === 'enabled' && !supersededIds.has(installation.id))
+      ...globalState.installations
+        .filter((installation) => installation.installationState === 'enabled')
         .map((installation): EffectiveInstallation => ({ ...installation, sourceScope: 'global' })),
       ...enabledProjectInstallations.map((installation): EffectiveInstallation => ({ ...installation, sourceScope: 'project' })),
-    ],
+    ].filter((installation) => !suppressed.some((entry) => entry.targetId === installation.id)),
     suppressed,
     excluded,
   };

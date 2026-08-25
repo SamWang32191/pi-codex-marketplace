@@ -1,10 +1,14 @@
 /**
  * Bridge State — Authoritative durable desired state.
- * See CONTEXT.md: Bridge State, State Revision, Registration ID, Installation ID, Scope Override
+ * See CONTEXT.md: Bridge State, State Revision, Registration ID, Installation ID
  *
  * Persistence is split into two scope-local documents (global + project).
  * Only authoritative fields are persisted; Effective State, catalogs, compatibility
  * results, diagnostics are recomputed at read time.
+ *
+ * Scope Overrides are retired (issue #59): the persisted field remains in schema v1 but is
+ * always empty for newly written global documents and never read; the schema v2 migration
+ * will strip it entirely.
  */
 
 export const CURRENT_SCHEMA_VERSION = 1;
@@ -74,7 +78,7 @@ export interface Installation {
 }
 
 export interface ScopeOverride {
-  /** Project-only suppression of inherited global record */
+  /** Retired (issue #59) — kept only so pre-retirement project documents still parse. */
   kind: 'registration' | 'installation';
   /** Canonical Registration ID or Installation ID being suppressed */
   targetId: string;
@@ -89,7 +93,7 @@ export interface BridgeState {
   registrations: Registration[];
   /** Scope-local installations (with Installation State) */
   installations: Installation[];
-  /** Project-only — empty for global scope */
+  /** Retired (issue #59) — always empty in practice; legacy entries are ignored at read time. */
   scopeOverrides: ScopeOverride[];
 }
 

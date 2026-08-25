@@ -16,7 +16,6 @@ import type {
   ReadResult,
   Registration,
   Scope,
-  ScopeOverride,
 } from '../../src/bridge-state/types.js';
 import type {
   CompatiblePlugin,
@@ -46,7 +45,6 @@ export type LedgerSectionId =
   | 'observe'
   | 'sources'
   | 'plugins'
-  | 'scope-inheritance'
   | 'recovery-receipts';
 
 export type LedgerActionId =
@@ -62,8 +60,6 @@ export type LedgerActionId =
   | 'enable-installation'
   | 'disable-installation'
   | 'remove-installation'
-  | 'create-scope-override'
-  | 'remove-scope-override'
   | 'view-receipt-journal'
   | 'repair-state'
   | 'retry-application'
@@ -74,7 +70,6 @@ export type LedgerTargetKind =
   | 'registration'
   | 'marketplace-entry'
   | 'installation'
-  | 'scope-override'
   | 'receipt';
 
 export interface LedgerActionIntent {
@@ -130,7 +125,6 @@ export interface LedgerAuthorityRail {
   registrationCount: number;
   installationEnabledCount: number;
   installationDisabledCount: number;
-  overrideCount: number;
   health: LedgerHealth;
   healthText: string;
   trustText: string;
@@ -302,7 +296,6 @@ function rail(scope: Scope, result: ReadResult, projectTrusted: boolean): Ledger
       state?.installations.filter((item) => item.installationState === 'enabled').length ?? 0,
     installationDisabledCount:
       state?.installations.filter((item) => item.installationState === 'disabled').length ?? 0,
-    overrideCount: state?.scopeOverrides.length ?? 0,
     health,
     healthText,
     trustText: scope === 'global'
@@ -403,8 +396,6 @@ const ACTION_LABELS: Record<LedgerActionId, string> = {
   'enable-installation': uiText('ledger.action.enable-installation'),
   'disable-installation': uiText('ledger.action.disable-installation'),
   'remove-installation': uiText('ledger.action.remove-installation'),
-  'create-scope-override': uiText('ledger.action.create-scope-override'),
-  'remove-scope-override': uiText('ledger.action.remove-scope-override'),
   'view-receipt-journal': uiText('ledger.action.view-receipt-journal'),
   'repair-state': uiText('ledger.action.repair-state'),
   'retry-application': uiText('ledger.action.retry-application'),
@@ -569,74 +560,6 @@ function pluginRows(
   return [...installRows, ...installationRows];
 }
 
-function createOverrideRow(
-  kind: ScopeOverride['kind'],
-  targetId: string,
-  label: string,
-  snapshot: BridgeLedgerSnapshot,
-): LedgerObjectRow {
-  return {
-    id: `inherited:${kind}:${targetId}`,
-    label,
-    detail: uiText('ledger.row.override.inherited', { kind, targetId }),
-    scope: 'global',
-    targetKind: kind,
-    targetId,
-    actions: [
-      action(snapshot, {
-        actionId: 'create-scope-override',
-        mode: 'mutation',
-        scope: 'project',
-        targetKind: kind,
-        targetId,
-      }),
-    ],
-  };
-}
-
-function overrideRows(
-  globalState: BridgeState | undefined,
-  projectState: BridgeState | undefined,
-  snapshot: BridgeLedgerSnapshot,
-): LedgerObjectRow[] {
-  const existingOverrides = new Set(
-    (projectState?.scopeOverrides ?? []).map((override) => `${override.kind}/${override.targetId}`),
-  );
-  const inherited = [
-    ...(globalState?.registrations ?? [])
-      .filter((registration) => !existingOverrides.has(`registration/${registration.id}`))
-      .map((registration) =>
-        createOverrideRow('registration', registration.id, registrationName(registration), snapshot)),
-    ...(globalState?.installations ?? [])
-      .filter((installation) =>
-        installation.installationState === 'enabled' &&
-        !existingOverrides.has(`installation/${installation.id}`))
-      .map((installation) =>
-        createOverrideRow('installation', installation.id, installation.manifestName ?? installation.pluginId, snapshot)),
-  ];
-  const overrides = (projectState?.scopeOverrides ?? []).map((override): LedgerObjectRow => {
-    const canonicalOverrideId = `${override.kind}/${override.targetId}`;
-    return {
-      id: `scope-override:${canonicalOverrideId}`,
-      label: uiText('ledger.row.override.label', { kind: override.kind }),
-      detail: uiText('ledger.row.override.suppresses', { targetId: override.targetId }),
-      scope: 'project',
-      targetKind: 'scope-override',
-      targetId: canonicalOverrideId,
-      actions: [
-        action(snapshot, {
-          actionId: 'remove-scope-override',
-          mode: 'mutation',
-          scope: 'project',
-          targetKind: 'scope-override',
-          targetId: canonicalOverrideId,
-        }),
-      ],
-    };
-  });
-  return [...inherited, ...overrides];
-}
-
 function receiptRow(receipt: AttemptReceipt, snapshot: BridgeLedgerSnapshot): LedgerObjectRow {
   return {
     id: `receipt:${receipt.scope}:${receipt.id}`,
@@ -731,12 +654,6 @@ export function buildBridgeLedgerModel(snapshot: BridgeLedgerSnapshot): BridgeLe
       return pluginRowCache;
     },
   };
-  const inheritance: LedgerSection = {
-    id: 'scope-inheritance',
-    label: uiText('ledger.section.scope-inheritance.label'),
-    description: uiText('ledger.section.scope-inheritance.description'),
-    rows: overrideRows(globalState, projectState, snapshot),
-  };
   const recovery: LedgerSection = {
     id: 'recovery-receipts',
     label: uiText('ledger.section.recovery-receipts.label'),
@@ -793,7 +710,7 @@ export function buildBridgeLedgerModel(snapshot: BridgeLedgerSnapshot): BridgeLe
       suppressedCount: effective?.suppressed.length ?? 0,
       excludedCount: effective?.excluded.length ?? 0,
     },
-    sections: [observe, sources, plugins, inheritance, recovery],
+    sections: [observe, sources, plugins, recovery],
   };
 }
 
@@ -1051,7 +968,6 @@ export class BridgeLedgerComponent implements Component {
         disabled: rail.installationDisabledCount,
       }),
     ];
-    if (scope === 'project') lines.push(uiText('ledger.rail.overrides', { count: rail.overrideCount }));
     if (rail.health !== 'healthy') lines.push(fitDim(quoteTerminalText(rail.healthText)));
     if (scope === 'project') lines.push(fitDim(rail.trustText));
     if (scope === 'global' && this.model.barrier.active) {

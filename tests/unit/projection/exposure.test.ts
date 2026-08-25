@@ -165,17 +165,13 @@ describe('Runtime Skill Exposure — contribution', () => {
     void fingerprint;
   });
 
-  it('a Registration Override suppresses the whole source subtree', async () => {
+  it('legacy persisted Scope Overrides do not suppress Runtime Skill Exposure', async () => {
     const env = freshEnv();
     makeMarketplace(env.marketplace, 'release-helper', 'release-helper', ['release-notes']);
     await seedGitRegistrationAndCache(env);
+    // A pre-retirement project document still carrying a suppression entry must be ignored.
     await commitBridgeState('project', (state) => ({ ...state, scopeOverrides: [{ kind: 'registration', targetId: GLOBAL_REG }] }), { agentDir: env.agentDir, cwd: env.projectDir });
 
-    const result = discoverProjectedSkillPaths({ cwd: env.projectDir, agentDir: env.agentDir, projectTrusted: true });
-    expect(result.skillPaths).toEqual([]);
-
-    // Removing the override reveals the inherited record again at the next read.
-    await commitBridgeState('project', (state) => ({ ...state, scopeOverrides: [] }), { agentDir: env.agentDir, cwd: env.projectDir });
     expect(discoverProjectedSkillPaths({ cwd: env.projectDir, agentDir: env.agentDir, projectTrusted: true }).skillPaths).toHaveLength(1);
   });
 

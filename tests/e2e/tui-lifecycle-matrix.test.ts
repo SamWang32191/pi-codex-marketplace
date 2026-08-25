@@ -166,13 +166,14 @@ describe('E2E TUI highest seam — lifecycle / collision / barrier / cache (Issu
     expect(barrier.reason).toMatch(/Pending Application|active recovery/);
   });
 
-  it('partitioned list surfaces Global/Project scopeOverrides without mutating global document (sparse suppression)', async () => {
+  it('persisted legacy scopeOverrides stop participating immediately — inherited Global always effective', async () => {
     const global: BridgeState = {
       ...createEmptyState(),
       stateRevision: '1',
       registrations: [{ id: 'reg-g1', alias: 'acme', marketplaceName: 'acme-marketplace', sourceKind: 'local', source: '/g' } as any],
       installations: [],
     };
+    // A project document left behind by a pre-retirement Bridge, still carrying an override.
     const project: BridgeState = {
       ...createEmptyState(),
       stateRevision: '1',
@@ -184,19 +185,10 @@ describe('E2E TUI highest seam — lifecycle / collision / barrier / cache (Issu
     await writeBridgeState('project', project, { cwd: env.cwd, agentDir: env.agentDir });
 
     const effective = computeEffectiveState(global, project, { projectTrusted: true });
-    // reg-g1 should be suppressed
-    expect(effective.registrations.find(r => r.id === 'reg-g1')).toBeUndefined();
-    expect(effective.suppressed.some(s => s.targetId === 'reg-g1' && s.reason === 'scope-override-registration')).toBe(true);
-    // Global document unchanged
+    expect(effective.registrations.find(r => r.id === 'reg-g1')).toBeDefined();
+    expect(effective.suppressed).toEqual([]);
+    // Global document unchanged — retirement is a read-time semantics change only.
     const reReadGlobal = await readBridgeState('global', { cwd: env.cwd, agentDir: env.agentDir });
     expect(reReadGlobal.state!.registrations.find(r => r.id === 'reg-g1')).toBeDefined();
-
-    // Removing override reveals inheritance again without touching global
-    const { removeScopeOverride } = await import('../../src/projection/overrides.js');
-    const res = await removeScopeOverride('registration', 'reg-g1', { cwd: env.cwd, agentDir: env.agentDir });
-    // Should produce a receipt; if barrier active, it would be blocked — here barrier is not active so we allow.
-    // In this isolated test without a Pending barrier, removal should be attempt-able; verify effective restores after manual override removal
-    const restored = computeEffectiveState(global, { ...project, scopeOverrides: [] }, { projectTrusted: true });
-    expect(restored.registrations.find(r => r.id === 'reg-g1')).toBeDefined();
   });
 });

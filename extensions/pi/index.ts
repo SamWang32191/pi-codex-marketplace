@@ -24,11 +24,7 @@ import { runLocalRegistrationFlow } from './registration.js';
 import { runGitRegistrationFlow } from './git-registration.js';
 import { runPluginInstallationFlow, runPluginStateFlow } from './installation.js';
 import { runRefreshFlow, runRebindFlow, runRemovalFlow } from './lifecycle.js';
-import {
-  runEffectiveStateView,
-  runRemoveScopeOverrideFlow,
-  runScopeOverrideFlow,
-} from './scope-overrides.js';
+import { runEffectiveStateView } from './effective-state-view.js';
 import {
   runReceiptJournalView,
   runRepairStateFlow,
@@ -102,25 +98,6 @@ function requiredMarketplaceEntryTarget(intent: LedgerActionIntent): {
   throw new Error(`Ledger action ${intent.actionId} requires a stable Marketplace Entry identity`);
 }
 
-function overrideTarget(intent: LedgerActionIntent): {
-  targetKind: 'registration' | 'installation';
-  targetId: string;
-  expectedStateRevision: string;
-} {
-  const target = requiredTarget(intent);
-  const expectedStateRevision = requiredStateRevision(intent);
-  if (intent.targetKind === 'registration' || intent.targetKind === 'installation') {
-    return { targetKind: intent.targetKind, targetId: target, expectedStateRevision };
-  }
-  const separator = target.indexOf('/');
-  const kind = target.slice(0, separator);
-  const targetId = target.slice(separator + 1);
-  if ((kind !== 'registration' && kind !== 'installation') || separator < 1 || !targetId) {
-    throw new Error(`Ledger action ${intent.actionId} has an invalid Scope Override target`);
-  }
-  return { targetKind: kind, targetId, expectedStateRevision };
-}
-
 /** Localized state summary for TUI surfaces (the non-TUI list/inspect output stays canonical English). */
 function formatLocalizedStateSummary(result: ReadResult, scope: 'global' | 'project'): string {
   const scopeLabel = scope === 'project' ? uiText('common.scope.project') : uiText('common.scope.global');
@@ -144,10 +121,7 @@ function formatLocalizedStateSummary(result: ReadResult, scope: 'global' | 'proj
       enabled: instEnabled,
       disabled: instDisabled,
     });
-    const ovPart = scope === 'project'
-      ? uiText('cmd.state.ok.overrides', { overrides: s.scopeOverrides.length })
-      : '';
-    return base + ovPart;
+    return base;
   }
   if (result.status === 'incompatible') {
     return uiText('cmd.state.incompatible', {
@@ -234,16 +208,6 @@ export async function dispatchLedgerAction(
         targetId: requiredTarget(intent),
       });
       return;
-    case 'create-scope-override': {
-      const target = overrideTarget(intent);
-      await runScopeOverrideFlow(ctx, target);
-      return;
-    }
-    case 'remove-scope-override': {
-      const target = overrideTarget(intent);
-      await runRemoveScopeOverrideFlow(ctx, target);
-      return;
-    }
     case 'view-receipt-journal':
       await runReceiptJournalView(ctx, { scope: requiredScope(intent) });
       return;
@@ -279,9 +243,7 @@ function formatStateSummary(result: ReadResult, scopeLabel: string): string {
     const regCount = s.registrations.length;
     const instEnabled = s.installations.filter((i) => i.installationState === 'enabled').length;
     const instDisabled = s.installations.filter((i) => i.installationState === 'disabled').length;
-    const ov = s.scopeOverrides.length;
-    const ovPart = scopeLabel === 'Project Scope' ? ` · ${ov} overrides` : '';
-    return `${scopeLabel}: revision ${s.stateRevision} · ${regCount} registrations · ${instEnabled} enabled / ${instDisabled} disabled${ovPart}`;
+    return `${scopeLabel}: revision ${s.stateRevision} · ${regCount} registrations · ${instEnabled} enabled / ${instDisabled} disabled`;
   }
   if (result.status === 'incompatible') {
     return `${scopeLabel}: incompatible — ${quoteTerminalText(result.error ?? 'unknown schema')} (requires newer Bridge Package)`;

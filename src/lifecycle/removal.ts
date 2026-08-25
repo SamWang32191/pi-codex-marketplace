@@ -300,21 +300,14 @@ export async function confirmRegistrationRemoval(
 /** Inherited Installations that become effective once this one is removed. */
 async function resumingInherited(scope: Scope, installation: Installation, opts: RemovalFlowOptions): Promise<Installation[]> {
   if (scope !== 'project') return [];
-  const [global, project] = await Promise.all([
-    readBridgeState('global', { cwd: opts.cwd, agentDir: opts.agentDir }),
-    readBridgeState('project', { cwd: opts.cwd, agentDir: opts.agentDir }),
-  ]);
+  const global = await readBridgeState('global', { cwd: opts.cwd, agentDir: opts.agentDir });
   if (global.status !== 'ok' && global.status !== 'missing') return [];
-  // Suppressions live in the PROJECT document and reveal/hide inherited records by ID.
-  const projectOverrides = project.state?.scopeOverrides ?? [];
-  const suppressedInstallations = new Set(projectOverrides.filter((o) => o.kind === 'installation').map((o) => o.targetId));
-  const suppressedRegistrations = new Set(projectOverrides.filter((o) => o.kind === 'registration').map((o) => o.targetId));
+  // Scope Overrides retired (issue #59): inherited records are never suppressed,
+  // so every enabled inherited twin of the removed Plugin ID resumes immediately.
   return (global.state?.installations ?? []).filter(
     (candidate) =>
       candidate.pluginId === installation.pluginId &&
-      candidate.installationState === 'enabled' &&
-      !suppressedInstallations.has(candidate.id) &&
-      !(candidate.registrationId && suppressedRegistrations.has(candidate.registrationId)),
+      candidate.installationState === 'enabled',
   );
 }
 
