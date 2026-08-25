@@ -2,6 +2,11 @@
 
 All notable changes to `pi-codex-marketplace` are documented here. Format follows Keep a Changelog and SemVer (starting at `0.1.0`; Git tags `v*` mirror npm versions).
 
+## [Unreleased]
+
+### Added
+- **Runtime Skill Exposure** (#54)：Bridge Extension 實作 host 資源發現接縫（`pi.on("resources_discover")` 回傳 `skillPaths`，startup 與 reload 兩種 reason 皆支援），依當下 Effective State（enabled Installation 減去 Scope Override 與 Project Trust 排除）之 Runtime Skill Collision 存活者，動態貢獻 skill 目錄——Git Registration 直接指向 Source Cache 中其 Validation Snapshot fingerprint 對應 entry 內的個別 skill 目錄，Local Registration 指向 live Marketplace Root；路徑解析重用 retained catalog + Contained Path 解析。發現時僅做被動存在性檢查：不重算指紋、不改動 Bridge State、不產生任何 Attempt Receipt；快取 entry 遭外部刪除時逐項略過且 discovery 必定完成（`SOURCE_REACQUISITION_REQUIRED` / `SOURCE_DRIFT` 仍由 Lifecycle Operations 產生）。新增領域模組 `src/projection/exposure.ts`（ADR 0001）。
+
 ## [0.1.9] - 2026-08-24
 
 ### Added
