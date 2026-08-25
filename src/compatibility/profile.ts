@@ -594,6 +594,21 @@ export function classifyPlugin(root: string, opts: ClassificationOptions): Class
       const agentProfile = loadAgentProfile(root, skillDirectory, entry.name, opts, capture);
       findings.push(...agentProfile.findings);
       const descriptorPolicy = descriptorInvocationPolicy(descriptor.frontmatter?.['disable-model-invocation']);
+      // Advisory (COMP-W02): an Agent Profile may declare explicit-only Invocation Policy that the
+      // Pi runtime cannot honour because the Skill Descriptor lacks `disable-model-invocation`.
+      // This is a non-blocking Validation Warning; the Effective policy computation below and the
+      // whole-Plugin classification remain unchanged.
+      if (agentProfile.invocationPolicy === 'explicit' && !Object.hasOwn(descriptor.frontmatter!, 'disable-model-invocation')) {
+        findings.push(warning({
+          code: CODE.UNENFORCEABLE_INVOCATION_POLICY,
+          rule: 'COMP-W02',
+          target: 'skill',
+          pointer: `skills/${entry.name}/agents/openai.yaml#/policy/allow_implicit_invocation`,
+          outcome: 'Skill Agent Profile declares explicit-only Invocation Policy that remains unenforceable because the Skill Descriptor does not declare disable-model-invocation; declare disable-model-invocation: true in the Skill Descriptor frontmatter to make it enforceable',
+          scope: opts.scope,
+          phase: 'validation',
+        }));
+      }
       if (descriptorPolicy && agentProfile.invocationPolicy && descriptorPolicy !== agentProfile.invocationPolicy) {
         findings.push(finding(
           opts,

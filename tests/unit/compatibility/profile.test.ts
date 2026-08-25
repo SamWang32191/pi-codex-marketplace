@@ -614,4 +614,77 @@ describe('Compatibility Profile v1', () => {
       expect.objectContaining({ code: 'SKILL_AGENT_PROFILE_INVALID' }),
     ]));
   });
+
+  it('warns COMP-W02 when an Agent Profile declares an Invocation Policy Pi cannot enforce', () => {
+    const root = pluginRoot();
+    mkdirSync(join(root, 'skills', 'release-notes', 'agents'), { recursive: true });
+    writeFileSync(
+      join(root, 'skills', 'release-notes', 'agents', 'openai.yaml'),
+      'policy:\n  allow_implicit_invocation: false\n',
+    );
+
+    const result = classifyPlugin(root, {
+      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+    });
+
+    // Non-blocking: Registration survives with the advisory warning while the projected
+    // Invocation Policy stays `explicit` for Activation Disclosure.
+    expect(result.classification).toBe('compatible');
+    expect(result.plugin!.skills[0]!.invocationPolicy).toBe('explicit');
+    expect(result.findings).toEqual([
+      expect.objectContaining({
+        code: 'UNENFORCEABLE_INVOCATION_POLICY',
+        rule: 'COMP-W02',
+        classification: 'warning',
+        target: 'skill',
+        phase: 'validation',
+        scope: 'global',
+        pointer: 'skills/release-notes/agents/openai.yaml#/policy/allow_implicit_invocation',
+      }),
+    ]);
+    expect(result.findings[0]!.outcome).toContain('disable-model-invocation');
+  });
+
+  it('does not warn COMP-W02 when the Skill Descriptor enforces the explicit policy itself', () => {
+    const root = pluginRoot();
+    writeFileSync(
+      join(root, 'skills', 'release-notes', 'SKILL.md'),
+      '---\nname: release-notes\ndescription: Draft release notes\ndisable-model-invocation: true\n---\n\nWrite concise release notes.\n',
+    );
+    mkdirSync(join(root, 'skills', 'release-notes', 'agents'), { recursive: true });
+    writeFileSync(
+      join(root, 'skills', 'release-notes', 'agents', 'openai.yaml'),
+      'policy:\n  allow_implicit_invocation: false\n',
+    );
+
+    const result = classifyPlugin(root, {
+      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+    });
+
+    expect(result.classification).toBe('compatible');
+    expect(result.plugin!.skills[0]!.invocationPolicy).toBe('explicit');
+    expect(result.findings).toEqual([]);
+  });
+
+  it('does not warn COMP-W02 for implicit or absent Invocation Policy declarations', () => {
+    const root = pluginRoot();
+    const agents = join(root, 'skills', 'release-notes', 'agents');
+    mkdirSync(agents, { recursive: true });
+    writeFileSync(join(agents, 'openai.yaml'), 'policy:\n  allow_implicit_invocation: true\n');
+
+    const implicit = classifyPlugin(root, {
+      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+    });
+
+    expect(implicit.classification).toBe('compatible');
+    expect(implicit.findings).toEqual([]);
+
+    writeFileSync(join(agents, 'openai.yaml'), 'interface:\n  display_name: Release notes\n');
+    const absentPolicy = classifyPlugin(root, {
+      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+    });
+
+    expect(absentPolicy.classification).toBe('compatible');
+    expect(absentPolicy.findings).toEqual([]);
+  });
 });
