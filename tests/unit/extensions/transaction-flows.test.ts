@@ -1053,54 +1053,6 @@ describe('Bridge Ledger transaction flow adapters', () => {
     );
   });
 
-  it('rejects a Ledger-selected Scope Override after Project State drifted before dispatch', async () => {
-    const registrationId = '11111111-1111-4111-8111-111111111111';
-    await commitBridgeState('global', (state) => ({
-      ...state,
-      registrations: [{ id: registrationId, alias: 'inherited' }],
-    }), { cwd, agentDir });
-    const selected = await commitBridgeState('project', (state) => ({ ...state }), { cwd, agentDir });
-    await commitBridgeState('project', (state) => ({ ...state }), { cwd, agentDir });
-    const events: string[] = [];
-    const renderedByStep = new Map<string, string>();
-    const ctx = {
-      cwd,
-      mode: 'tui',
-      hasUI: true,
-      isProjectTrusted: () => true,
-      ui: {
-        select: async () => { throw new Error('structured override target must not open selectors'); },
-        input: async () => { throw new Error('structured override target must not request input'); },
-        custom: terminalPreflightSheetCustom(events, renderedByStep),
-        confirm: async () => true,
-        notify: () => {},
-      },
-    };
-
-    await dispatchLedgerAction(ctx as never, {
-      actionId: 'create-scope-override',
-      mode: 'mutation',
-      scope: 'project',
-      targetKind: 'registration',
-      targetId: registrationId,
-      stateRevision: selected.newRevision,
-    });
-
-    expect(events).toEqual(['Intent', 'Validation', 'Consent', 'Plan', 'Commit', 'Receipt']);
-    expect(renderedByStep.get('Intent')).toMatch(
-      new RegExp(`目標:.*${registrationId}.*State Revision:.*${selected.newRevision}`, 's'),
-    );
-    expect((await readBridgeState('project', { cwd, agentDir })).state?.scopeOverrides).toEqual([]);
-    expect((await readReceiptJournal('project', { cwd, agentDir })).receipts.at(-1)).toEqual(
-      expect.objectContaining({
-        operation: 'Registration Override Creation',
-        expectedStateRevision: selected.newRevision,
-        observedStateRevision: '2',
-        summary: 'Rejected as Stale',
-      }),
-    );
-  });
-
   it('rejects a Ledger-selected Repair after State drifted before dispatch', async () => {
     const selected = await commitBridgeState('project', (state) => ({ ...state }), { cwd, agentDir });
     await commitBridgeState('project', (state) => ({ ...state }), { cwd, agentDir });

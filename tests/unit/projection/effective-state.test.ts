@@ -1,11 +1,14 @@
 /**
  * Effective State computation — pure read-time behavior.
- * See CONTEXT.md: Effective State, Scope Override, Global Scope, Project Scope,
+ * See CONTEXT.md: Effective State, Global Scope, Project Scope,
  * Installed Plugin, Installation State, Project Trust.
  *
  * Only external observable behavior is asserted: which records participate,
  * which inherited records are suppressed and why, and that persisted provenance
  * of selected records is never merged or mutated.
+ *
+ * Scope Overrides retired (issue #59): legacy persisted `scopeOverrides` entries must be
+ * ignored entirely — inherited Global records always participate, with no suppression path.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -82,7 +85,7 @@ describe('Effective State — inheritance', () => {
   });
 });
 
-describe('Effective State — Scope Overrides', () => {
+describe('Effective State — retired Scope Overrides（暫態語意）', () => {
   const subtreeInstallA = installation('global/r-a/one', 'reg-a/one', { scope: 'global', registrationId: GLOBAL_REG });
   const subtreeInstallB = installation('global/r-a/two', 'reg-a/two', { scope: 'global', registrationId: GLOBAL_REG });
   const otherInstall = installation('global/r-b/keep', 'reg-b/keep', { scope: 'global', registrationId: GLOBAL_REG_2 });
@@ -92,42 +95,31 @@ describe('Effective State — Scope Overrides', () => {
     installations: [subtreeInstallA, subtreeInstallB, otherInstall],
   });
 
-  it('a Registration Override suppresses the whole marketplace subtree (registration + its installations)', () => {
-    const project = withState({ scopeOverrides: [{ kind: 'registration', targetId: GLOBAL_REG }] });
-    const effective = computeEffectiveState(populatedGlobal, project, { projectTrusted: true });
-    expect(effective.registrations.map((r) => r.id)).toEqual([GLOBAL_REG_2]);
-    expect(effective.installations.map((i) => i.pluginId)).toEqual(['reg-b/keep']);
-    expect(effective.suppressed).toContainEqual(
-      expect.objectContaining({ kind: 'registration', targetId: GLOBAL_REG, reason: 'scope-override-registration' }),
-    );
-    const suppressedIds = effective.suppressed.filter((s) => s.kind === 'installation').map((s) => s.targetId);
-    expect(suppressedIds.sort()).toEqual(['global/r-a/one', 'global/r-a/two'].sort());
-  });
-
-  it('an Installation Override suppresses only that single Plugin', () => {
-    const project = withState({ scopeOverrides: [{ kind: 'installation', targetId: 'global/r-a/one' }] });
-    const effective = computeEffectiveState(populatedGlobal, project, { projectTrusted: true });
+  it('legacy persisted overrides never suppress — inherited Global records always participate', () => {
+    const legacyProject = withState({
+      scopeOverrides: [
+        { kind: 'registration', targetId: GLOBAL_REG },
+        { kind: 'installation', targetId: 'global/r-b/keep' },
+        { kind: 'installation', targetId: 'global/missing/nowhere' },
+      ],
+    });
+    const effective = computeEffectiveState(populatedGlobal, legacyProject, { projectTrusted: true });
     expect(effective.registrations.map((r) => r.id)).toEqual([GLOBAL_REG, GLOBAL_REG_2]);
-    expect(effective.installations.map((i) => i.id).sort()).toEqual(['global/r-a/two', 'global/r-b/keep'].sort());
-    expect(effective.suppressed).toEqual([
-      expect.objectContaining({ kind: 'installation', targetId: 'global/r-a/one', reason: 'scope-override-installation' }),
-    ]);
-  });
-
-  it('removing the override restores inheritance immediately — recomputation reveals the inherited records again', () => {
-    const overridden = withState({ scopeOverrides: [{ kind: 'registration', targetId: GLOBAL_REG }] });
-    expect(computeEffectiveState(populatedGlobal, overridden, { projectTrusted: true }).registrations.map((r) => r.id)).toEqual([GLOBAL_REG_2]);
-    // Same global document, project document back to no overrides:
-    const restored = computeEffectiveState(populatedGlobal, createEmptyState(), { projectTrusted: true });
-    expect(restored.registrations.map((r) => r.id)).toEqual([GLOBAL_REG, GLOBAL_REG_2]);
-    expect(restored.suppressed).toEqual([]);
-  });
-
-  it('ignores overrides whose target is not present in the inherited Global Scope', () => {
-    const project = withState({ scopeOverrides: [{ kind: 'installation', targetId: 'global/missing/nowhere' }] });
-    const effective = computeEffectiveState(populatedGlobal, project, { projectTrusted: true });
-    expect(effective.installations).toHaveLength(3);
+    expect(effective.installations.map((i) => i.id).sort()).toEqual(
+      ['global/r-a/one', 'global/r-a/two', 'global/r-b/keep'].sort(),
+    );
+    // No suppression path exists anymore — not even for stale persisted overrides.
     expect(effective.suppressed).toEqual([]);
+  });
+
+  it('a project document whose only difference is its overrides computes the identical Effective State', () => {
+    const plain = computeEffectiveState(populatedGlobal, createEmptyState(), { projectTrusted: true });
+    const withLegacy = computeEffectiveState(
+      populatedGlobal,
+      withState({ scopeOverrides: [{ kind: 'registration', targetId: GLOBAL_REG_2 }] }),
+      { projectTrusted: true },
+    );
+    expect(withLegacy).toEqual(plain);
   });
 });
 
@@ -199,7 +191,9 @@ describe('Effective State — Project Trust boundary', () => {
     expect(effective.registrations.map((r) => r.id)).toEqual([GLOBAL_REG]);
     expect(effective.installations.map((i) => i.id)).toEqual(['global/acme/alpha']);
     expect(effective.suppressed).toEqual([]);
-    expect(effective.excluded.map((e) => e.reason)).toHaveLength(3);
+    // Legacy persisted overrides are ignored entirely — only real records get excluded.
+    expect(effective.excluded.map((e) => e.reason)).toHaveLength(2);
+    expect(effective.excluded.map((e) => e.kind).sort()).toEqual(['installation', 'registration']);
   });
 
   it('defaults to untrusted unless the host explicitly granted Project Trust', () => {

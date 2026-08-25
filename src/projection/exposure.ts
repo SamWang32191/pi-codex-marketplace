@@ -4,8 +4,8 @@
  * See CONTEXT.md: Runtime Skill Exposure, Projected Skill, Projected Plugin, Effective State,
  * Runtime Skill Collision, Source Cache, Skill Availability.
  *
- * Exposure derives entirely from the current Effective State (enabled Installations minus Scope
- * Overrides and Project Trust exclusions) and its collision survivors. It performs passive
+ * Exposure derives entirely from the current Effective State (enabled Installations minus
+ * Project Trust exclusions and project-over-global precedence) and its collision survivors. It performs passive
  * existence inspection only: no fingerprint recomputation, no Bridge State mutation, and no
  * Attempt Receipt — snapshot-bound validation stays bound to Lifecycle Operations and Runtime
  * Applications. Missing cache entries or unreadable snapshot material are skipped individually;

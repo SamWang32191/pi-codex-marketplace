@@ -112,7 +112,7 @@ function snapshot(): BridgeLedgerSnapshot {
         stateRevision: '7',
         registrations: [projectRegistration],
         installations: [projectInstallation],
-        scopeOverrides: [{ kind: 'registration', targetId: globalRegistration.id }],
+        scopeOverrides: [],
       },
     },
     projectTrusted: true,
@@ -168,29 +168,20 @@ function snapshot(): BridgeLedgerSnapshot {
     effective: {
       registrations: [{ ...projectRegistration, sourceScope: 'project' }],
       installations: [],
-      suppressed: [
-        { kind: 'registration', targetId: globalRegistration.id, reason: 'scope-override-registration' },
-        {
-          kind: 'installation',
-          targetId: globalInstallation.id,
-          pluginId: globalInstallation.pluginId,
-          reason: 'scope-override-registration',
-        },
-      ],
+      suppressed: [],
       excluded: [],
     },
   };
 }
 
 describe('Bridge Ledger presentation model', () => {
-  it('organizes all existing management capabilities into five reachable sections', () => {
+  it('organizes all existing management capabilities into four reachable sections', () => {
     const model = buildBridgeLedgerModel(snapshot());
 
     expect(model.sections.map((section) => section.id)).toEqual([
       'observe',
       'sources',
       'plugins',
-      'scope-inheritance',
       'recovery-receipts',
     ]);
 
@@ -212,8 +203,6 @@ describe('Bridge Ledger presentation model', () => {
       'enable-installation',
       'disable-installation',
       'remove-installation',
-      'create-scope-override',
-      'remove-scope-override',
       'view-receipt-journal',
       'repair-state',
       'inspect-receipt',
@@ -723,34 +712,11 @@ describe('Bridge Ledger presentation model', () => {
       targetKind: 'installation',
       targetId: 'global/plugin/global-tool',
     });
-    expect(rows.find((row) => row.id === 'scope-override:registration/11111111-1111-4111-8111-111111111111')).toMatchObject({
-      targetKind: 'scope-override',
-      targetId: 'registration/11111111-1111-4111-8111-111111111111',
-    });
     expect(rows.find((row) => row.id === 'receipt:global:rcpt_33333333-3333-4333-8333-333333333333')).toMatchObject({
       targetKind: 'receipt',
       targetId: 'rcpt_33333333-3333-4333-8333-333333333333',
     });
     expect(actions.filter((entry) => entry.intent.mode === 'mutation').every((entry) => entry.intent.scope !== undefined)).toBe(true);
-  });
-
-  it('offers Scope Overrides only for inherited records that can participate', () => {
-    const mixed = snapshot();
-    mixed.global.state!.installations.push({
-      id: 'global/plugin/disabled-tool',
-      pluginId: '11111111-1111-4111-8111-111111111111/global-market/disabled-tool',
-      registrationId: '11111111-1111-4111-8111-111111111111',
-      installationState: 'disabled',
-    });
-
-    const inheritance = buildBridgeLedgerModel(mixed).sections.find(
-      (section) => section.id === 'scope-inheritance',
-    )!;
-
-    expect(inheritance.rows.some((row) => row.targetId === 'global/plugin/global-tool')).toBe(true);
-    expect(inheritance.rows.some((row) => row.targetId === 'global/plugin/disabled-tool')).toBe(false);
-    expect(inheritance.rows.some((row) =>
-      row.id === 'inherited:registration:11111111-1111-4111-8111-111111111111')).toBe(false);
   });
 
   it('applies Project Trust and Global Pending Barrier only to Project mutations', () => {
@@ -1030,7 +996,6 @@ describe('Bridge Ledger presentation model', () => {
     rendered.instance.handleInput('j'); // onto the hostile registration row's Refresh action
     rendered.instance.handleInput('i'); // expand its metadata layer
     const sourceLines = rendered.instance.render(120);
-    rendered.instance.handleInput('\x1b[C');
     rendered.instance.handleInput('\x1b[C');
     rendered.instance.handleInput('\x1b[C');
     const receiptLines = rendered.instance.render(120);
