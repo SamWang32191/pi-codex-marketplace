@@ -2,6 +2,11 @@
 
 All notable changes to `pi-codex-marketplace` are documented here. Format follows Keep a Changelog and SemVer (starting at `0.1.0`; Git tags `v*` mirror npm versions).
 
+## [Unreleased]
+
+### Changed
+- **Global-only 前置：Scope Override 功能端到端退休** (#59)：`/codex-marketplace` TUI 移除「Scope 與繼承」分區、建立／移除 Scope Override 動作與 inherited／suppresses 列標記；刪除 overrides 核心模組（`src/projection/overrides.ts`）與 extension flow adapter（`extensions/pi/scope-overrides.ts`），Effective State 檢視搬移至 observe-only 的 `extensions/pi/effective-state-view.ts`。繼承自 Global 的 Registration / Installation 一律參與 Effective State，無任何抑制路徑；`BridgeState.scopeOverrides` 型別欄位保留但恆為空（schema v2 遷移才剝除）。暫態語意：既有 persisted overrides 立即停止生效（不再被採計）。雙文件持久化、Attempt Fence、Receipt Journal、Global Pending Barrier 行為不變。
+
 ## [0.1.10] - 2026-08-25
 
 ### Added

@@ -10,6 +10,7 @@
 import type { ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
 
 import { readBridgeState } from '../../src/bridge-state/store.js';
+import type { BridgeState } from '../../src/bridge-state/types.js';
 import { computeEffectiveState, type EffectiveState } from '../../src/projection/effective-state.js';
 import { projectEffectiveState } from '../../src/projection/project.js';
 import { uiText } from './ui-strings.js';
@@ -57,12 +58,17 @@ export function formatProjectionSummary(
   return lines.join('\n');
 }
 
-async function readBoth(ctx: { cwd?: string; agentDir?: string }): Promise<{ ok: boolean; error?: string }> {
+async function readBoth(ctx: { cwd?: string; agentDir?: string }): Promise<{
+  ok: boolean;
+  global?: BridgeState;
+  project?: BridgeState;
+  error?: string;
+}> {
   const opts = { cwd: ctx.cwd, agentDir: ctx.agentDir };
   const [globalRead, projectRead] = await Promise.all([readBridgeState('global', opts), readBridgeState('project', opts)]);
   const bad = [globalRead, projectRead].find((read) => read.status !== 'ok' && read.status !== 'missing');
   if (bad) return { ok: false, error: bad.error ?? 'Persistence Indeterminate' };
-  return { ok: true };
+  return { ok: true, global: globalRead.state!, project: projectRead.state! };
 }
 
 /** Read-only Effective State + Projected Skills / collision diagnostics view. */
@@ -73,11 +79,8 @@ export async function runEffectiveStateView(ctx: ExtensionCommandContext): Promi
   if (!docs.ok) {
     return void ui.notify(uiText('common.bridgeState.unreadable', { error: quote(docs.error ?? 'Persistence Indeterminate') }), 'error');
   }
-  const io = { cwd: ctx.cwd };
-  const globalRead = await readBridgeState('global', io);
-  const projectRead = await readBridgeState('project', io);
-  const effective = computeEffectiveState(globalRead.state!, projectRead.state!, { projectTrusted: trusted });
-  const projection = projectEffectiveState(globalRead.state!, projectRead.state!, { projectTrusted: trusted });
+  const effective = computeEffectiveState(docs.global!, docs.project!, { projectTrusted: trusted });
+  const projection = projectEffectiveState(docs.global!, docs.project!, { projectTrusted: trusted });
   const trustNote = trusted ? '' : uiText('eff.projection.trustNote');
   ui.notify(
     `${formatProjectionSummary(effective, projection.plugins, projection.findings)}${trustNote}${uiText('eff.projection.availableNote')}`,
