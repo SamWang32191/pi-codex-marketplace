@@ -110,7 +110,12 @@ function resolvePluginDirInSnapshot(snapshotRoot: string, installation: Effectiv
 }
 
 function resolveEntryPluginDir(snapshotRoot: string, catalog: Catalog, installation: EffectiveInstallation): string | undefined {
-  const pointer = installation.marketplaceEntryId?.slice(installation.marketplaceEntryId.indexOf('/plugins/'));
+  // A malformed Marketplace Entry ID without the "/plugins/" marker yields an undefined pointer
+  // so resolution falls back to manifestName instead of degrading to a bogus tail slice.
+  const markerIndex = installation.marketplaceEntryId?.indexOf('/plugins/') ?? -1;
+  const pointer = installation.marketplaceEntryId && markerIndex >= 0
+    ? installation.marketplaceEntryId.slice(markerIndex)
+    : undefined;
   let entry = pointer !== undefined
     ? catalog.entries.find((item) => item.entryId === pointer && item.type === 'local' && item.available && item.path)
     : undefined;

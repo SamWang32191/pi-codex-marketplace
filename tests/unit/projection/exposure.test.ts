@@ -345,6 +345,28 @@ describe('Runtime Skill Exposure — passive inspection only', () => {
     expect(ghost?.reason).toBe('entry-not-found');
   });
 
+  it('treats a malformed Marketplace Entry ID as no pointer and falls back to manifestName instead of a tail slice', async () => {
+    const env = freshEnv();
+    makeMarketplace(env.marketplace, 'release-helper', 'release-helper', ['release-notes']);
+    await seedGitRegistrationAndCache(env);
+    // Overwrite the Installation's marketplaceEntryId with an ID lacking the "/plugins/" marker.
+    await commitBridgeState(
+      'global',
+      (state) => ({
+        ...state,
+        installations: state.installations.map((installation) =>
+          installation.manifestName === 'release-helper' ? { ...installation, marketplaceEntryId: 'not-a-pointer' } : installation,
+        ),
+      }),
+      { agentDir: env.agentDir, cwd: env.projectDir },
+    );
+
+    const result = discoverProjectedSkillPaths({ cwd: env.projectDir, agentDir: env.agentDir });
+    // The retained manifestName still resolves the entry; the malformed ID must not produce a bogus pointer.
+    expect(result.exposed.map((s) => s.name)).toEqual(['release-notes']);
+    expect(result.skipped).toEqual([]);
+  });
+
   it('treats corrupted or incompatible scope documents as empty instead of failing', async () => {
     const env = freshEnv();
     mkdirSync(join(env.agentDir, 'codex-marketplace'), { recursive: true });
