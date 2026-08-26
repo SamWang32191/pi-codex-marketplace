@@ -181,7 +181,7 @@ export async function preflightLocalRegistration(
     return blockedResult(scope, rootPath, expectedRevision, [finding], null, opts);
   }
 
-  // Attempt Fence (same-scope exclusivity + global barrier on project)
+  // Attempt Fence (same-scope exclusivity)
   const fence = await acquireAttemptFence(scope, {
     cwd: opts.cwd,
     agentDir: opts.agentDir,

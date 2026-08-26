@@ -105,9 +105,9 @@ describe('badge presentation', () => {
   });
 
   it('keeps badges readable without color through the text label', () => {
-    const badge = renderBadge(identityTheme, 'error', 'BARRIER ACTIVE');
-    expect(badge).toBe(' BARRIER ACTIVE ');
-    expect(visibleWidth(badge)).toBe(16);
+    const badge = renderBadge(identityTheme, 'error', 'MAINTENANCE');
+    expect(badge).toBe(' MAINTENANCE ');
+    expect(visibleWidth(badge)).toBe(13);
   });
 });
 

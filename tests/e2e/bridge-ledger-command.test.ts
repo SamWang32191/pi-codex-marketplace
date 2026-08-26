@@ -164,7 +164,7 @@ describe('/codex-marketplace Bridge Ledger command seam', () => {
     expect(screens[1]!.join('\n')).toContain(uiText('ledger.rail.registrations', { count: 1 }));
   });
 
-  it('keeps the Global Pending Barrier visible while disabling Project mutations', async () => {
+  it('keeps Project mutations available while Global has an active recovery chain (Barrier retired)', async () => {
     await appendReceipt(
       'global',
       createReceipt({
@@ -191,7 +191,7 @@ describe('/codex-marketplace Bridge Ledger command seam', () => {
       ui: {
         notify() {},
         select: async () => {
-          throw new Error('Barrier workspace must not use the flat select');
+          throw new Error('Ledger workspace must not use the flat select');
         },
         custom: async (factory: Function) => {
           let result: unknown;
@@ -215,12 +215,10 @@ describe('/codex-marketplace Bridge Ledger command seam', () => {
       },
     });
 
-    expect(screen).toContain(uiText('ledger.badge.barrierActive'));
-    // Blocked Project mutation: availability is icon+word, and its reason is visible on selection.
-    expect(screen).toContain(`○ ${uiText('ledger.availability.blocked')} ${uiText('ledger.action.register-local')}`);
-    expect(screen).toMatch(/Global Pending Barrier/);
-    expect(screen).not.toMatch(/\[available\]|\[Unavailable\]|disabled:/);
+    // No Barrier indicator anywhere; Project mutations stay available.
+    expect(screen).not.toMatch(/Global Pending Barrier|Barrier/);
     expect(screen).toContain(`● ${uiText('ledger.availability.ready')} ${uiText('ledger.action.register-local')}`);
+    expect(screen).not.toMatch(/\[available\]|\[Unavailable\]|disabled:/);
   });
 
   it.each([

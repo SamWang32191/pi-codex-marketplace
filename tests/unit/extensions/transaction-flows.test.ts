@@ -998,7 +998,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
     }
   });
 
-  it('reports the Global Pending Barrier before Plugin Disablement Validation can proceed', async () => {
+  it('completes Plugin Disablement even while Global has an active recovery chain (Barrier retired)', async () => {
     const installationId = 'project/11111111-1111-4111-8111-111111111111/acme-marketplace/release-helper';
     const selected = await commitBridgeState('project', (state) => ({
       ...state,
@@ -1025,10 +1025,10 @@ describe('Bridge Ledger transaction flow adapters', () => {
       hasUI: true,
       isProjectTrusted: () => true,
       ui: {
-        select: async () => { throw new Error('structured barrier target must not open selectors'); },
-        input: async () => { throw new Error('structured barrier target must not request input'); },
+        select: async () => { throw new Error('structured disablement target must not open selectors'); },
+        input: async () => { throw new Error('structured disablement target must not request input'); },
         custom: terminalPreflightSheetCustom(events, renderedByStep),
-        confirm: async () => { throw new Error('barrier-blocked disablement must not request confirmation'); },
+        confirm: async () => true,
         notify: () => {},
       },
     };
@@ -1040,16 +1040,12 @@ describe('Bridge Ledger transaction flow adapters', () => {
       expectedStateRevision: selected.newRevision,
     });
 
-    expect(events).toEqual(['Intent', 'Validation', 'Receipt']);
-    expect(renderedByStep.get('Validation')).toMatch(/GLOBAL_PENDING_BARRIER.*BARRIER-01/s);
+    expect(events).toEqual(['Intent', 'Validation', 'Consent', 'Plan', 'Commit', 'Receipt']);
+    expect((await readBridgeState('project', { cwd, agentDir })).state?.installations).toEqual([
+      expect.objectContaining({ id: installationId, installationState: 'disabled' }),
+    ]);
     expect((await readReceiptJournal('project', { cwd, agentDir })).receipts.at(-1)).toEqual(
-      expect.objectContaining({
-        operation: 'Plugin Disablement',
-        summary: 'Blocked',
-        findings: expect.arrayContaining([
-          expect.objectContaining({ code: 'GLOBAL_PENDING_BARRIER', rule: 'BARRIER-01' }),
-        ]),
-      }),
+      expect.objectContaining({ operation: 'Plugin Disablement', summary: 'Completed' }),
     );
   });
 

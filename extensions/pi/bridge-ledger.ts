@@ -9,7 +9,6 @@
 import type { Theme } from '@earendil-works/pi-coding-agent';
 import { Key, matchesKey, wrapTextWithAnsi, type Component, type TUI } from '@earendil-works/pi-tui';
 
-import { checkGlobalPendingBarrier, type GlobalBarrierStatus } from '../../src/barrier/global-barrier.js';
 import { readBothStates } from '../../src/bridge-state/store.js';
 import type {
   BridgeState,
@@ -134,7 +133,6 @@ export interface BridgeLedgerSnapshot {
   global: ReadResult;
   project: ReadResult;
   projectTrusted: boolean;
-  barrier: GlobalBarrierStatus;
   journals: Record<Scope, JournalReadResult>;
   marketplaceEntries: Record<Scope, LedgerMarketplaceItem[]>;
   effective?: EffectiveState;
@@ -166,7 +164,6 @@ export type LedgerMarketplaceItem = LedgerMarketplaceEntry | LedgerMarketplaceDi
 export interface BridgeLedgerModel {
   rails: Record<Scope, LedgerAuthorityRail>;
   projectTrusted: boolean;
-  barrier: { active: boolean; text: string };
   effective: {
     registrationCount: number;
     installationCount: number;
@@ -187,9 +184,8 @@ export async function loadBridgeLedgerSnapshot(
   options: LoadBridgeLedgerSnapshotOptions,
 ): Promise<BridgeLedgerSnapshot> {
   const io = { cwd: options.cwd, agentDir: options.agentDir };
-  const [states, barrier, globalJournal, projectJournal] = await Promise.all([
+  const [states, globalJournal, projectJournal] = await Promise.all([
     readBothStates(io),
-    checkGlobalPendingBarrier(io),
     readReceiptJournal('global', io),
     readReceiptJournal('project', io),
   ]);
@@ -205,7 +201,6 @@ export async function loadBridgeLedgerSnapshot(
   return {
     ...states,
     projectTrusted: options.projectTrusted,
-    barrier,
     journals: { global: globalJournal, project: projectJournal },
     get marketplaceEntries() {
       marketplaceEntries ??= {
@@ -309,14 +304,6 @@ function availability(
   snapshot: BridgeLedgerSnapshot,
 ): Pick<LedgerActionRow, 'enabled' | 'disabledReason'> {
   if (intent.mode !== 'mutation' || intent.scope === undefined) return { enabled: true };
-  if (intent.scope === 'project' && snapshot.barrier.active) {
-    return {
-      enabled: false,
-      disabledReason: uiText('ledger.disabledReason.barrier', {
-        reason: snapshot.barrier.reason ?? uiText('ledger.barrier.defaultReason'),
-      }),
-    };
-  }
   if (intent.scope === 'project' && !snapshot.projectTrusted) {
     return {
       enabled: false,
@@ -698,12 +685,6 @@ export function buildBridgeLedgerModel(snapshot: BridgeLedgerSnapshot): BridgeLe
       project: rail('project', snapshot.project, snapshot.projectTrusted),
     },
     projectTrusted: snapshot.projectTrusted,
-    barrier: {
-      active: snapshot.barrier.active,
-      text: snapshot.barrier.active
-        ? snapshot.barrier.reason ?? uiText('ledger.barrier.defaultReason')
-        : uiText('ledger.barrier.clear'),
-    },
     effective: {
       registrationCount: effective?.registrations.length ?? 0,
       installationCount: effective?.installations.length ?? 0,
@@ -948,9 +929,6 @@ export class BridgeLedgerComponent implements Component {
         this.model.projectTrusted ? 'success' : 'warning',
         this.model.projectTrusted ? uiText('ledger.badge.trustGranted') : uiText('ledger.badge.noTrust'),
       ));
-    } else {
-      badges.push(renderBadge(this.theme, this.model.barrier.active ? 'error' : 'success',
-        this.model.barrier.active ? uiText('ledger.badge.barrierActive') : uiText('ledger.badge.barrierClear')));
     }
     return badges.join(' ');
   }
@@ -970,12 +948,6 @@ export class BridgeLedgerComponent implements Component {
     ];
     if (rail.health !== 'healthy') lines.push(fitDim(quoteTerminalText(rail.healthText)));
     if (scope === 'project') lines.push(fitDim(rail.trustText));
-    if (scope === 'global' && this.model.barrier.active) {
-      lines.push(this.fit(
-        uiText('ledger.rail.barrierReason', { reason: quoteTerminalText(this.model.barrier.text) }),
-        width, 'warning',
-      ));
-    }
     return lines;
   }
 

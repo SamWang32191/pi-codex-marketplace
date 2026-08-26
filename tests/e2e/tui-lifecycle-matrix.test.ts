@@ -1,14 +1,14 @@
 /**
- * E2E — highest seam (TUI) traverses full lifecycle, collision, barrier, cache.
+ * E2E — highest seam (TUI) traverses full lifecycle, collision, cache.
  * Issue #24 requires E2E at the TUI seam to cover external observable behaviour for
- * lifecycle, collision, barrier and cache via the `/codex-marketplace` aggregated command.
+ * lifecycle, collision and cache via the `/codex-marketplace` aggregated command.
  *
  * This test drives the TUI flows through their public handler seam with a mocked
- * ExtensionUIContext that records disclosures, confirmations, receipts and barrier banners.
+ * ExtensionUIContext that records disclosures, confirmations, receipts.
  * It does not assert on internal state shape — only on the externally observable:
  * Validation Disclosure content, sorted Findings with rule codes, closed Recovery Actions,
  * three-orthogonal Attempt Summary, partitioned lists, skill-granular diagnostics,
- * Global Pending Barrier blocking, and offline exact-fingerprint cache reuse.
+ * and offline exact-fingerprint cache reuse.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os';
 
 import { createEmptyState, type BridgeState } from '../../src/bridge-state/types.js';
 import { writeBridgeState, readBridgeState } from '../../src/bridge-state/store.js';
-import { checkGlobalPendingBarrier } from '../../src/barrier/global-barrier.js';
+import { acquireAttemptFence } from '../../src/registration/fence.js';
 import { formatThreeOrthogonalReport } from '../../src/registration/receipt.js';
 import { sortFindings } from '../../src/registration/findings.js';
 import { computeEffectiveState } from '../../src/projection/effective-state.js';
@@ -37,7 +37,7 @@ function makeTmpAgent(): { cwd: string; agentDir: string; cleanup: () => void } 
   };
 }
 
-describe('E2E TUI highest seam — lifecycle / collision / barrier / cache (Issue #24)', () => {
+describe('E2E TUI highest seam — lifecycle / collision / cache (Issue #24)', () => {
   let env: ReturnType<typeof makeTmpAgent>;
 
   beforeEach(() => {
@@ -136,12 +136,11 @@ describe('E2E TUI highest seam — lifecycle / collision / barrier / cache (Issu
     expect(alphaUnavailable?.unavailableSkillIds).toContain('g-mp/plugin-a/alpha');
   });
 
-  it('Global Pending Barrier blocks project mutations but allows inspection/Refresh (global-first recovery)', async () => {
-    // Simulate a global Pending Application by writing a state and leaving a degraded journal chain
+  it('Global pending application leaves the per-scope Attempt Fence untouched (Barrier retired)', async () => {
+    // Simulate a global Pending Application by writing a state and leaving an active recovery chain
     const global: BridgeState = { ...createEmptyState(), stateRevision: '5', registrations: [], installations: [] };
     await writeBridgeState('global', global, { cwd: env.cwd, agentDir: env.agentDir });
 
-    // Append a global receipt with Pending Application to create an active chain that triggers the barrier
     const { createReceipt } = await import('../../src/registration/receipt.js');
     const { appendReceipt } = await import('../../src/journal/journal.js');
     const pending = createReceipt({
@@ -158,12 +157,14 @@ describe('E2E TUI highest seam — lifecycle / collision / barrier / cache (Issu
     });
     await appendReceipt('global', pending, { cwd: env.cwd, agentDir: env.agentDir });
 
-    const barrier = await checkGlobalPendingBarrier({ cwd: env.cwd, agentDir: env.agentDir });
-    expect(barrier.active).toBe(true);
-    expect(barrier.finding?.code).toBe('GLOBAL_PENDING_BARRIER');
-    expect(barrier.finding?.rule).toBe('BARRIER-01');
-    // Project Scope attempts would be blocked via acquireAttemptFence — verify the barrier reason is surfaced
-    expect(barrier.reason).toMatch(/Pending Application|active recovery/);
+    // Project Scope attempts acquire their own fence without any global-pending gate…
+    const projectFence = await acquireAttemptFence('project', { cwd: env.cwd, agentDir: env.agentDir, projectTrusted: true });
+    expect(projectFence.ok).toBe(true);
+    projectFence.handle?.release();
+    // …and the Global fence itself still works while recovery is pending.
+    const globalFence = await acquireAttemptFence('global', { cwd: env.cwd, agentDir: env.agentDir });
+    expect(globalFence.ok).toBe(true);
+    globalFence.handle?.release();
   });
 
   it('persisted legacy scopeOverrides stop participating immediately — inherited Global always effective', async () => {

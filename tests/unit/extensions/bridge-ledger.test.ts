@@ -116,7 +116,6 @@ function snapshot(): BridgeLedgerSnapshot {
       },
     },
     projectTrusted: true,
-    barrier: { active: false },
     journals: {
       global: { ...emptyJournal(), receipts: [receipt] },
       project: emptyJournal(),
@@ -596,7 +595,6 @@ describe('Bridge Ledger presentation model', () => {
     expect(screen).toContain(uiText('ledger.rail.revision', { marker: 'P', revision: '"7"' }));
     expect(screen.match(new RegExp(uiText('ledger.badge.healthy'), 'g'))).toHaveLength(2);
     expect(screen).toContain(uiText('ledger.rail.trust.granted'));
-    expect(screen).toContain(uiText('ledger.badge.barrierClear'));
     expect(screen).toContain('狀態：');
     expect(screen).toContain('Esc/q');
     expect(screen).toContain(width >= 96 ? uiText('ledger.panel.navigation') : uiText('ledger.panel.sections'));
@@ -655,7 +653,6 @@ describe('Bridge Ledger presentation model', () => {
     const cjk = snapshot();
     cjk.global.state!.registrations[0]!.alias = '全球市集（相當長的雙寬字元名稱測試）';
     cjk.project.state!.registrations[0]!.alias = '專案市集——CJK 寬度安全檢查';
-    cjk.barrier = { active: true, reason: '需要先進行全域復原：一段很長的中文診斷訊息，用來壓迫寬度計算' };
     const { instance } = component(buildBridgeLedgerModel(cjk));
     instance.render(width);
     if (width >= 96) {
@@ -719,7 +716,7 @@ describe('Bridge Ledger presentation model', () => {
     expect(actions.filter((entry) => entry.intent.mode === 'mutation').every((entry) => entry.intent.scope !== undefined)).toBe(true);
   });
 
-  it('applies Project Trust and Global Pending Barrier only to Project mutations', () => {
+  it('applies Project Trust only to Project mutations', () => {
     const findAction = (model: ReturnType<typeof buildBridgeLedgerModel>, actionId: LedgerActionId, scope: 'global' | 'project') =>
       model.sections.flatMap((section) => section.rows).flatMap((row) => row.actions)
         .find((entry) => entry.intent.actionId === actionId && entry.intent.scope === scope)!;
@@ -731,19 +728,28 @@ describe('Bridge Ledger presentation model', () => {
       disabledReason: expect.stringContaining(uiText('ledger.disabledReason.repairNothing')),
     });
 
-    const barrierSnapshot = snapshot();
-    barrierSnapshot.barrier = { active: true, reason: 'global recovery pending' };
-    const barrier = buildBridgeLedgerModel(barrierSnapshot);
-    expect(findAction(barrier, 'register-local', 'project')).toMatchObject({
+    const globalPendingSnapshot = snapshot();
+    // Global Pending Barrier retired: a Global recovery chain no longer disables Project mutations.
+    const globalPendingJournal = globalPendingSnapshot.journals.global;
+    globalPendingSnapshot.journals.global = {
+      ...globalPendingJournal,
+      activeChains: [{
+        rootReceiptId: 'rcpt_44444444-4444-4444-8444-444444444449',
+        scope: 'global' as const,
+        condition: 'pending-application' as const,
+        stateRevision: '12',
+        receipts: [],
+        resolved: false,
+        superseded: false,
+      }],
+    };
+    const withGlobalPending = buildBridgeLedgerModel(globalPendingSnapshot);
+    expect(findAction(withGlobalPending, 'register-local', 'project').enabled).toBe(true);
+    expect(findAction(withGlobalPending, 'refresh-registration', 'project').enabled).toBe(true);
+    // Global recovery still routes through its own recovery chain: Repair State remains ineligible for Pending Application.
+    expect(findAction(withGlobalPending, 'repair-state', 'global')).toMatchObject({
       enabled: false,
-      disabledReason: expect.stringContaining('Global Pending Barrier'),
-    });
-    expect(findAction(barrier, 'repair-state', 'project').enabled).toBe(false);
-    expect(findAction(barrier, 'refresh-registration', 'project').enabled).toBe(true);
-    expect(findAction(barrier, 'view-receipt-journal', 'project').enabled).toBe(true);
-    expect(findAction(barrier, 'repair-state', 'global')).toMatchObject({
-      enabled: false,
-      disabledReason: expect.stringContaining(uiText('ledger.disabledReason.repairNothing')),
+      disabledReason: expect.stringContaining(uiText('ledger.disabledReason.repairIneligible', { conditions: 'Pending Application' })),
     });
 
     const untrustedSnapshot = snapshot();
@@ -865,7 +871,6 @@ describe('Bridge Ledger presentation model', () => {
       expect(loaded.project.state?.stateRevision).toBe('4');
       expect(loaded.journals.global.receipts).toEqual([]);
       expect(loaded.journals.project.receipts).toEqual([]);
-      expect(loaded.barrier.active).toBe(false);
       expect(loaded.effective?.registrations.map((registration) => registration.sourceScope)).toEqual(['global', 'project']);
       expect(inspections).toEqual([]);
 
@@ -966,7 +971,7 @@ describe('Bridge Ledger presentation model', () => {
     blockedSnapshot.global.state!.installations = [];
     blockedSnapshot.project.state!.registrations = [];
     blockedSnapshot.project.state!.installations = [];
-    blockedSnapshot.barrier = { active: true, reason: 'global application pending' };
+    blockedSnapshot.projectTrusted = false;
     const blocked = component(buildBridgeLedgerModel(blockedSnapshot));
     blocked.instance.render(120);
     blocked.instance.handleInput('\x1b[C'); // Sources
@@ -974,7 +979,7 @@ describe('Bridge Ledger presentation model', () => {
     const screen = blocked.instance.render(120).join('\n');
 
     expect(screen).toContain(`○ ${uiText('ledger.availability.blocked')} ${uiText('ledger.action.register-local')}`);
-    expect(screen).toContain('Global Pending Barrier');
+    expect(screen).toContain(uiText('ledger.disabledReason.trust'));
     expect(screen).not.toContain('[available]');
     expect(screen).not.toContain('[Unavailable]');
     expect(screen).not.toContain('disabled:');

@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { createRepairStateExpectation, repairBridgeState } from '../../../src/bridge-state/repair.js';
-import { checkGlobalPendingBarrier } from '../../../src/barrier/global-barrier.js';
 import { getReceiptsJournalPath, getStatePath } from '../../../src/bridge-state/paths.js';
 import { commitBridgeState, readBridgeState } from '../../../src/bridge-state/store.js';
 import { appendReceipt, pruneReceiptJournal, readReceiptJournal } from '../../../src/journal/journal.js';
@@ -116,7 +115,7 @@ describe('Repair State', () => {
     expect(journal.activeChains).toHaveLength(0);
   });
 
-  it('atomically removes corrupted journal lines after state verification and clears the Global Pending Barrier', async () => {
+  it('atomically removes corrupted journal lines after state verification', async () => {
     const opts = { agentDir, cwd: projectDir };
     const valid = createReceipt({
       id: VALID_RECEIPT,
@@ -128,8 +127,6 @@ describe('Repair State', () => {
     });
     await appendReceipt('global', valid, opts);
     appendFileSync(getReceiptsJournalPath('global', opts), '{ malformed journal line\n', 'utf-8');
-
-    expect((await checkGlobalPendingBarrier(opts)).active).toBe(true);
 
     const repaired = await repairBridgeState('global', opts);
 
@@ -144,7 +141,6 @@ describe('Repair State', () => {
     expect(journal.receipts.at(-1)?.findings).toEqual([
       expect.objectContaining({ code: 'RECEIPT_CORRUPT', rule: 'JOURNAL-02' }),
     ]);
-    expect((await checkGlobalPendingBarrier(opts)).active).toBe(false);
   });
 
   it('preserves active recovery chains while repairing corrupted journal lines', async () => {
@@ -168,7 +164,6 @@ describe('Repair State', () => {
     expect(journal.isDegraded).toBe(false);
     expect(journal.activeChains).toHaveLength(1);
     expect(journal.activeChains[0]?.rootReceiptId).toBe(pending.id);
-    expect((await checkGlobalPendingBarrier(opts)).active).toBe(true);
   });
 
   it('fingerprints exact raw Journal bytes even when parsed receipt counts stay equal', async () => {

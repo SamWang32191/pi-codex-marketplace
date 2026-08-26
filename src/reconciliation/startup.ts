@@ -1,19 +1,19 @@
 /**
  * Startup Reconciliation — global-first verification and reconciliation pass on session start.
- * See CONTEXT.md: Startup reconciliation, Global Pending Barrier, Pending Application.
+ * See CONTEXT.md: Startup reconciliation, Pending Application.
  *
  * Rules:
  * - At most one reconciliation pass per startup.
  * - Global-first: Global scope is reconciled first.
  * - Only scopes with enabled contributions, active recovery, or journal repair execute and produce a receipt.
  * - If no work needed (clean/empty), no-op and does NOT generate empty receipts.
- * - If Global recovery cannot reach a clean terminal state, Global Pending Barrier blocks Project reconciliation.
+ * - Each scope reconciles independently; recovery semantics are carried by active recovery chains
+ *   (Retry Application and other Recovery Actions), not by any cross-scope gate.
  * - Reconciles Pending Application without implicit activation or auto-rollback.
  */
 
 import { readBridgeStateSync } from '../bridge-state/store.js';
 import type { Scope } from '../bridge-state/types.js';
-import { checkGlobalPendingBarrier, globalBarrierFinding } from '../barrier/global-barrier.js';
 import { appendReceipt, readReceiptJournal } from '../journal/journal.js';
 import { createReceipt, type AttemptReceipt } from '../registration/receipt.js';
 
@@ -77,10 +77,7 @@ export async function runStartupReconciliation(
     result.globalReceipt = receipt;
   }
 
-  // 2. Check Global Barrier before attempting Project Scope
-  const barrier = await checkGlobalPendingBarrier(opts);
-
-  // 3. Project Scope Pass
+  // 2. Project Scope Pass
   const projectState = readBridgeStateSync('project', opts);
   const projectJournal = await readReceiptJournal('project', opts);
 
@@ -99,25 +96,7 @@ export async function runStartupReconciliation(
   if (projectNeedsWork) {
     const rev = projectState.status === 'ok' ? projectState.state!.stateRevision : '0';
 
-    if (barrier.active) {
-      // Blocked by Global Pending Barrier
-      const receipt = createReceipt({
-        kind: 'Reconciliation',
-        operation: 'Startup Reconciliation',
-        scope: 'project',
-        trigger: 'startup reconciliation project',
-        expectedStateRevision: rev,
-        durableOutcome: 'unchanged',
-        runtimeOutcome: 'none',
-        summary: 'Blocked',
-        findings: [barrier.finding ?? globalBarrierFinding(barrier.reason ?? 'Global Barrier active')],
-        recoversReceiptId: projectPendingChain?.rootReceiptId,
-      });
-
-      await appendReceipt('project', receipt, opts);
-      result.projectReconciled = true;
-      result.projectReceipt = receipt;
-    } else if (opts.projectTrusted === true) {
+    if (opts.projectTrusted === true) {
       const applied = await verify('project');
       const summary = applied ? 'Completed' : 'Pending Application';
 
