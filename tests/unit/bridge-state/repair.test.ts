@@ -670,7 +670,7 @@ describe('Repair State', () => {
     ]));
   });
 
-  it('surfaces v1→v2 migration finding in Repair State receipt when non-empty scopeOverrides are stripped', async () => {
+  it('surfaces v1→v3 migration finding in Repair State receipt when non-empty scopeOverrides are stripped', async () => {
     const statePath = getGlobalStatePath(agentDir);
     mkdirSync(join(agentDir, 'codex-marketplace'), { recursive: true });
     writeFileSync(
@@ -699,7 +699,8 @@ describe('Repair State', () => {
     );
 
     const onDisk = JSON.parse(readFileSync(statePath, 'utf-8'));
-    expect(onDisk.schemaVersion).toBe(2);
+    expect(onDisk.schemaVersion).toBe(3);
+    expect(onDisk.registrations[0].format).toBe('codex');
     expect(onDisk.scopeOverrides).toBeUndefined();
   });
 });

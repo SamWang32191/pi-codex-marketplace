@@ -4,6 +4,12 @@ All notable changes to `pi-codex-marketplace` are documented here. Format follow
 
 ## [Unreleased]
 
+### Changed
+- **Bridge State Schema v3 + format 屬性遷移** (#44)：`schemaVersion` 升為 `3`。
+  - `Registration` 記錄新增 Marketplace Format 屬性（`codex | claude`）——本票只鋪持久層地基，格式偵測與 claude 解析由後續票交付。
+  - v2 → v3 WAL migration 為既有 Registration 自動補上 `format=codex` 預設值，內容零損失（已宣告的 `codex | claude` 值原樣保留）。
+  - 新寫入的 Registration 可承載 `format=claude` 並正確回讀。
+
 ## [0.2.0] - 2026-08-26
 
 ### Removed (Breaking)

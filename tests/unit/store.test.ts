@@ -166,7 +166,7 @@ describe('Bridge State store — single Global document, atomicity, corruption',
     expect(final.state!.stateRevision).toBe('5');
   });
 
-  it('persists only authoritative fields (no Effective State / catalogs / scopeOverrides in v2)', async () => {
+  it('persists only authoritative fields (no Effective State / catalogs / scopeOverrides; v3 current)', async () => {
     await commitBridgeState(() => ({
         schemaVersion: CURRENT_SCHEMA_VERSION,
         stateRevision: '0', // will be bumped
@@ -299,7 +299,7 @@ describe('Bridge State store — single Global document, atomicity, corruption',
     expect(r.state!.stateRevision).toBe('1');
   });
 
-  it('automatically WAL-migrates v1 file with empty scopeOverrides to v2 on read', async () => {
+  it('automatically WAL-migrates v1 file with empty scopeOverrides to v3 on read (Issue #44)', async () => {
     const gPath = getGlobalStatePath(env.agentDir);
     mkdirSync(join(env.agentDir, 'codex-marketplace'), { recursive: true });
     writeFileSync(
@@ -316,21 +316,24 @@ describe('Bridge State store — single Global document, atomicity, corruption',
 
     const res = await readBridgeState({ agentDir: env.agentDir });
     expect(res.status).toBe('ok');
-    expect(res.state?.schemaVersion).toBe(2);
+    expect(res.state?.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
     expect(res.state?.stateRevision).toBe('10');
     expect(res.state?.registrations).toHaveLength(1);
+    // Legacy registration automatically carries format=codex after migration
+    expect(res.state?.registrations[0].format).toBe('codex');
     expect(res.state?.installations[0].id).toBe('plugin-x');
     expect((res.state as any)?.scopeOverrides).toBeUndefined();
     expect(res.findings).toEqual([]);
 
-    // File on disk must now be schemaVersion 2 without WAL remaining
+    // File on disk must now be schemaVersion 3 without WAL remaining
     const onDisk = JSON.parse(readFileSync(gPath, 'utf-8'));
-    expect(onDisk.schemaVersion).toBe(2);
+    expect(onDisk.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+    expect(onDisk.registrations[0].format).toBe('codex');
     expect(onDisk.scopeOverrides).toBeUndefined();
     expect(existsSync(`${gPath}.wal`)).toBe(false);
   });
 
-  it('automatically WAL-migrates v1 file with non-empty scopeOverrides to v2 and surfaces diagnostic finding', async () => {
+  it('automatically WAL-migrates v1 file with non-empty scopeOverrides to v3 and surfaces diagnostic finding', async () => {
     const gPath = getGlobalStatePath(env.agentDir);
     mkdirSync(join(env.agentDir, 'codex-marketplace'), { recursive: true });
     writeFileSync(
@@ -347,17 +350,57 @@ describe('Bridge State store — single Global document, atomicity, corruption',
 
     const res = await readBridgeState({ agentDir: env.agentDir });
     expect(res.status).toBe('ok');
-    expect(res.state?.schemaVersion).toBe(2);
+    expect(res.state?.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
     expect(res.state?.stateRevision).toBe('20');
+    expect(res.state?.registrations[0].format).toBe('codex');
     expect((res.state as any)?.scopeOverrides).toBeUndefined();
     expect(res.findings).toHaveLength(1);
     expect(res.findings![0].rule).toBe('MIGRATE-01');
     expect(res.findings![0].classification).toBe('warning');
 
     const onDisk = JSON.parse(readFileSync(gPath, 'utf-8'));
-    expect(onDisk.schemaVersion).toBe(2);
+    expect(onDisk.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
     expect(onDisk.scopeOverrides).toBeUndefined();
     expect(existsSync(`${gPath}.wal`)).toBe(false);
+  });
+
+  it('round-trips a Registration with format=claude through write then read (Issue #44)', async () => {
+    const gPath = getGlobalStatePath(env.agentDir);
+    const claudeState: BridgeState = {
+      ...createEmptyState(),
+      stateRevision: '5',
+      registrations: [
+        {
+          id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+          alias: 'mattpocock-skills',
+          format: 'claude',
+          sourceKind: 'git',
+          source: 'https://github.com/mattpocock/skills',
+        },
+      ],
+      installations: [],
+    };
+
+    const w = await commitBridgeState(() => claudeState, { agentDir: env.agentDir });
+    expect(w.success).toBe(true);
+
+    // On-disk v3 document preserves format=claude verbatim
+    const onDisk = JSON.parse(readFileSync(gPath, 'utf-8'));
+    expect(onDisk.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+    expect(onDisk.registrations).toEqual([
+      expect.objectContaining({
+        id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        format: 'claude',
+        source: 'https://github.com/mattpocock/skills',
+      }),
+    ]);
+
+    // Read-back yields exactly the claude format (no auto-migration, no re-defaulting)
+    const r = await readBridgeState({ agentDir: env.agentDir });
+    expect(r.status).toBe('ok');
+    expect(r.state?.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+    expect(r.state?.registrations[0].format).toBe('claude');
+    expect(r.state?.registrations[0].source).toBe('https://github.com/mattpocock/skills');
   });
 
   it('Stale State Revision rejection releases the lock — subsequent commit with correct revision succeeds and no *.lock remains (issue #24 fix)', async () => {

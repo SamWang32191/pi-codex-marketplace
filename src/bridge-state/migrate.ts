@@ -48,6 +48,21 @@ const MIGRATIONS: Record<number, Migrator> = {
     }
     return { state: cloned, findings };
   },
+  2: (state: any) => {
+    // Issue #44 — registration `format` attribute (codex | claude) persistence foundation.
+    // Backfill a lossless 'codex' default onto every Registration missing a valid format; any
+    // already-declared 'codex' | 'claude' value is preserved untouched (no content loss).
+    const cloned = structuredClone(state);
+    if (Array.isArray(cloned.registrations)) {
+      cloned.registrations = cloned.registrations.map((reg: any) => {
+        if (typeof reg !== 'object' || reg === null) return reg;
+        if (reg.format === 'codex' || reg.format === 'claude') return reg;
+        return { ...reg, format: 'codex' };
+      });
+    }
+    cloned.schemaVersion = 3;
+    return { state: cloned };
+  },
 };
 
 export interface MigrationResult {
