@@ -1,6 +1,7 @@
 export * from './findings.js';
 export * from './source-key.js';
 export * from './catalog.js';
+export * from './claude-catalog.js';
 export * from './contained.js';
 export * from './budget.js';
 export * from './snapshot.js';
