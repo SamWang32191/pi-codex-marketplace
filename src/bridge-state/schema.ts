@@ -19,7 +19,7 @@ export function validateSchema(parsed: unknown): SchemaValidation {
       ok: false,
       code: 'INVALID_SCHEMA',
       error:
-        'Invalid Bridge State: expected { schemaVersion:number, stateRevision:string, registrations:[], installations:[], scopeOverrides:[] }',
+        'Invalid Bridge State: expected { schemaVersion:number, stateRevision:string, registrations:[], installations:[] }',
     };
   }
 
@@ -52,7 +52,6 @@ export function validateSchema(parsed: unknown): SchemaValidation {
     };
   }
 
-  // scopeOverrides only meaningful for project, but global may have empty — allow both
   // registrations/installations elements are not deeply validated at scaffold level
 
   return { ok: true };

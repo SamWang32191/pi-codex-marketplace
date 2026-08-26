@@ -483,6 +483,7 @@ const zhTW = {
   'finding.JOURNAL-02': 'Receipt Journal 有損毀行；已降級保留',
   'finding.PERSIST-01': 'Bridge State 不可讀或已損毀（Persistence Indeterminate）',
   'finding.SCHEMA-01': 'Bridge State schema 版本未知（不相容）；請更新 Bridge Package',
+  'finding.MIGRATE-01': 'v1→v2 遷移時剝除既有非空 scopeOverrides（Project Scope 已退休）',
   'finding.RECON-01': '需要 Startup Reconciliation',
 } as const;
 

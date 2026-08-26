@@ -127,7 +127,7 @@ function readBridgeStateUnderFileLock(statePath: string): ReadResult {
       raw: parsed.value,
     };
   }
-  return { status: 'ok', state: migration.state };
+  return { status: 'ok', state: migration.state, findings: migration.findings };
 }
 
 async function tryReadBridgeStateUnderFileLock(
@@ -375,7 +375,7 @@ export async function commitBridgeState(
     draft.schemaVersion = CURRENT_SCHEMA_VERSION;
     if (!Array.isArray(draft.registrations)) draft.registrations = [];
     if (!Array.isArray(draft.installations)) draft.installations = [];
-    if (!Array.isArray(draft.scopeOverrides)) draft.scopeOverrides = [];
+    delete (draft as any).scopeOverrides;
 
     // Bump revision monotonically
     const newRevision = nextRevision(current.stateRevision);

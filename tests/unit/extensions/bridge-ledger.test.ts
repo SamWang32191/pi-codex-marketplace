@@ -92,11 +92,10 @@ function snapshot(): BridgeLedgerSnapshot {
     global: {
       status: 'ok',
       state: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         stateRevision: '12',
         registrations: [registration],
         installations: [installation, disabledInstallation],
-        scopeOverrides: [],
       },
     },
     journal: { ...emptyJournal(), receipts: [receipt] },

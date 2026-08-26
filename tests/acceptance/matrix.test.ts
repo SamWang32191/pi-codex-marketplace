@@ -45,8 +45,8 @@ describe('Acceptance matrix — per-row gates (smoke that each layer is covered)
   });
 
   it('integration row — synthetic: Bridge State WAL atomic commit exercised', async () => {
-    const { createEmptyState } = await import('../../src/bridge-state/types.js');
-    expect(createEmptyState().schemaVersion).toBe(1);
+    const { createEmptyState, CURRENT_SCHEMA_VERSION } = await import('../../src/bridge-state/types.js');
+    expect(createEmptyState().schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
   });
 
   it('E2E row — synthetic: TUI aggregated command highest seam is exposed', async () => {
