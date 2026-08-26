@@ -101,10 +101,6 @@ async function blockedResult(
   return { ok: false, outcome: { status: 'blocked', findings, receipt, existing } };
 }
 
-function readScopeState(opts: GitRegistrationFlowOptions) {
-  return readBridgeState({ agentDir: opts.agentDir });
-}
-
 function selectorToString(input: GitSelectorInput | string): string {
   if (typeof input === 'string') return input;
   return `${input.kind}:${input.value ?? ''}`;
@@ -118,7 +114,7 @@ export async function preflightGitRegistration(
   selectorInput: GitSelectorInput | string,
   opts: GitRegistrationFlowOptions = {},
 ): Promise<GitPreflightResult> {
-  const read = await readScopeState(opts);
+  const read = await readBridgeState({ agentDir: opts.agentDir });
   let expectedRevision = '0';
   let registrations: Registration[] = [];
   if (read.status === 'missing') {
@@ -194,7 +190,7 @@ export async function preflightGitRegistration(
     // Git Source Key (canonical URL + exact selector), distinct from local
     const sourceKey = gitSourceKey(locator, selector);
 
-    // Duplicate check (same scope, same kind+key)
+    // Duplicate check (same kind + identical Source Key)
     const dup = findDuplicateRegistration(sourceKey, registrations);
     if (dup.duplicate) {
       return blockedResult(locatorInput, selCanonical, expectedRevision, [dup.finding!], handle, opts, dup.existing);
@@ -447,7 +443,7 @@ export async function confirmGitRegistration(
     return { status: 'declined', receipt };
   }
 
-  const fresh = await readScopeState(opts);
+  const fresh = await readBridgeState({ agentDir: opts.agentDir });
   if (fresh.status !== 'ok' && fresh.status !== 'missing') {
     const receipt = createReceipt({
       operation: OPERATION,

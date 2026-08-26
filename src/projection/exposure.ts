@@ -26,7 +26,7 @@ import { parseFrontmatter } from '@earendil-works/pi-coding-agent';
 
 import { getCacheEntriesDir, getCacheDir } from '../cache/paths.js';
 import { readBridgeStateSync } from '../bridge-state/store.js';
-import type { BridgeState, Installation, Registration } from '../bridge-state/types.js';
+import { createEmptyState, type BridgeState, type Installation, type Registration } from '../bridge-state/types.js';
 import { parseCatalog, type Catalog } from '../registration/catalog.js';
 import { BUDGET } from '../registration/budget.js';
 import { resolveContained } from '../registration/contained.js';
@@ -73,14 +73,10 @@ function safeFingerprint(fp: string | undefined): fp is string {
   return typeof fp === 'string' && /^[0-9a-f]{64}$/.test(fp);
 }
 
-function emptyScopeState(): BridgeState {
-  return { schemaVersion: 1, stateRevision: '0', registrations: [], installations: [], scopeOverrides: [] };
-}
-
 /** Passive closed read: corrupted or incompatible documents contribute nothing and never throw. */
 function readGlobalOrEmpty(opts: RuntimeSkillExposureOptions): BridgeState {
   const read = readBridgeStateSync({ agentDir: opts.agentDir });
-  return read.status === 'ok' || read.status === 'missing' ? read.state! : emptyScopeState();
+  return read.status === 'ok' || read.status === 'missing' ? read.state! : createEmptyState();
 }
 
 /**

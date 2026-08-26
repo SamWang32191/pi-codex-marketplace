@@ -108,10 +108,6 @@ async function blockedResult(
   return { ok: false, outcome: { status: 'blocked', findings, receipt, existing } };
 }
 
-function readScopeState(opts: RegistrationFlowOptions) {
-  return readBridgeState({ agentDir: opts.agentDir });
-}
-
 /**
  * Run preflight for a local Marketplace Root registration.
  * Acquires the Attempt Fence, allocates the Registration ID before validation, validates
@@ -122,7 +118,7 @@ export async function preflightLocalRegistration(
   rootPath: string,
   opts: RegistrationFlowOptions = {},
 ): Promise<PreflightResult> {
-  const read = await readScopeState(opts);
+  const read = await readBridgeState({ agentDir: opts.agentDir });
   let expectedRevision = '0';
   let registrations: Registration[] = [];
   if (read.status === 'missing') {
@@ -383,7 +379,7 @@ export async function confirmLocalRegistration(
   }
 
   // Re-verify exact State Revision (bound confirmation). Any change ⇒ Rejected as Stale.
-  const fresh = await readScopeState(opts);
+  const fresh = await readBridgeState({ agentDir: opts.agentDir });
   if (fresh.status !== 'ok' && fresh.status !== 'missing') {
     const receipt = createReceipt({
       operation: OPERATION,

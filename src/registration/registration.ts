@@ -6,8 +6,8 @@
  * so findings have stable derived identities; persisted only after Registration Confirmation; never
  * reused after a failed or declined attempt.
  *
- * Registration Alias: optional scope-local human-readable handle, initially derived from a
- * compatible declared Marketplace name; unique within its scope.
+ * Registration Alias: optional human-readable handle, initially derived from a compatible
+ * declared Marketplace name; unique within the Global document.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -22,7 +22,7 @@ export function allocateRegistrationId(): string {
   return randomUUID();
 }
 
-/** Sanitize a declared marketplace name into an initial Registration Alias (scope-local unique). */
+/** Sanitize a declared marketplace name into an initial Registration Alias (unique within the document). */
 export function deriveInitialAlias(marketplaceName: string | undefined, existingAliases: string[]): string | undefined {
   if (!marketplaceName || marketplaceName.trim().length === 0) return undefined;
   let alias = marketplaceName.trim();

@@ -48,8 +48,8 @@ function field(theme: TransactionSheetTheme, label: string, value: unknown): str
   return `${theme.fg('dim', `${label}:`)} ${theme.fg('text', quoteTerminalText(value))}`;
 }
 
-function authorityLabel(authority: string | undefined): string {
-  return authority === 'global' ? '[G] Global Scope' : '[G] Global Scope';
+function authorityLabel(_authority: string | undefined): string {
+  return '[G] Global Scope';
 }
 
 function findingLine(theme: TransactionSheetTheme, finding: AttemptReceipt['findings'][number]): string {
