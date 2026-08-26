@@ -443,7 +443,7 @@ export async function runReceiptJournalView(
   }
 
   const lines: string[] = [
-    uiText('journal.view.header', { scopeWord: uiText('common.scope.word.global') }),
+    uiText('journal.view.header'),
     uiText('journal.view.total', { count: journal.receipts.length }),
     journal.isDegraded
       ? uiText('journal.view.degraded.yes', { count: journal.corruptedLineCount })
@@ -560,9 +560,7 @@ export async function runRepairStateFlow(
 
   const confirmed = await ui.confirm(
     uiText('journal.repair.consent.title'),
-    uiText('journal.repair.consent.body', {
-      scopeWord: uiText('common.scope.word.global'),
-    }),
+    uiText('journal.repair.consent.body'),
   );
   if (!confirmed) {
     return void await decline();

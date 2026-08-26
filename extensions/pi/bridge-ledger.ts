@@ -48,7 +48,7 @@ export type LedgerSectionId =
   | 'recovery-receipts';
 
 export type LedgerActionId =
-  | 'observe-partitions'
+  | 'observe-authority'
   | 'observe-effective-state'
   | 'register-local'
   | 'register-git'
@@ -330,7 +330,7 @@ function availability(
 }
 
 const ACTION_LABELS: Record<LedgerActionId, string> = {
-  'observe-partitions': uiText('ledger.action.observe-partitions'),
+  'observe-authority': uiText('ledger.action.observe-authority'),
   'observe-effective-state': uiText('ledger.action.observe-effective-state'),
   'register-local': uiText('ledger.action.register-local'),
   'register-git': uiText('ledger.action.register-git'),
@@ -373,9 +373,7 @@ function registrationRows(
 ): LedgerObjectRow[] {
   const createRow: LedgerObjectRow = {
     id: 'registration-create',
-    label: uiText('ledger.row.registrationActions', {
-      scopeWord: uiText('common.scope.word.global'),
-    }),
+    label: uiText('ledger.row.registrationActions'),
     targetKind: 'scope',
     targetId: 'global',
     actions: [
@@ -510,9 +508,7 @@ function retryApplicationRows(snapshot: BridgeLedgerSnapshot): LedgerObjectRow[]
     .filter((chain) => chain.condition === 'pending-application')
     .map((chain): LedgerObjectRow => ({
       id: `retry-application:${chain.rootReceiptId}`,
-      label: uiText('ledger.row.retry.label', {
-        scopeWord: uiText('common.scope.word.global'),
-      }),
+      label: uiText('ledger.row.retry.label'),
       detail: uiText('ledger.row.retry.detail', {
         receiptId: chain.rootReceiptId,
         revision: chain.stateRevision,
@@ -537,13 +533,12 @@ export function buildBridgeLedgerModel(snapshot: BridgeLedgerSnapshot): BridgeLe
     description: uiText('ledger.section.observe.description'),
     rows: [
       {
-        id: 'observe:partitions',
-        label: uiText('ledger.row.observe.partitions'),
-        detail: uiText('ledger.row.observe.partitionsDetail', {
-          global: snapshot.global.state?.stateRevision ?? uiText('ledger.revision.unavailable'),
-          project: uiText('ledger.revision.unavailable'),
+        id: 'observe:authority',
+        label: uiText('ledger.row.observe.authority'),
+        detail: uiText('ledger.row.observe.authorityDetail', {
+          revision: snapshot.global.state?.stateRevision ?? uiText('ledger.revision.unavailable'),
         }),
-        actions: [action(snapshot, { actionId: 'observe-partitions', mode: 'read' })],
+        actions: [action(snapshot, { actionId: 'observe-authority', mode: 'read' })],
       },
       {
         id: 'observe:effective',
@@ -551,8 +546,6 @@ export function buildBridgeLedgerModel(snapshot: BridgeLedgerSnapshot): BridgeLe
         detail: uiText('ledger.row.observe.effectiveDetail', {
           registrations: effective?.registrations.length ?? 0,
           installations: effective?.installations.length ?? 0,
-          suppressed: 0,
-          excluded: 0,
         }),
         actions: [action(snapshot, { actionId: 'observe-effective-state', mode: 'read' })],
       },
@@ -581,9 +574,7 @@ export function buildBridgeLedgerModel(snapshot: BridgeLedgerSnapshot): BridgeLe
     rows: [
       {
         id: 'journal:global',
-        label: uiText('ledger.row.journal.label', {
-          scopeWord: uiText('common.scope.word.global'),
-        }),
+        label: uiText('ledger.row.journal.label'),
         detail: uiText('ledger.row.journal.detail', {
           receipts: snapshot.journal.receipts.length,
           chains: snapshot.journal.activeChains.length,
@@ -595,9 +586,7 @@ export function buildBridgeLedgerModel(snapshot: BridgeLedgerSnapshot): BridgeLe
       },
       {
         id: 'repair:global',
-        label: uiText('ledger.row.repair.label', {
-          scopeWord: uiText('common.scope.word.global'),
-        }),
+        label: uiText('ledger.row.repair.label'),
         targetKind: 'scope',
         targetId: 'global',
         actions: [action(snapshot, { actionId: 'repair-state', mode: 'mutation', targetKind: 'scope', targetId: 'global' })],
@@ -808,18 +797,16 @@ export class BridgeLedgerComponent implements Component {
 
   private railContentLines(width: number): string[] {
     const rail = this.model.rail;
-    const marker = 'G';
-    const fitDim = (text: string): string => this.fit(text, width, 'dim');
     const lines = [
       this.railBadge(),
-      uiText('ledger.rail.revision', { marker, revision: quoteTerminalText(rail.revision) }),
+      uiText('ledger.rail.revision', { revision: quoteTerminalText(rail.revision) }),
       uiText('ledger.rail.registrations', { count: rail.registrationCount }),
       uiText('ledger.rail.installations', {
         enabled: rail.installationEnabledCount,
         disabled: rail.installationDisabledCount,
       }),
     ];
-    if (rail.health !== 'healthy') lines.push(fitDim(quoteTerminalText(rail.healthText)));
+    if (rail.health !== 'healthy') lines.push(this.fit(quoteTerminalText(rail.healthText), width, 'dim'));
     return lines;
   }
 
@@ -971,7 +958,6 @@ export class BridgeLedgerComponent implements Component {
       ? uiText('ledger.status.pane.actions')
       : uiText('ledger.status.pane.sections');
     return uiText('ledger.status.browsing', {
-      marker: 'G',
       section: section.label,
       pane,
     });

@@ -135,7 +135,7 @@ export async function dispatchLedgerAction(
   intent: LedgerActionIntent,
 ): Promise<void> {
   switch (intent.actionId) {
-    case 'observe-partitions': {
+    case 'observe-authority': {
       const global = readBridgeStateSync();
       ctx.ui.notify(formatLocalizedStateSummary(global), 'info');
       return;
