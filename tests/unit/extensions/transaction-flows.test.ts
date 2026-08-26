@@ -110,7 +110,6 @@ describe('Bridge Ledger transaction flow adapters', () => {
       classification: 'blocking',
       phase: 'validation',
       target: 'skill',
-      scope: 'project',
       pointer: '/skills/build',
       rule: 'RULE-01',
       outcome: 'blocked by policy',
@@ -120,7 +119,6 @@ describe('Bridge Ledger transaction flow adapters', () => {
       // Unknown rule codes (RULE-01 is test-local) fall back to the canonical outcome text.
       uiText('finding.line', {
         classification: 'blocking',
-        scope: 'project',
         phase: 'validation',
         target: 'skill',
         pointer: '"/skills/build"',
@@ -131,7 +129,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
     ]);
   });
 
-  it('uses an explicit canonical scope without asking the host scope selector', async () => {
+  it('never opens a host scope selector — the single Global authority is implicit', async () => {
     const selectPrompts: string[] = [];
     const ctx = {
       cwd,
@@ -149,11 +147,12 @@ describe('Bridge Ledger transaction flow adapters', () => {
       },
     };
 
-    await runLocalRegistrationFlow(ctx as never, { scope: 'project' });
+    await runLocalRegistrationFlow(ctx as never);
 
+    // Global-only (#61): no scope selection surface exists anywhere in the flow.
     expect(selectPrompts).toEqual([]);
-    const project = await readBridgeState('project', { cwd, agentDir });
-    expect(project.state?.registrations).toEqual([]);
+    const state = await readBridgeState({ agentDir });
+    expect(state.state?.registrations).toEqual([]);
   });
 
   it('shows Local Registration terminal preflight findings before its existing Receipt', async () => {
@@ -165,24 +164,24 @@ describe('Bridge Ledger transaction flow adapters', () => {
       hasUI: true,
       isProjectTrusted: () => false,
       ui: {
-        select: async () => { throw new Error('explicit scope must not open selectors'); },
-        input: async () => join(root, 'marketplace'),
+        select: async () => { throw new Error('no selector may open for a direct local registration'); },
+        input: async () => join(root, 'missing-marketplace'),
         custom: terminalPreflightSheetCustom(events, renderedByStep, true),
         confirm: async () => { throw new Error('blocked preflight must not request Registration Confirmation'); },
         notify: () => {},
       },
     };
 
-    await runLocalRegistrationFlow(ctx as never, { scope: 'project' });
+    await runLocalRegistrationFlow(ctx as never);
 
     expect(events).toEqual(['Intent', 'Validation', 'Receipt']);
     expect(renderedByStep.get('Validation')).toMatch(
-      /State Revision:.*0.*Verdict.*Blocked.*PROJECT_TRUST_DENIED.*TRUST-01/s,
+      /State Revision:.*0.*Verdict.*Blocked.*SOURCE_NOT_EXISTS.*SRC-01/s,
     );
     expect(events).not.toContain('Consent');
     expect(events).not.toContain('Plan');
     expect(events).not.toContain('Commit');
-    expect((await readReceiptJournal('project', { cwd, agentDir })).receipts).toEqual([
+    expect((await readReceiptJournal({ agentDir })).receipts).toEqual([
       expect.objectContaining({ summary: 'Blocked', expectedStateRevision: '0' }),
     ]);
   });
@@ -217,7 +216,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
       },
     };
 
-    await runLocalRegistrationFlow(ctx as never, { scope: 'global' });
+    await runLocalRegistrationFlow(ctx as never);
 
     expect(confirmation).toContain('Registration ID');
     expect(confirmation).toContain('safe\\nFORGED-DISCLOSURE');
@@ -236,7 +235,6 @@ describe('Bridge Ledger transaction flow adapters', () => {
       receipt: createReceipt({
         id: 'rcpt-safe\nFORGED-RECEIPT\u001b[31m',
         operation: 'Test Receipt',
-        scope: 'global',
         trigger: 'test',
         expectedStateRevision: '0',
         summary: 'Completed',
@@ -252,7 +250,6 @@ describe('Bridge Ledger transaction flow adapters', () => {
   it('renders startup reconciliation Receipts without terminal-controlled finding rows', () => {
     const output = formatStartupReceipt(createReceipt({
       operation: 'Startup Reconciliation',
-      scope: 'global',
       trigger: 'startup',
       expectedStateRevision: '1',
       summary: 'Blocked',
@@ -261,7 +258,6 @@ describe('Bridge Ledger transaction flow adapters', () => {
         classification: 'blocking',
         phase: 'post-commit',
         target: 'attempt',
-        scope: 'global',
         pointer: '/safe\nFORGED-POINTER',
         rule: 'TEST-01',
         outcome: 'safe\nFORGED-FINDING\u001b[31m',
@@ -281,13 +277,13 @@ describe('Bridge Ledger transaction flow adapters', () => {
     const firstId = '11111111-1111-4111-8111-111111111111';
     const secondId = '22222222-2222-4222-8222-222222222222';
     makeMarketplace(secondRoot, 'second-marketplace', 'second-helper');
-    await commitBridgeState('global', (state) => ({
+    await commitBridgeState((state) => ({
       ...state,
       registrations: [
         { id: firstId, marketplaceName: 'acme-marketplace', sourceKind: 'local', source: firstRoot },
         { id: secondId, marketplaceName: 'second-marketplace', sourceKind: 'local', source: secondRoot },
       ],
-    }), { cwd, agentDir });
+    }), { agentDir });
 
     const selectPrompts: string[] = [];
     const confirms: string[] = [];
@@ -312,14 +308,14 @@ describe('Bridge Ledger transaction flow adapters', () => {
       },
     };
 
-    await runPluginInstallationFlow(ctx as never, { scope: 'global', registrationId: secondId });
+    await runPluginInstallationFlow(ctx as never, { registrationId: secondId });
 
     expect(selectPrompts).toEqual([
       uiText('inst.select.entry'),
       uiText('inst.select.path'),
     ]);
     expect(confirms).toEqual([]);
-    const state = await readBridgeState('global', { cwd, agentDir });
+    const state = await readBridgeState({ agentDir });
     expect(state.state?.installations).toEqual([
       expect.objectContaining({
         registrationId: secondId,
@@ -332,7 +328,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
   it('binds the legacy Entry selection State Revision before opening the Intent sheet', async () => {
     const marketplace = join(root, 'marketplace');
     const registrationId = '11111111-1111-4111-8111-111111111111';
-    const selected = await commitBridgeState('global', (state) => ({
+    const selected = await commitBridgeState((state) => ({
       ...state,
       registrations: [{
         id: registrationId,
@@ -340,7 +336,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
         sourceKind: 'local',
         source: marketplace,
       }],
-    }), { cwd, agentDir });
+    }), { agentDir });
     const events: string[] = [];
     let revisionAdvanced = false;
     const ctx = {
@@ -361,7 +357,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
           void (async () => {
             if (active === 'Intent' && !revisionAdvanced) {
               revisionAdvanced = true;
-              await commitBridgeState('global', (state) => ({ ...state }), { cwd, agentDir });
+              await commitBridgeState((state) => ({ ...state }), { agentDir });
             }
             component.handleInput?.('\r');
           })();
@@ -371,17 +367,17 @@ describe('Bridge Ledger transaction flow adapters', () => {
       },
     };
 
-    await runPluginInstallationFlow(ctx as never, { scope: 'global', registrationId });
+    await runPluginInstallationFlow(ctx as never, { registrationId });
 
     expect(events).toEqual(['Intent', 'Validation', 'Receipt']);
-    expect((await readReceiptJournal('global', { cwd, agentDir })).receipts.at(-1)).toEqual(
+    expect((await readReceiptJournal({ agentDir })).receipts.at(-1)).toEqual(
       expect.objectContaining({
         summary: 'Rejected as Stale',
         expectedStateRevision: selected.newRevision,
         observedStateRevision: '2',
       }),
     );
-    expect((await readBridgeState('global', { cwd, agentDir })).state?.installations).toEqual([]);
+    expect((await readBridgeState({ agentDir })).state?.installations).toEqual([]);
   });
 
   it('installs a Ledger-selected Marketplace Entry without reopening native Entry or path selectors', async () => {
@@ -393,15 +389,15 @@ describe('Bridge Ledger transaction flow adapters', () => {
       sourceKind: 'local' as const,
       source: marketplace,
     };
-    await commitBridgeState('global', (state) => ({
+    await commitBridgeState((state) => ({
       ...state,
       registrations: [registration],
-    }), { cwd, agentDir });
+    }), { agentDir });
     const selectPrompts: string[] = [];
     const events: string[] = [];
     const renderedByStep = new Map<string, string>();
     const targetId = `${registrationId}/acme-marketplace/plugins/0`;
-    const validationSnapshot = inspectMarketplaceEntries(registration, 'global').snapshot!.fingerprint;
+    const validationSnapshot = inspectMarketplaceEntries(registration).snapshot!.fingerprint;
     const ctx = {
       cwd,
       mode: 'tui',
@@ -422,7 +418,6 @@ describe('Bridge Ledger transaction flow adapters', () => {
     await dispatchLedgerAction(ctx as never, {
       actionId: 'install-disabled',
       mode: 'mutation',
-      scope: 'global',
       targetKind: 'marketplace-entry',
       targetId,
       registrationId,
@@ -435,14 +430,14 @@ describe('Bridge Ledger transaction flow adapters', () => {
     expect(selectPrompts).toEqual([]);
     expect(events).toEqual(['Intent', 'Validation', 'Consent', 'Plan', 'Commit', 'Receipt']);
     for (const step of events) expect(renderedByStep.get(step)).toContain(targetId);
-    expect((await readBridgeState('global', { cwd, agentDir })).state?.installations).toEqual([
+    expect((await readBridgeState({ agentDir })).state?.installations).toEqual([
       expect.objectContaining({
         registrationId,
         marketplaceEntryId: `${registrationId}/acme-marketplace/plugins/0`,
         installationState: 'disabled',
       }),
     ]);
-    expect((await readReceiptJournal('global', { cwd, agentDir })).receipts.at(-1)).toEqual(
+    expect((await readReceiptJournal({ agentDir })).receipts.at(-1)).toEqual(
       expect.objectContaining({ trigger: `install ${targetId}` }),
     );
   });
@@ -456,15 +451,15 @@ describe('Bridge Ledger transaction flow adapters', () => {
       sourceKind: 'local' as const,
       source: marketplace,
     };
-    const selected = await commitBridgeState('global', (state) => ({
+    const selected = await commitBridgeState((state) => ({
       ...state,
       registrations: [registration],
-    }), { cwd, agentDir });
-    const validationSnapshot = inspectMarketplaceEntries(registration, 'global').snapshot!.fingerprint;
-    await commitBridgeState('global', (state) => ({
+    }), { agentDir });
+    const validationSnapshot = inspectMarketplaceEntries(registration).snapshot!.fingerprint;
+    await commitBridgeState((state) => ({
       ...state,
       registrations: [],
-    }), { cwd, agentDir });
+    }), { agentDir });
     const events: string[] = [];
     const renderedByStep = new Map<string, string>();
     const targetId = `${registrationId}/acme-marketplace/plugins/0`;
@@ -485,7 +480,6 @@ describe('Bridge Ledger transaction flow adapters', () => {
     await dispatchLedgerAction(ctx as never, {
       actionId: 'install-disabled',
       mode: 'mutation',
-      scope: 'global',
       targetKind: 'marketplace-entry',
       targetId,
       registrationId,
@@ -500,7 +494,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
       new RegExp(`目標:.*${registrationId}/acme-marketplace/plugins/0.*State Revision:.*${selected.newRevision}`, 's'),
     );
     expect(renderedByStep.get('Validation')).toMatch(/Verdict.*Blocked.*REJECTED_AS_STALE/s);
-    expect((await readReceiptJournal('global', { cwd, agentDir })).receipts.at(-1)).toEqual(
+    expect((await readReceiptJournal({ agentDir })).receipts.at(-1)).toEqual(
       expect.objectContaining({
         operation: 'Plugin Installation',
         summary: 'Rejected as Stale',
@@ -519,11 +513,11 @@ describe('Bridge Ledger transaction flow adapters', () => {
       sourceKind: 'local' as const,
       source: marketplace,
     };
-    const selected = await commitBridgeState('global', (state) => ({
+    const selected = await commitBridgeState((state) => ({
       ...state,
       registrations: [registration],
-    }), { cwd, agentDir });
-    const validationSnapshot = inspectMarketplaceEntries(registration, 'global').snapshot!.fingerprint;
+    }), { agentDir });
+    const validationSnapshot = inspectMarketplaceEntries(registration).snapshot!.fingerprint;
     const events: string[] = [];
     const renderedByStep = new Map<string, string>();
     const selectedTargetId = `${registrationId}/previous-marketplace/plugins/0`;
@@ -544,7 +538,6 @@ describe('Bridge Ledger transaction flow adapters', () => {
     await dispatchLedgerAction(ctx as never, {
       actionId: 'install-disabled',
       mode: 'mutation',
-      scope: 'global',
       targetKind: 'marketplace-entry',
       targetId: selectedTargetId,
       registrationId,
@@ -557,14 +550,14 @@ describe('Bridge Ledger transaction flow adapters', () => {
     expect(events).toEqual(['Intent', 'Validation', 'Receipt']);
     expect(renderedByStep.get('Intent')).toContain(selectedTargetId);
     expect(renderedByStep.get('Validation')).toMatch(/REJECTED_AS_STALE.*STALE-01/s);
-    expect((await readReceiptJournal('global', { cwd, agentDir })).receipts.at(-1)).toEqual(
+    expect((await readReceiptJournal({ agentDir })).receipts.at(-1)).toEqual(
       expect.objectContaining({
         summary: 'Rejected as Stale',
         expectedStateRevision: selected.newRevision,
         observedStateRevision: selected.newRevision,
       }),
     );
-    expect((await readBridgeState('global', { cwd, agentDir })).state?.installations).toEqual([]);
+    expect((await readBridgeState({ agentDir })).state?.installations).toEqual([]);
   });
 
   it('blocks a same-revision Ledger installation when catalog reorder redirects its Entry pointer', async () => {
@@ -597,11 +590,11 @@ describe('Bridge Ledger transaction flow adapters', () => {
       sourceKind: 'local' as const,
       source: marketplace,
     };
-    const selectedSnapshot = inspectMarketplaceEntries(registration, 'global').snapshot!.fingerprint;
-    const selected = await commitBridgeState('global', (state) => ({
+    const selectedSnapshot = inspectMarketplaceEntries(registration).snapshot!.fingerprint;
+    const selected = await commitBridgeState((state) => ({
       ...state,
       registrations: [registration],
-    }), { cwd, agentDir });
+    }), { agentDir });
     writeFileSync(
       join(marketplace, '.agents', 'plugins', 'marketplace.json'),
       JSON.stringify({ ...initialCatalog, plugins: [...initialCatalog.plugins].reverse() }),
@@ -626,7 +619,6 @@ describe('Bridge Ledger transaction flow adapters', () => {
     await dispatchLedgerAction(ctx as never, {
       actionId: 'install-disabled',
       mode: 'mutation',
-      scope: 'global',
       targetKind: 'marketplace-entry',
       targetId,
       registrationId,
@@ -638,14 +630,14 @@ describe('Bridge Ledger transaction flow adapters', () => {
 
     expect(events).toEqual(['Intent', 'Validation', 'Receipt']);
     expect(renderedByStep.get('Validation')).toMatch(/REJECTED_AS_STALE.*STALE-01/s);
-    expect((await readReceiptJournal('global', { cwd, agentDir })).receipts.at(-1)).toEqual(
+    expect((await readReceiptJournal({ agentDir })).receipts.at(-1)).toEqual(
       expect.objectContaining({
         operation: 'Plugin Installation',
         summary: 'Rejected as Stale',
         expectedStateRevision: selected.newRevision,
       }),
     );
-    expect((await readBridgeState('global', { cwd, agentDir })).state?.installations).toEqual([]);
+    expect((await readBridgeState({ agentDir })).state?.installations).toEqual([]);
   });
 
   it('reports an exact terminal finding when a same-revision Ledger Entry becomes Unavailable', async () => {
@@ -657,11 +649,11 @@ describe('Bridge Ledger transaction flow adapters', () => {
       sourceKind: 'local' as const,
       source: marketplace,
     };
-    const selected = await commitBridgeState('global', (state) => ({
+    const selected = await commitBridgeState((state) => ({
       ...state,
       registrations: [registration],
-    }), { cwd, agentDir });
-    const validationSnapshot = inspectMarketplaceEntries(registration, 'global').snapshot!.fingerprint;
+    }), { agentDir });
+    const validationSnapshot = inspectMarketplaceEntries(registration).snapshot!.fingerprint;
     writeFileSync(
       join(marketplace, '.agents', 'plugins', 'marketplace.json'),
       JSON.stringify({
@@ -689,7 +681,6 @@ describe('Bridge Ledger transaction flow adapters', () => {
     await dispatchLedgerAction(ctx as never, {
       actionId: 'install-disabled',
       mode: 'mutation',
-      scope: 'global',
       targetKind: 'marketplace-entry',
       targetId,
       registrationId,
@@ -703,7 +694,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
     expect(renderedByStep.get('Validation')).toMatch(
       new RegExp(`Verdict.*Blocked.*INSTALLATION_NOT_FOUND.*INSTALL-01.*${findingOutcomeText({ rule: 'INSTALL-01', outcome: 'unsupported source kind' })}`, 's'),
     );
-    expect((await readReceiptJournal('global', { cwd, agentDir })).receipts.at(-1)).toEqual(
+    expect((await readReceiptJournal({ agentDir })).receipts.at(-1)).toEqual(
       expect.objectContaining({
         summary: 'Blocked',
         findings: expect.arrayContaining([
@@ -713,7 +704,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
     );
   });
 
-  it('uses an explicit canonical scope for Git Registration', async () => {
+  it('asks only the Git Selector — no scope selector exists (Global-only)', async () => {
     const selectPrompts: string[] = [];
     const ctx = {
       cwd,
@@ -732,10 +723,10 @@ describe('Bridge Ledger transaction flow adapters', () => {
       },
     };
 
-    await runGitRegistrationFlow(ctx as never, { scope: 'project' });
+    await runGitRegistrationFlow(ctx as never);
 
     expect(selectPrompts).toEqual(['Git Selector — 選擇型別']);
-    const project = await readBridgeState('project', { cwd, agentDir });
+    const project = await readBridgeState({ agentDir });
     expect(project.state?.registrations).toEqual([]);
   });
 
@@ -759,7 +750,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
       },
     };
 
-    await runGitRegistrationFlow(ctx as never, { scope: 'global' });
+    await runGitRegistrationFlow(ctx as never);
 
     expect(events).toEqual(['Intent', 'Validation', 'Receipt']);
     expect(renderedByStep.get('Validation')).toMatch(
@@ -768,7 +759,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
     expect(events).not.toContain('Consent');
     expect(events).not.toContain('Plan');
     expect(events).not.toContain('Commit');
-    expect((await readReceiptJournal('global', { cwd, agentDir })).receipts).toEqual([
+    expect((await readReceiptJournal({ agentDir })).receipts).toEqual([
       expect.objectContaining({ summary: 'Blocked', expectedStateRevision: '0' }),
     ]);
   });
@@ -776,13 +767,13 @@ describe('Bridge Ledger transaction flow adapters', () => {
   it('uses an explicit Installation ID without selecting a display label', async () => {
     const firstId = 'global/first-market/plugin-a';
     const secondId = 'global/second-market/plugin-b';
-    await commitBridgeState('global', (state) => ({
+    await commitBridgeState((state) => ({
       ...state,
       installations: [
         { id: firstId, pluginId: 'first-market/plugin-a', installationState: 'enabled' },
         { id: secondId, pluginId: 'second-market/plugin-b', installationState: 'enabled' },
       ],
-    }), { cwd, agentDir });
+    }), { agentDir });
     const selectPrompts: string[] = [];
     const ctx = {
       cwd,
@@ -800,10 +791,10 @@ describe('Bridge Ledger transaction flow adapters', () => {
       },
     };
 
-    await runPluginStateFlow(ctx as never, { scope: 'global', installationId: secondId });
+    await runPluginStateFlow(ctx as never, { installationId: secondId });
 
     expect(selectPrompts).toEqual([]);
-    const state = await readBridgeState('global', { cwd, agentDir });
+    const state = await readBridgeState({ agentDir });
     expect(state.state?.installations).toEqual([
       expect.objectContaining({ id: firstId, installationState: 'enabled' }),
       expect.objectContaining({ id: secondId, installationState: 'disabled' }),
@@ -812,7 +803,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
 
   it('shows Plugin Enablement terminal preflight findings before its existing Receipt', async () => {
     const installationId = 'global/acme-market/plugin-a';
-    const initial = await commitBridgeState('global', (state) => ({
+    const initial = await commitBridgeState((state) => ({
       ...state,
       installations: [{
         id: installationId,
@@ -820,7 +811,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
         installationState: 'disabled',
         validationSnapshot: 'snapshot-bound-to-disabled-installation',
       }],
-    }), { cwd, agentDir });
+    }), { agentDir });
     const events: string[] = [];
     const renderedByStep = new Map<string, string>();
     const ctx = {
@@ -838,7 +829,6 @@ describe('Bridge Ledger transaction flow adapters', () => {
     };
 
     await runPluginStateFlow(ctx as never, {
-      scope: 'global',
       installationId,
       desiredState: 'enabled',
       expectedStateRevision: initial.newRevision,
@@ -851,7 +841,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
     expect(events).not.toContain('Consent');
     expect(events).not.toContain('Plan');
     expect(events).not.toContain('Commit');
-    expect((await readReceiptJournal('global', { cwd, agentDir })).receipts).toEqual([
+    expect((await readReceiptJournal({ agentDir })).receipts).toEqual([
       expect.objectContaining({
         operation: 'Plugin Enablement',
         summary: 'Blocked',
@@ -881,7 +871,6 @@ describe('Bridge Ledger transaction flow adapters', () => {
     await dispatchLedgerAction(ctx as never, {
       actionId: 'enable-installation',
       mode: 'mutation',
-      scope: 'global',
       targetKind: 'installation',
       targetId: installationId,
       stateRevision: '0',
@@ -892,7 +881,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
       /動作:.*Plugin Enablement.*目標:.*global\/acme-market\/missing-plugin.*State Revision:.*0/s,
     );
     expect(renderedByStep.get('Validation')).toMatch(/INSTALLATION_NOT_FOUND.*INSTALL-01/s);
-    expect((await readReceiptJournal('global', { cwd, agentDir })).receipts).toEqual([
+    expect((await readReceiptJournal({ agentDir })).receipts).toEqual([
       expect.objectContaining({
         operation: 'Plugin Enablement',
         summary: 'Blocked',
@@ -922,7 +911,6 @@ describe('Bridge Ledger transaction flow adapters', () => {
     await dispatchLedgerAction(ctx as never, {
       actionId: 'disable-installation',
       mode: 'mutation',
-      scope: 'global',
       targetKind: 'installation',
       targetId: installationId,
       stateRevision: '0',
@@ -933,7 +921,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
       /動作:.*Plugin Disablement.*目標:.*global\/acme-market\/missing-plugin.*State Revision:.*0/s,
     );
     expect(renderedByStep.get('Validation')).toMatch(/INSTALLATION_NOT_FOUND.*INSTALL-01/s);
-    expect((await readReceiptJournal('global', { cwd, agentDir })).receipts).toEqual([
+    expect((await readReceiptJournal({ agentDir })).receipts).toEqual([
       expect.objectContaining({
         operation: 'Plugin Disablement',
         summary: 'Blocked',
@@ -944,15 +932,15 @@ describe('Bridge Ledger transaction flow adapters', () => {
 
   it('reports Attempt Fence denial before Plugin Disablement Validation can proceed', async () => {
     const installationId = 'global/acme-market/plugin-a';
-    const selected = await commitBridgeState('global', (state) => ({
+    const selected = await commitBridgeState((state) => ({
       ...state,
       installations: [{
         id: installationId,
         pluginId: 'acme-market/plugin-a',
         installationState: 'enabled',
       }],
-    }), { cwd, agentDir });
-    const held = await preflightPluginDisable('global', installationId, { cwd, agentDir });
+    }), { agentDir });
+    const held = await preflightPluginDisable(installationId, { agentDir });
     expect(held.ok).toBe(true);
     if (!held.ok) return;
     const events: string[] = [];
@@ -975,7 +963,6 @@ describe('Bridge Ledger transaction flow adapters', () => {
       await dispatchLedgerAction(ctx as never, {
         actionId: 'disable-installation',
         mode: 'mutation',
-        scope: 'global',
         targetKind: 'installation',
         targetId: installationId,
         stateRevision: selected.newRevision,
@@ -984,7 +971,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
       expect(events).toEqual(['Intent', 'Validation', 'Receipt']);
       expect(renderedByStep.get('Validation')).toMatch(/ATTEMPT_IN_PROGRESS.*FENCE-01/s);
       expect(events).not.toContain('Consent');
-      expect((await readReceiptJournal('global', { cwd, agentDir })).receipts.at(-1)).toEqual(
+      expect((await readReceiptJournal({ agentDir })).receipts.at(-1)).toEqual(
         expect.objectContaining({
           operation: 'Plugin Disablement',
           summary: 'Blocked',
@@ -994,29 +981,28 @@ describe('Bridge Ledger transaction flow adapters', () => {
         }),
       );
     } finally {
-      await declinePluginDisable(held.preflight, { cwd, agentDir });
+      await declinePluginDisable(held.preflight, { agentDir });
     }
   });
 
   it('completes Plugin Disablement even while Global has an active recovery chain (Barrier retired)', async () => {
     const installationId = 'project/11111111-1111-4111-8111-111111111111/acme-marketplace/release-helper';
-    const selected = await commitBridgeState('project', (state) => ({
+    const selected = await commitBridgeState((state) => ({
       ...state,
       installations: [{
         id: installationId,
         pluginId: '11111111-1111-4111-8111-111111111111/acme-marketplace/release-helper',
         installationState: 'enabled',
       }],
-    }), { cwd, agentDir });
-    await appendReceipt('global', createReceipt({
+    }), { agentDir });
+    await appendReceipt(createReceipt({
       operation: 'Runtime Application',
-      scope: 'global',
       trigger: 'concurrent global runtime application',
       expectedStateRevision: '0',
       runtimeOutcome: 'pending-application',
       summary: 'Pending Application',
       stateChanged: false,
-    }), { cwd, agentDir });
+    }), { agentDir });
     const events: string[] = [];
     const renderedByStep = new Map<string, string>();
     const ctx = {
@@ -1034,24 +1020,23 @@ describe('Bridge Ledger transaction flow adapters', () => {
     };
 
     await runPluginStateFlow(ctx as never, {
-      scope: 'project',
       installationId,
       desiredState: 'disabled',
       expectedStateRevision: selected.newRevision,
     });
 
     expect(events).toEqual(['Intent', 'Validation', 'Consent', 'Plan', 'Commit', 'Receipt']);
-    expect((await readBridgeState('project', { cwd, agentDir })).state?.installations).toEqual([
+    expect((await readBridgeState({ agentDir })).state?.installations).toEqual([
       expect.objectContaining({ id: installationId, installationState: 'disabled' }),
     ]);
-    expect((await readReceiptJournal('project', { cwd, agentDir })).receipts.at(-1)).toEqual(
+    expect((await readReceiptJournal({ agentDir })).receipts.at(-1)).toEqual(
       expect.objectContaining({ operation: 'Plugin Disablement', summary: 'Completed' }),
     );
   });
 
   it('rejects a Ledger-selected Repair after State drifted before dispatch', async () => {
-    const selected = await commitBridgeState('project', (state) => ({ ...state }), { cwd, agentDir });
-    await commitBridgeState('project', (state) => ({ ...state }), { cwd, agentDir });
+    const selected = await commitBridgeState((state) => ({ ...state }), { agentDir });
+    await commitBridgeState((state) => ({ ...state }), { agentDir });
     const events: string[] = [];
     const renderedByStep = new Map<string, string>();
     const ctx = {
@@ -1071,18 +1056,17 @@ describe('Bridge Ledger transaction flow adapters', () => {
     await dispatchLedgerAction(ctx as never, {
       actionId: 'repair-state',
       mode: 'mutation',
-      scope: 'project',
       targetKind: 'scope',
-      targetId: 'project',
+      targetId: 'global',
       stateRevision: selected.newRevision,
     });
 
     expect(events).toEqual(['Intent', 'Validation', 'Consent', 'Plan', 'Commit', 'Receipt']);
     expect(renderedByStep.get('Intent')).toMatch(
-      new RegExp(`目標:.*project Bridge State.*State Revision:.*${selected.newRevision}`, 's'),
+      new RegExp(`目標:.*Global Bridge State.*State Revision:.*${selected.newRevision}`, 's'),
     );
-    expect((await readBridgeState('project', { cwd, agentDir })).state?.stateRevision).toBe('2');
-    expect((await readReceiptJournal('project', { cwd, agentDir })).receipts.at(-1)).toEqual(
+    expect((await readBridgeState({ agentDir })).state?.stateRevision).toBe('2');
+    expect((await readReceiptJournal({ agentDir })).receipts.at(-1)).toEqual(
       expect.objectContaining({
         operation: 'Repair State',
         expectedStateRevision: selected.newRevision,
@@ -1094,21 +1078,21 @@ describe('Bridge Ledger transaction flow adapters', () => {
 
   it('rejects a stale disable intent instead of inferring and running the opposite enable action', async () => {
     const installationId = 'global/acme-market/plugin-a';
-    const first = await commitBridgeState('global', (state) => ({
+    const first = await commitBridgeState((state) => ({
       ...state,
       installations: [{
         id: installationId,
         pluginId: 'acme-market/plugin-a',
         installationState: 'enabled',
       }],
-    }), { cwd, agentDir });
-    await commitBridgeState('global', (state) => ({
+    }), { agentDir });
+    await commitBridgeState((state) => ({
       ...state,
       installations: state.installations.map((installation) => ({
         ...installation,
         installationState: 'disabled',
       })),
-    }), { cwd, agentDir });
+    }), { agentDir });
     const events: string[] = [];
     const ctx = {
       cwd,
@@ -1127,31 +1111,30 @@ describe('Bridge Ledger transaction flow adapters', () => {
     await dispatchLedgerAction(ctx as never, {
       actionId: 'disable-installation',
       mode: 'mutation',
-      scope: 'global',
       targetKind: 'installation',
       targetId: installationId,
       stateRevision: first.newRevision,
     } as never);
 
-    const state = await readBridgeState('global', { cwd, agentDir });
+    const state = await readBridgeState({ agentDir });
     expect(state.state?.stateRevision).toBe('2');
     expect(state.state?.installations[0]?.installationState).toBe('disabled');
     expect(events).toEqual(['Intent', 'Validation', 'Receipt']);
-    expect((await readReceiptJournal('global', { cwd, agentDir })).receipts.at(-1)).toEqual(
+    expect((await readReceiptJournal({ agentDir })).receipts.at(-1)).toEqual(
       expect.objectContaining({ summary: 'Rejected as Stale' }),
     );
   });
 
   it('rejects Plugin Disablement when State Revision drifts while the Commit sheet is open', async () => {
     const installationId = 'global/acme-market/plugin-a';
-    const initial = await commitBridgeState('global', (state) => ({
+    const initial = await commitBridgeState((state) => ({
       ...state,
       installations: [{
         id: installationId,
         pluginId: 'acme-market/plugin-a',
         installationState: 'enabled',
       }],
-    }), { cwd, agentDir });
+    }), { agentDir });
     const events: string[] = [];
     let drifted = false;
     const ctx = {
@@ -1172,7 +1155,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
           if (active) events.push(active);
           if (active === 'Commit' && !drifted) {
             drifted = true;
-            await commitBridgeState('global', (state) => ({ ...state }), { cwd, agentDir });
+            await commitBridgeState((state) => ({ ...state }), { agentDir });
           }
           component.handleInput('\r');
           return result;
@@ -1183,17 +1166,16 @@ describe('Bridge Ledger transaction flow adapters', () => {
     };
 
     await runPluginStateFlow(ctx as never, {
-      scope: 'global',
       installationId,
       desiredState: 'disabled',
       expectedStateRevision: initial.newRevision,
     });
 
-    const state = await readBridgeState('global', { cwd, agentDir });
+    const state = await readBridgeState({ agentDir });
     expect(state.state?.stateRevision).toBe('2');
     expect(state.state?.installations[0]?.installationState).toBe('enabled');
     expect(events).toEqual(['Intent', 'Validation', 'Consent', 'Plan', 'Commit', 'Receipt']);
-    expect((await readReceiptJournal('global', { cwd, agentDir })).receipts.at(-1)).toEqual(
+    expect((await readReceiptJournal({ agentDir })).receipts.at(-1)).toEqual(
       expect.objectContaining({
         operation: 'Plugin Disablement',
         expectedStateRevision: '1',
@@ -1207,11 +1189,20 @@ describe('Bridge Ledger transaction flow adapters', () => {
   });
 
   it.each(['disabled', 'enabled'] as const)(
-    'shows Plugin Installation (%s) terminal preflight findings before its existing Receipt',
+    'guards Plugin Installation (%s) against an entirely Unavailable Marketplace before any sheet',
     async (targetState) => {
       const marketplace = join(root, 'marketplace');
       const registrationId = '11111111-1111-4111-8111-111111111111';
-      await commitBridgeState('project', (state) => ({
+      // Every Entry resolves as Unavailable (non-local source kind), so no selectable
+      // pointer exists and the flow must refuse before opening any transaction sheet.
+      writeFileSync(
+        join(marketplace, '.agents', 'plugins', 'marketplace.json'),
+        JSON.stringify({
+          name: 'acme-marketplace',
+          plugins: [{ name: 'release-helper', type: 'git' }],
+        }),
+      );
+      await commitBridgeState((state) => ({
         ...state,
         registrations: [{
           id: registrationId,
@@ -1219,51 +1210,40 @@ describe('Bridge Ledger transaction flow adapters', () => {
           sourceKind: 'local',
           source: marketplace,
         }],
-      }), { cwd, agentDir });
-      const events: string[] = [];
-      const renderedByStep = new Map<string, string>();
+      }), { agentDir });
+      const notifications: string[] = [];
       const ctx = {
         cwd,
         mode: 'tui',
         hasUI: true,
-        isProjectTrusted: () => false,
+        isProjectTrusted: () => true,
         ui: {
-          select: async () => { throw new Error('explicit installation target must not open selectors'); },
-          input: async () => { throw new Error('explicit installation target must not request input'); },
-          custom: terminalPreflightSheetCustom(events, renderedByStep),
-          confirm: async () => { throw new Error('blocked preflight must not request Activation Confirmation'); },
-          notify: () => {},
+          select: async () => { throw new Error('unavailable entries must not open selectors'); },
+          input: async () => { throw new Error('unavailable entries must not request input'); },
+          custom: async () => { throw new Error('unavailable entries must not open a transaction sheet'); },
+          confirm: async () => { throw new Error('unavailable entries must not request confirmation'); },
+          notify: (message: string) => { notifications.push(message); },
         },
       };
 
       await runPluginInstallationFlow(ctx as never, {
-        scope: 'project',
         registrationId,
         entryPointer: '/plugins/0',
         targetState,
       });
 
-      expect(events).toEqual(['Intent', 'Validation', 'Receipt']);
-      expect(renderedByStep.get('Validation')).toMatch(
-        /State Revision:.*1.*Verdict.*Blocked.*PROJECT_TRUST_DENIED.*TRUST-01/s,
+      expect(notifications.join('\n')).toMatch(/無法使用|Unavailable|無法安裝/);
+      expect((await readBridgeState({ agentDir })).state?.installations).toEqual([]);
+      expect(await readReceiptJournal({ agentDir })).toEqual(
+        expect.objectContaining({ receipts: [] }),
       );
-      expect(events).not.toContain('Consent');
-      expect(events).not.toContain('Plan');
-      expect(events).not.toContain('Commit');
-      expect((await readReceiptJournal('project', { cwd, agentDir })).receipts).toEqual([
-        expect.objectContaining({
-          operation: 'Plugin Installation',
-          summary: 'Blocked',
-          expectedStateRevision: '1',
-        }),
-      ]);
     },
   );
 
   it('shows the fixed transaction sequence and marks Activation Consent N/A for Install Disabled', async () => {
     const marketplace = join(root, 'marketplace');
     const registrationId = '11111111-1111-4111-8111-111111111111';
-    await commitBridgeState('global', (state) => ({
+    await commitBridgeState((state) => ({
       ...state,
       registrations: [{
         id: registrationId,
@@ -1271,7 +1251,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
         sourceKind: 'local',
         source: marketplace,
       }],
-    }), { cwd, agentDir });
+    }), { agentDir });
     const events: string[] = [];
     const confirms: string[] = [];
     const renderedSheets: string[] = [];
@@ -1309,7 +1289,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
       },
     };
 
-    await runPluginInstallationFlow(ctx as never, { scope: 'global', registrationId });
+    await runPluginInstallationFlow(ctx as never, { registrationId });
 
     expect(events).toEqual(['Intent', 'Validation', 'Consent', 'Plan', 'Commit', 'Receipt']);
     expect(confirms).toEqual([]);
@@ -1326,7 +1306,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
       join(marketplace, 'plugins', 'release-helper', 'skills', 'release-notes', 'guide.md'),
       'Safe resource.\n',
     );
-    await commitBridgeState('global', (state) => ({
+    await commitBridgeState((state) => ({
       ...state,
       registrations: [{
         id: registrationId,
@@ -1334,7 +1314,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
         sourceKind: 'local',
         source: marketplace,
       }],
-    }), { cwd, agentDir });
+    }), { agentDir });
     let expandedValidation = '';
     const ctx = {
       cwd,
@@ -1361,7 +1341,6 @@ describe('Bridge Ledger transaction flow adapters', () => {
     };
 
     await runPluginInstallationFlow(ctx as never, {
-      scope: 'global',
       registrationId,
       entryPointer: '/plugins/0',
       targetState: 'disabled',
@@ -1400,13 +1379,13 @@ describe('Bridge Ledger transaction flow adapters', () => {
       },
     };
 
-    await runLocalRegistrationFlow(ctx as never, { scope: 'global' });
-    await runLocalRegistrationFlow(ctx as never, { scope: 'global' });
+    await runLocalRegistrationFlow(ctx as never);
+    await runLocalRegistrationFlow(ctx as never);
 
     expect(confirmations).toBe(2);
-    const state = await readBridgeState('global', { cwd, agentDir });
+    const state = await readBridgeState({ agentDir });
     expect(state.state?.registrations).toEqual([]);
-    const receipts = (await readReceiptJournal('global', { cwd, agentDir })).receipts;
+    const receipts = (await readReceiptJournal({ agentDir })).receipts;
     expect(receipts).toHaveLength(2);
     expect(receipts[0]).toEqual(expect.objectContaining({
       summary: 'Declined',
@@ -1421,7 +1400,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
   it('turns an Esc after Plugin preflight into a Declined Receipt without committing Install Disabled', async () => {
     const marketplace = join(root, 'marketplace');
     const registrationId = '11111111-1111-4111-8111-111111111111';
-    await commitBridgeState('global', (state) => ({
+    await commitBridgeState((state) => ({
       ...state,
       registrations: [{
         id: registrationId,
@@ -1429,7 +1408,7 @@ describe('Bridge Ledger transaction flow adapters', () => {
         sourceKind: 'local',
         source: marketplace,
       }],
-    }), { cwd, agentDir });
+    }), { agentDir });
     const events: string[] = [];
     const ctx = {
       cwd,
@@ -1446,15 +1425,14 @@ describe('Bridge Ledger transaction flow adapters', () => {
     };
 
     await runPluginInstallationFlow(ctx as never, {
-      scope: 'global',
       registrationId,
       entryPointer: '/plugins/0',
       targetState: 'disabled',
     });
 
-    expect((await readBridgeState('global', { cwd, agentDir })).state?.installations).toEqual([]);
+    expect((await readBridgeState({ agentDir })).state?.installations).toEqual([]);
     expect(events).toEqual(['Intent', 'Validation', 'Consent', 'Plan', 'Commit', 'Receipt']);
-    expect((await readReceiptJournal('global', { cwd, agentDir })).receipts.at(-1)).toEqual(
+    expect((await readReceiptJournal({ agentDir })).receipts.at(-1)).toEqual(
       expect.objectContaining({
         operation: 'Plugin Installation',
         summary: 'Declined',
@@ -1488,17 +1466,17 @@ describe('Bridge Ledger transaction flow adapters', () => {
       },
     };
 
-    await runLocalRegistrationFlow(ctx as never, { scope: 'global' });
-    const registered = await readBridgeState('global', { cwd, agentDir });
+    await runLocalRegistrationFlow(ctx as never);
+    const registered = await readBridgeState({ agentDir });
     const registrationId = registered.state?.registrations[0]?.id;
     expect(registrationId).toBeDefined();
 
-    await runPluginInstallationFlow(ctx as never, { scope: 'global', registrationId });
+    await runPluginInstallationFlow(ctx as never, { registrationId });
 
     expect(confirmationTitles).toHaveLength(2);
     expect(confirmationTitles[0]).toMatch(/^Registration Confirmation/);
     expect(confirmationTitles[1]).toMatch(/^Activation Confirmation/);
-    const installed = await readBridgeState('global', { cwd, agentDir });
+    const installed = await readBridgeState({ agentDir });
     expect(installed.state?.installations[0]?.installationState).toBe('enabled');
   });
 });

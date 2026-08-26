@@ -1,21 +1,19 @@
 /**
- * Attempt Fence — per-scope exclusivity boundary for Lifecycle Operations.
+ * Attempt Fence — exclusivity boundary for Lifecycle Operations.
  * See CONTEXT.md: Attempt Fence, Blocking Finding.
  *
- * Admits only one attempt at a time per scope. The fence is acquired before preflight and held
+ * Admits only one attempt at a time. The fence is acquired before preflight and held
  * until the attempt reaches a terminal outcome (committed / declined / blocked / stale). A second
- * concurrent attempt on the same scope is denied with an ATTEMPT_IN_PROGRESS Blocking Finding.
+ * concurrent attempt is denied with an ATTEMPT_IN_PROGRESS Blocking Finding.
  *
- * Cross-process: a lock file sibling to the scope's state document is used (O_EXCL advisory lock).
+ * Cross-process: a lock file sibling to the state document is used (O_EXCL advisory lock).
  */
 
 import { acquireLock, releaseLock } from '../bridge-state/atomic.js';
-import { getFencePath, getStatePath } from '../bridge-state/paths.js';
-import type { Scope } from '../bridge-state/types.js';
+import { getFencePath, getGlobalStatePath } from '../bridge-state/paths.js';
 import { CODE, RULE, blocking, type ValidationFinding } from './findings.js';
 
 export interface AttemptFenceHandle {
-  scope: Scope;
   release(): void;
   released: boolean;
 }
@@ -28,12 +26,11 @@ export interface AttemptFenceResult {
 
 const FENCE_LOCK_TIMEOUT_MS = 300;
 
-/** Acquire the per-scope Attempt Fence (lock file). Denied when another attempt holds it. */
+/** Acquire the Attempt Fence (lock file). Denied when another attempt holds it. */
 export async function acquireAttemptFence(
-  scope: Scope,
-  opts: { cwd?: string; agentDir?: string; fenceTimeoutMs?: number; projectTrusted?: boolean } = {},
+  opts: { agentDir?: string; fenceTimeoutMs?: number } = {},
 ): Promise<AttemptFenceResult> {
-  const statePath = getStatePath(scope, opts);
+  const statePath = getGlobalStatePath(opts.agentDir);
   const fencePath = getFencePath(statePath);
   const timeout = opts.fenceTimeoutMs ?? FENCE_LOCK_TIMEOUT_MS;
 
@@ -47,17 +44,15 @@ export async function acquireAttemptFence(
         code: CODE.ATTEMPT_IN_PROGRESS,
         phase: 'admission',
         target: 'attempt',
-        scope,
         pointer: '',
         rule: RULE.ATTEMPT_IN_PROGRESS,
-        outcome: `another ${scope} attempt is in progress; only one attempt at a time per scope (no queue)`,
+        outcome: 'another attempt is in progress; only one attempt at a time (no queue)',
       }),
     };
   }
 
   let released = false;
   const handle: AttemptFenceHandle = {
-    scope,
     get released(): boolean {
       return released;
     },

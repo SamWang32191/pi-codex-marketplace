@@ -4,12 +4,12 @@
  *
  * Pure and skill-granular only: the result never changes Plugin classification or
  * Projected Plugin determination. Candidates resolve per exact name in
- * `Pi → Project Scope → Global Scope` order; all same-scope Bridge colliders are
- * unavailable; only a surviving higher-layer skill reserves the name, so a lower-layer
- * candidate survives whenever no higher-layer skill does.
+ * `Pi → Global` order; all same-layer Bridge colliders are unavailable; only a surviving
+ * higher-layer skill reserves the name, so a Global candidate survives whenever no
+ * Pi skill does.
  */
 
-export type CollisionLayer = 'pi' | 'project' | 'global';
+export type CollisionLayer = 'pi' | 'global';
 
 export interface SkillCandidate {
   /** Namespace layer the candidate comes from. */
@@ -24,7 +24,7 @@ export interface SkillCandidate {
 /** Skill-granular denial record for one contested exact name. */
 export interface SkillCollisionFindingInfo {
   name: string;
-  /** Skill IDs denied because they collide within their own scope layer. */
+  /** Skill IDs denied because they collide within their own layer. */
   unavailableSkillIds: string[];
   /** The surviving candidate that reserves the name, when one exists. */
   reservedBy?: { layer: CollisionLayer; skillId: string };
@@ -79,40 +79,15 @@ export function resolveRuntimeSkillCollisions(candidates: SkillCandidate[]): Col
       continue;
     }
 
-    let denied: string[] = [];
-    let projectNameUnreserved = false;
-
-    const projectCandidates = dedupeBySkillId(group.filter((item) => item.layer === 'project'));
+    // Pi → Global: same-layer Bridge colliders are all unavailable; nobody reserves the name.
     const globalCandidates = dedupeBySkillId(group.filter((item) => item.layer === 'global'));
-
-    if (projectCandidates.length > 1) {
-      // All same-scope Bridge colliders are unavailable; nobody reserves the name,
-      // so lower-layer candidates survive.
-      denied.push(...projectCandidates.map((item) => item.skillId));
-      projectNameUnreserved = true;
-    } else if (projectCandidates.length === 1) {
-      survivors.push(projectCandidates[0]!);
-      if (globalCandidates.length > 0) {
-        findings.push({
-          name,
-          unavailableSkillIds: globalCandidates.map((item) => item.skillId).sort((a, b) => a.localeCompare(b)),
-          reservedBy: { layer: 'project', skillId: projectCandidates[0]!.skillId },
-        });
-      }
-      continue;
-    }
-
-    if (projectNameUnreserved || projectCandidates.length === 0) {
-      const survivingGlobal = dedupeBySkillId(globalCandidates);
-      if (survivingGlobal.length > 1) {
-        denied.push(...survivingGlobal.map((item) => item.skillId));
-      } else {
-        survivors.push(...survivingGlobal);
-      }
-    }
-
-    if (denied.length > 0) {
-      findings.push({ name, unavailableSkillIds: [...new Set(denied)].sort((a, b) => a.localeCompare(b)) });
+    if (globalCandidates.length > 1) {
+      findings.push({
+        name,
+        unavailableSkillIds: globalCandidates.map((item) => item.skillId).sort((a, b) => a.localeCompare(b)),
+      });
+    } else {
+      survivors.push(...globalCandidates);
     }
   }
 

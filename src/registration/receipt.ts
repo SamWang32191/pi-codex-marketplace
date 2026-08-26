@@ -8,7 +8,6 @@
 
 import { randomUUID } from 'node:crypto';
 
-import type { Scope } from '../bridge-state/types.js';
 import { CODE, hasBlocking, sortFindings, type ValidationFinding } from './findings.js';
 import { redactSource } from './source-key.js';
 
@@ -51,7 +50,6 @@ export interface AttemptReceipt {
   kind: ReceiptKind;
   /** Operation name (e.g. "Marketplace Registration", "Plugin Installation", etc.) */
   operation: string;
-  scope: Scope;
   /** Redacted trigger description. */
   trigger: string;
   /** ISO timestamp when attempt started. */
@@ -179,7 +177,6 @@ function isValidationFinding(value: unknown): value is ValidationFinding {
     FINDING_PHASES.has(value.phase) &&
     typeof value.target === 'string' &&
     FINDING_TARGETS.has(value.target) &&
-    (value.scope === 'global' || value.scope === 'project') &&
     typeof value.pointer === 'string' &&
     typeof value.rule === 'string' &&
     typeof value.outcome === 'string'
@@ -195,7 +192,6 @@ export function isAttemptReceipt(value: unknown): value is AttemptReceipt {
     typeof value.kind === 'string' &&
     RECEIPT_KINDS.has(value.kind as ReceiptKind) &&
     typeof value.operation === 'string' &&
-    (value.scope === 'global' || value.scope === 'project') &&
     typeof value.trigger === 'string' &&
     typeof value.startedAt === 'string' &&
     typeof value.completedAt === 'string' &&
@@ -227,7 +223,6 @@ export interface ReceiptOptions {
   id?: string;
   kind?: ReceiptKind;
   operation: string;
-  scope: Scope;
   trigger: string;
   startedAt?: string;
   completedAt?: string;
@@ -314,9 +309,6 @@ export function deriveRecoveryActions(
         return ['Rebind', 'Inspect'];
       }
       if (findings.some((f) => f.code === CODE.ATTEMPT_IN_PROGRESS)) {
-        return ['Inspect'];
-      }
-      if (findings.some((f) => f.code === CODE.PROJECT_TRUST_DENIED)) {
         return ['Inspect'];
       }
       if (findings.some((f) => f.code === CODE.CATALOG_MISSING || f.code === CODE.CATALOG_MALFORMED)) {
@@ -416,7 +408,6 @@ export function createReceipt(opts: ReceiptOptions): AttemptReceipt {
     id: opts.id ?? `rcpt_${randomUUID()}`,
     kind: opts.kind ?? 'Lifecycle Operation',
     operation: opts.operation,
-    scope: opts.scope,
     trigger: redactSource(opts.trigger),
     startedAt,
     completedAt,

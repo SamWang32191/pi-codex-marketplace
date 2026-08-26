@@ -7,7 +7,6 @@ describe('Receipt Journal — Active Recovery Chains', () => {
     const r1 = createReceipt({
       id: 'rcpt_1',
       operation: 'Marketplace Registration',
-      scope: 'global',
       trigger: 'register',
       expectedStateRevision: '0',
       targetStateRevision: '1',
@@ -28,7 +27,6 @@ describe('Receipt Journal — Active Recovery Chains', () => {
     const r1 = createReceipt({
       id: 'rcpt_1',
       operation: 'Marketplace Registration',
-      scope: 'global',
       trigger: 'register',
       expectedStateRevision: '0',
       targetStateRevision: '1',
@@ -41,7 +39,6 @@ describe('Receipt Journal — Active Recovery Chains', () => {
     const r2 = createReceipt({
       id: 'rcpt_2',
       operation: 'Runtime Application',
-      scope: 'global',
       trigger: 'retry application',
       expectedStateRevision: '1',
       observedStateRevision: '1',
@@ -62,7 +59,6 @@ describe('Receipt Journal — Active Recovery Chains', () => {
     const r1 = createReceipt({
       id: 'rcpt_1',
       operation: 'Marketplace Registration',
-      scope: 'global',
       trigger: 'register',
       expectedStateRevision: '0',
       targetStateRevision: '1',
@@ -75,7 +71,6 @@ describe('Receipt Journal — Active Recovery Chains', () => {
     const r2 = createReceipt({
       id: 'rcpt_2',
       operation: 'Runtime Application',
-      scope: 'global',
       trigger: 'retry application',
       expectedStateRevision: '1',
       durableOutcome: 'unchanged',
@@ -95,7 +90,6 @@ describe('Receipt Journal — Active Recovery Chains', () => {
     const r1 = createReceipt({
       id: 'rcpt_1',
       operation: 'Marketplace Registration',
-      scope: 'global',
       trigger: 'register',
       expectedStateRevision: '0',
       targetStateRevision: '1',
@@ -108,7 +102,6 @@ describe('Receipt Journal — Active Recovery Chains', () => {
     const r2 = createReceipt({
       id: 'rcpt_2',
       operation: 'Marketplace Registration',
-      scope: 'global',
       trigger: 'register another',
       expectedStateRevision: '1',
       targetStateRevision: '2',
@@ -128,7 +121,6 @@ describe('Receipt Journal — Active Recovery Chains', () => {
     const r1 = createReceipt({
       id: 'rcpt_indet',
       operation: 'Marketplace Registration',
-      scope: 'global',
       trigger: 'register',
       expectedStateRevision: '0',
       durableOutcome: 'indeterminate',
@@ -144,7 +136,6 @@ describe('Receipt Journal — Active Recovery Chains', () => {
       id: 'rcpt_repair',
       kind: 'State Repair',
       operation: 'Repair State',
-      scope: 'global',
       trigger: 'repair state',
       expectedStateRevision: '0',
       observedStateRevision: '0',

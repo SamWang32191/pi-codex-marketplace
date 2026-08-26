@@ -61,7 +61,6 @@ export function findActiveRecoveryChains(
     if (condition) {
       const chain: ActiveRecoveryChain = {
         rootReceiptId: rcpt.id,
-        scope: rcpt.scope,
         condition,
         stateRevision: rcpt.observedStateRevision ?? rcpt.targetStateRevision ?? rcpt.expectedStateRevision,
         receipts: [rcpt],
@@ -71,11 +70,11 @@ export function findActiveRecoveryChains(
       chains.push(chain);
     }
 
-    // Check if this receipt supersedes any earlier un-resolved chains in the same scope
+    // Check if this receipt supersedes any earlier un-resolved chains
     // A replacement commit supersedes previous un-resolved chains
     if (rcpt.durableOutcome === 'committed' && rcpt.observedStateRevision) {
       for (const chain of chains) {
-        if (!chain.resolved && !chain.superseded && chain.scope === rcpt.scope && chain.rootReceiptId !== rcpt.id) {
+        if (!chain.resolved && !chain.superseded && chain.rootReceiptId !== rcpt.id) {
           // If the commit revision is different/newer than the chain's revision
           if (rcpt.observedStateRevision !== chain.stateRevision) {
             chain.superseded = true;

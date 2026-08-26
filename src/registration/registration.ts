@@ -14,7 +14,6 @@ import { randomUUID } from 'node:crypto';
 
 import { CODE, RULE, blocking } from './findings.js';
 import type { ValidationFinding } from './findings.js';
-import type { Scope } from '../bridge-state/types.js';
 import type { Registration } from '../bridge-state/types.js';
 import { localSourceKey, sourceKeyEquals, type SourceKey } from './source-key.js';
 
@@ -47,7 +46,6 @@ export interface DuplicateCheckResult {
  * Local and Git kinds remain distinct; equal keys across scopes do not merge registrations.
  */
 export function findDuplicateRegistration(
-  scope: Scope,
   sourceKey: SourceKey,
   registrations: Registration[],
 ): DuplicateCheckResult {
@@ -61,7 +59,6 @@ export function findDuplicateRegistration(
           code: CODE.DUPLICATE_SOURCE_KEY,
           phase: 'identity',
           target: 'registration',
-          scope,
           pointer: `${sourceKey.kind}:${sourceKey.key}`,
           rule: RULE.DUPLICATE_SOURCE_KEY,
           outcome:
@@ -78,7 +75,6 @@ export function findDuplicateRegistration(
 /** Compute the local Source Key; returns Blocking findings on invalid input. */
 export function sourceKeyForLocalRoot(
   rootPath: string,
-  scope: Scope,
 ): { ok: true; sourceKey: SourceKey } | { ok: false; findings: ValidationFinding[] } {
   const res = localSourceKey(rootPath);
   if (!res.ok) {
@@ -90,7 +86,6 @@ export function sourceKeyForLocalRoot(
           code: missing ? CODE.SOURCE_NOT_EXISTS : CODE.SOURCE_NOT_DIRECTORY,
           phase: 'identity',
           target: 'source',
-          scope,
           pointer: rootPath,
           rule: missing ? RULE.SOURCE_NOT_EXISTS : RULE.SOURCE_NOT_DIRECTORY,
           outcome: res.error ?? 'unable to resolve local Marketplace Root',

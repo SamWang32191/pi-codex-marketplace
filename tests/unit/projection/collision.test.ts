@@ -2,9 +2,9 @@
  * Runtime Skill Collision resolution — pure behavior over exact Skill Descriptor names.
  * See CONTEXT.md: Runtime Skill Collision, Projected Skill, Compatible Plugin.
  *
- * Candidates resolve per name in `Pi → Project Scope → Global Scope` order; all same-scope
- * Bridge colliders are unavailable; only a surviving higher-layer skill reserves the name;
- * a lower-layer candidate survives when no higher-layer skill does.
+ * Candidates resolve per name in `Pi → Global` order; all same-layer Bridge colliders are
+ * unavailable; a Pi-layer skill reserves the name; a Global candidate survives whenever no
+ * Pi skill claims the name.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -19,35 +19,15 @@ describe('Runtime Skill Collision — layering', () => {
   it('a pre-existing Pi skill reserves the name; every Bridge candidate for it is unavailable', () => {
     const resolution = resolveRuntimeSkillCollisions([
       candidate('pi', '(pi)', 'deploy'),
-      candidate('project', 'proj/one', 'deploy'),
       candidate('global', 'glob/two', 'deploy'),
     ]);
     expect(resolution.survivors.map((s) => s.layer)).toEqual(['pi']);
     const denied = resolution.findings.flatMap((f) => f.unavailableSkillIds).sort();
-    expect(denied).toEqual(['glob/two/deploy', 'proj/one/deploy'].sort());
+    expect(denied).toEqual(['glob/two/deploy'].sort());
+    expect(resolution.findings[0]?.reservedBy?.layer).toBe('pi');
   });
 
-  it('a surviving Project Scope skill reserves the name over Global Scope candidates', () => {
-    const resolution = resolveRuntimeSkillCollisions([
-      candidate('project', 'proj/one', 'lint'),
-      candidate('global', 'glob/two', 'lint'),
-    ]);
-    expect(resolution.survivors.map((s) => s.skillId)).toEqual(['proj/one/lint']);
-    expect(resolution.findings[0]?.unavailableSkillIds).toEqual(['glob/two/lint']);
-  });
-
-  it('same-scope Bridge colliders are ALL unavailable and the name stays free for the lower layer', () => {
-    const resolution = resolveRuntimeSkillCollisions([
-      candidate('project', 'proj/one', 'review'),
-      candidate('project', 'proj/two', 'review'),
-      candidate('global', 'glob/three', 'review'),
-    ]);
-    // both project colliders denied — no higher-layer survivor reserves the name
-    expect(resolution.survivors.map((s) => s.skillId)).toEqual(['glob/three/review']);
-    expect(resolution.findings[0]?.unavailableSkillIds.sort()).toEqual(['proj/one/review', 'proj/two/review'].sort());
-  });
-
-  it('same-scope colliders in Global Scope are all unavailable with nothing surviving', () => {
+  it('same-layer Bridge colliders in Global are ALL unavailable with nothing surviving', () => {
     const resolution = resolveRuntimeSkillCollisions([
       candidate('global', 'glob/one', 'format'),
       candidate('global', 'glob/two', 'format'),
@@ -56,21 +36,30 @@ describe('Runtime Skill Collision — layering', () => {
     expect(resolution.findings[0]?.unavailableSkillIds.sort()).toEqual(['glob/one/format', 'glob/two/format'].sort());
   });
 
-  it('a lower-layer candidate survives when no higher-layer competition exists', () => {
+  it('a lone Global candidate survives when no Pi competition exists', () => {
     const resolution = resolveRuntimeSkillCollisions([
-      candidate('project', 'proj/one', 'unique-a'),
       candidate('global', 'glob/two', 'unique-b'),
     ]);
-    expect(resolution.survivors.map((s) => s.skillId).sort()).toEqual(['glob/two/unique-b', 'proj/one/unique-a'].sort());
+    expect(resolution.survivors.map((s) => s.skillId)).toEqual(['glob/two/unique-b']);
     expect(resolution.findings).toEqual([]);
+  });
+
+  it('Pi-vs-Pi duplicates stay outside Bridge adjudication: only the Pi survivors survive', () => {
+    const resolution = resolveRuntimeSkillCollisions([
+      candidate('pi', '(pi)', 'dup'),
+      candidate('pi', '(pi-2)', 'dup'),
+      candidate('global', 'glob/two', 'dup'),
+    ]);
+    expect(resolution.survivors.map((s) => s.layer)).toEqual(['pi', 'pi']);
+    expect(resolution.findings[0]?.unavailableSkillIds).toEqual(['glob/two/dup']);
   });
 });
 
 describe('Runtime Skill Collision — closed semantics', () => {
   it('never denies a whole Plugin: findings stay at skill granularity', () => {
     const resolution = resolveRuntimeSkillCollisions([
-      candidate('project', 'proj/one', 'contested'),
-      candidate('project', 'proj/two', 'contested'),
+      candidate('global', 'glob/one', 'contested'),
+      candidate('global', 'glob/two', 'contested'),
     ]);
     for (const finding of resolution.findings) {
       expect(finding.name).toBe('contested');
@@ -80,17 +69,20 @@ describe('Runtime Skill Collision — closed semantics', () => {
   });
 
   it('treats identical candidates as one claim rather than a collision', () => {
-    const duplicate = candidate('project', 'proj/one', 'same');
+    const duplicate = candidate('global', 'glob/one', 'same');
     const resolution = resolveRuntimeSkillCollisions([duplicate, { ...duplicate }]);
-    expect(resolution.survivors.map((s) => s.skillId)).toEqual(['proj/one/same']);
+    expect(resolution.survivors.map((s) => s.skillId)).toEqual(['glob/one/same']);
     expect(resolution.findings).toEqual([]);
   });
 
   it('resolves each exact name independently', () => {
     const resolution = resolveRuntimeSkillCollisions([
-      candidate('project', 'proj/one', 'alpha'),
-      candidate('global', 'glob/two', 'beta'),
+      candidate('pi', '(pi)', 'alpha'),
+      candidate('global', 'glob/one', 'beta'),
+      candidate('global', 'glob/two', 'gamma'),
     ]);
-    expect(resolution.survivors).toHaveLength(2);
+    // alpha: pi reserves, no bridge candidates. beta/gamma: distinct names survive.
+    expect(resolution.survivors.map((s) => s.skillId).sort()).toEqual(['(pi)/alpha', 'glob/one/beta', 'glob/two/gamma'].sort());
+    expect(resolution.findings).toEqual([]);
   });
 });

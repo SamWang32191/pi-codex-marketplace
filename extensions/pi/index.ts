@@ -4,7 +4,7 @@
  *
  * Provides:
  * - /codex-marketplace command: persistent Bridge Ledger workspace
- * - Bridge State reading via dual-document store (global + project)
+ * - Bridge State reading via the single-document store (Global)
  * - Startup Reconciliation on session_start
  * - Receipt Journal inspection & State Repair flows
  *
@@ -49,17 +49,12 @@ export function formatStartupReceipt(receipt: AttemptReceipt): string {
   return renderTransactionSheet({
     step: 'Receipt',
     actionLabel: receipt.operation,
-    authority: receipt.scope,
+    authority: 'global',
     target: receipt.trigger,
     stateRevision: receipt.observedStateRevision ?? receipt.expectedStateRevision,
     validationSnapshot: receipt.validationSnapshot,
     receipt,
   }, STARTUP_RECEIPT_THEME, 80).map(stripTerminalSequences).join('\n');
-}
-
-function requiredScope(intent: LedgerActionIntent): 'global' | 'project' {
-  if (intent.scope) return intent.scope;
-  throw new Error(`Ledger action ${intent.actionId} requires an explicit scope`);
 }
 
 function requiredTarget(intent: LedgerActionIntent): string {
@@ -98,8 +93,8 @@ function requiredMarketplaceEntryTarget(intent: LedgerActionIntent): {
 }
 
 /** Localized state summary for TUI surfaces (the non-TUI list/inspect output stays canonical English). */
-function formatLocalizedStateSummary(result: ReadResult, scope: 'global' | 'project'): string {
-  const scopeLabel = scope === 'project' ? uiText('common.scope.project') : uiText('common.scope.global');
+function formatLocalizedStateSummary(result: ReadResult): string {
+  const scopeLabel = uiText('common.scope.global');
   if (result.status === 'missing') {
     const s = result.state!;
     return uiText('cmd.state.empty', {
@@ -141,38 +136,31 @@ export async function dispatchLedgerAction(
 ): Promise<void> {
   switch (intent.actionId) {
     case 'observe-partitions': {
-      const global = readBridgeStateSync('global', { cwd: ctx.cwd });
-      const project = readBridgeStateSync('project', { cwd: ctx.cwd });
-      ctx.ui.notify(
-        `${formatLocalizedStateSummary(global, 'global')}\n${formatLocalizedStateSummary(project, 'project')}`,
-        'info',
-      );
+      const global = readBridgeStateSync();
+      ctx.ui.notify(formatLocalizedStateSummary(global), 'info');
       return;
     }
     case 'observe-effective-state':
       await runEffectiveStateView(ctx);
       return;
     case 'register-local':
-      await runLocalRegistrationFlow(ctx, { scope: requiredScope(intent) });
+      await runLocalRegistrationFlow(ctx);
       return;
     case 'register-git':
-      await runGitRegistrationFlow(ctx, { scope: requiredScope(intent) });
+      await runGitRegistrationFlow(ctx);
       return;
     case 'refresh-registration':
       await runRefreshFlow(ctx, {
-        scope: requiredScope(intent),
         registrationId: requiredTarget(intent),
       });
       return;
     case 'rebind-registration':
       await runRebindFlow(ctx, {
-        scope: requiredScope(intent),
         registrationId: requiredTarget(intent),
       });
       return;
     case 'remove-registration':
       await runRemovalFlow(ctx, {
-        scope: requiredScope(intent),
         targetKind: 'registration',
         targetId: requiredTarget(intent),
       });
@@ -181,7 +169,6 @@ export async function dispatchLedgerAction(
     case 'install-and-enable': {
       const entry = requiredMarketplaceEntryTarget(intent);
       await runPluginInstallationFlow(ctx, {
-        scope: requiredScope(intent),
         registrationId: entry.registrationId,
         entryPointer: entry.entryPointer,
         marketplaceEntryId: entry.marketplaceEntryId,
@@ -194,7 +181,6 @@ export async function dispatchLedgerAction(
     case 'enable-installation':
     case 'disable-installation':
       await runPluginStateFlow(ctx, {
-        scope: requiredScope(intent),
         installationId: requiredTarget(intent),
         desiredState: intent.actionId === 'enable-installation' ? 'enabled' : 'disabled',
         expectedStateRevision: requiredStateRevision(intent),
@@ -202,29 +188,25 @@ export async function dispatchLedgerAction(
       return;
     case 'remove-installation':
       await runRemovalFlow(ctx, {
-        scope: requiredScope(intent),
         targetKind: 'installation',
         targetId: requiredTarget(intent),
       });
       return;
     case 'view-receipt-journal':
-      await runReceiptJournalView(ctx, { scope: requiredScope(intent) });
+      await runReceiptJournalView(ctx);
       return;
     case 'inspect-receipt':
       await runReceiptJournalView(ctx, {
-        scope: requiredScope(intent),
         receiptId: requiredTarget(intent),
       });
       return;
     case 'repair-state':
       await runRepairStateFlow(ctx, {
-        scope: requiredScope(intent),
         expectedStateRevision: intent.stateRevision,
       });
       return;
     case 'retry-application':
       await runRetryApplicationFlow(ctx, {
-        scope: requiredScope(intent),
         receiptId: requiredTarget(intent),
       });
       return;
@@ -252,17 +234,11 @@ function formatStateSummary(result: ReadResult, scopeLabel: string): string {
 
 export default function (pi: ExtensionAPI) {
   pi.on('session_start', async (_event, ctx) => {
-    // Startup reconciliation: Global-first pass
+    // Startup reconciliation: Global pass
     try {
-      const recon = await runStartupReconciliation({
-        cwd: ctx.cwd,
-        projectTrusted: ctx.isProjectTrusted(),
-      });
-      if (recon.globalReconciled && recon.globalReceipt) {
-        ctx.ui.notify(formatStartupReceipt(recon.globalReceipt), recon.globalReceipt.summary === 'Completed' ? 'info' : 'warning');
-      }
-      if (recon.projectReconciled && recon.projectReceipt) {
-        ctx.ui.notify(formatStartupReceipt(recon.projectReceipt), recon.projectReceipt.summary === 'Completed' ? 'info' : 'warning');
+      const recon = await runStartupReconciliation({});
+      if (recon.reconciled && recon.receipt) {
+        ctx.ui.notify(formatStartupReceipt(recon.receipt), recon.receipt.summary === 'Completed' ? 'info' : 'warning');
       }
     } catch {
       // Non-blocking in extension bootstrap
@@ -274,13 +250,10 @@ export default function (pi: ExtensionAPI) {
   // current Effective State only — no fingerprint validation, no Bridge State mutation, and no
   // Attempt Receipt. Missing snapshot material is skipped individually; discovery never fails
   // the host's resource pass.
-  pi.on('resources_discover', async (_event, ctx) => {
+  pi.on('resources_discover', async (_event, _ctx) => {
     try {
       return {
-        skillPaths: discoverProjectedSkillPaths({
-          cwd: ctx.cwd,
-          projectTrusted: ctx.isProjectTrusted(),
-        }).skillPaths,
+        skillPaths: discoverProjectedSkillPaths({}).skillPaths,
       };
     } catch {
       return {};
@@ -290,36 +263,27 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand('codex-marketplace', {
     description: uiText('cmd.description'),
     handler: async (args, ctx) => {
-      const cwd = ctx.cwd;
-
       // Hybrid discovery/guided: support /codex-marketplace list|inspect <args> for non-TUI quick paths
       const rawArgs = (args ?? '').trim();
       if (rawArgs.length > 0 && (rawArgs.startsWith('list') || rawArgs.startsWith('inspect') || rawArgs === '--help' || rawArgs === '-h')) {
-        const global = readBridgeStateSync('global', { cwd });
-        const project = readBridgeStateSync('project', { cwd });
+        const global = readBridgeStateSync();
         const g = formatStateSummary(global, 'Global Scope');
-        const p = formatStateSummary(project, 'Project Scope');
-        ctx.ui.notify(`${g}\n${p}\n(完整導向流請於 TUI 內執行 /codex-marketplace)`, 'info');
+        ctx.ui.notify(`${g}\n(完整導向流請於 TUI 內執行 /codex-marketplace)`, 'info');
         return;
       }
 
       // Non-TUI fallback: notify with summary
       if (ctx.mode !== 'tui' || !ctx.hasUI) {
-        const global = readBridgeStateSync('global', { cwd });
-        const project = readBridgeStateSync('project', { cwd });
+        const global = readBridgeStateSync();
         const g = formatStateSummary(global, 'Global Scope');
-        const p = formatStateSummary(project, 'Project Scope');
-        ctx.ui.notify(`${g}\n${p}\n互動流程需 TUI 模式（/codex-marketplace 於 TUI 內）`, 'info');
+        ctx.ui.notify(`${g}\n互動流程需 TUI 模式（/codex-marketplace 於 TUI 內）`, 'info');
         return;
       }
 
       // The workspace is deliberately reopened from a fresh snapshot after every action.
       // Neither cached revisions nor presentation-derived eligibility become authority.
       while (true) {
-        const snapshot = await loadBridgeLedgerSnapshot({
-          cwd,
-          projectTrusted: ctx.isProjectTrusted(),
-        });
+        const snapshot = await loadBridgeLedgerSnapshot({});
         const model = buildBridgeLedgerModel(snapshot);
         const intent = await ctx.ui.custom<LedgerActionIntent | undefined>(
           (tui, theme, _keybindings, done) =>

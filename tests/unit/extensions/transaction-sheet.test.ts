@@ -28,7 +28,6 @@ function receipt(summary: AttemptSummary = 'Pending Application'): AttemptReceip
     id: 'rcpt_123',
     kind: 'Lifecycle Operation',
     operation: 'Plugin Installation',
-    scope: 'project',
     trigger: 'user request',
     startedAt: '2026-08-23T00:00:00.000Z',
     completedAt: '2026-08-23T00:00:01.000Z',
@@ -42,7 +41,6 @@ function receipt(summary: AttemptSummary = 'Pending Application'): AttemptReceip
       classification: 'notice',
       phase: 'post-commit',
       target: 'skill',
-      scope: 'project',
       pointer: '/skills/build',
       rule: 'COLLISION-01',
       outcome: 'skill availability needs inspection',
@@ -85,7 +83,7 @@ describe('Transaction Sheet presentation', () => {
     const model: TransactionSheetModel = {
       step: 'Commit',
       actionLabel: 'Enable plugin',
-      authority: 'project',
+      authority: 'global',
     };
 
     for (const width of [120, 80, 60]) {
@@ -141,7 +139,7 @@ describe('Transaction Sheet presentation', () => {
     const lines = renderTransactionSheet({
       step: 'Receipt',
       actionLabel: 'Install and Enable',
-      authority: 'project',
+      authority: 'global',
       target: 'acme/build-tools',
       stateRevision: '5',
       validationSnapshot: 'snapshot-5',
@@ -163,7 +161,7 @@ describe('Transaction Sheet presentation', () => {
     const lines = renderTransactionSheet({
       step: 'Receipt',
       actionLabel: 'Install and Enable',
-      authority: 'project',
+      authority: 'global',
       stateRevision: '5',
       validationSnapshot: 'snapshot-5',
       receipt: receipt(),
@@ -186,7 +184,6 @@ describe('Transaction Sheet presentation', () => {
         classification: 'blocking',
         phase: 'admission',
         target: 'attempt',
-        scope: 'project',
         pointer: '',
         rule: 'ADMISSION-01',
         outcome: 'denied',

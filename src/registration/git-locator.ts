@@ -7,7 +7,6 @@
  * whitespace, control characters, backslash.
  */
 
-import type { Scope } from '../bridge-state/types.js';
 import { CODE, RULE, blocking, type ValidationFinding } from './findings.js';
 
 export type GitTransport = 'https' | 'ssh';
@@ -96,12 +95,11 @@ function validatePath(path: string): { ok: boolean; reason?: string } {
 }
 
 /** Build a blocking finding for locator */
-function locatorFinding(scope: Scope, code: string, rule: string, outcome: string): ValidationFinding {
+function locatorFinding(code: string, rule: string, outcome: string): ValidationFinding {
   return blocking({
     code,
     phase: 'validation',
     target: 'source',
-    scope,
     pointer: '',
     rule,
     outcome,
@@ -112,19 +110,19 @@ function locatorFinding(scope: Scope, code: string, rule: string, outcome: strin
  * Normalize a Git Locator to its credential-free canonical form.
  * Preserves transport/host/port/path/SSH user; rejects plaintext, credentials, query/fragment, ambiguous encoding.
  */
-export function normalizeGitLocator(input: string, scope: Scope): LocatorResult {
+export function normalizeGitLocator(input: string): LocatorResult {
   const findings: ValidationFinding[] = [];
   const raw = input;
 
   if (typeof input !== 'string' || input.length === 0) {
-    findings.push(locatorFinding(scope, CODE.GIT_LOCATOR_INVALID, RULE.GIT_LOCATOR_INVALID, 'Git locator is empty'));
+    findings.push(locatorFinding(CODE.GIT_LOCATOR_INVALID, RULE.GIT_LOCATOR_INVALID, 'Git locator is empty'));
     return { ok: false, findings };
   }
 
   // Control chars
   if (hasControlChars(input)) {
     findings.push(
-      locatorFinding(scope, CODE.GIT_LOCATOR_CONTROL_CHARS, RULE.GIT_LOCATOR_CONTROL_CHARS, 'Git locator contains control characters'),
+      locatorFinding(CODE.GIT_LOCATOR_CONTROL_CHARS, RULE.GIT_LOCATOR_CONTROL_CHARS, 'Git locator contains control characters'),
     );
     return { ok: false, findings };
   }
@@ -132,14 +130,14 @@ export function normalizeGitLocator(input: string, scope: Scope): LocatorResult 
   // Whitespace (space, tab, newline)
   if (/\s/.test(input)) {
     findings.push(
-      locatorFinding(scope, CODE.GIT_LOCATOR_INVALID, RULE.GIT_LOCATOR_INVALID, 'Git locator contains whitespace'),
+      locatorFinding(CODE.GIT_LOCATOR_INVALID, RULE.GIT_LOCATOR_INVALID, 'Git locator contains whitespace'),
     );
     return { ok: false, findings };
   }
 
   if (input.includes('\\')) {
     findings.push(
-      locatorFinding(scope, CODE.GIT_LOCATOR_INVALID, RULE.GIT_LOCATOR_INVALID, 'Git locator contains backslash'),
+      locatorFinding(CODE.GIT_LOCATOR_INVALID, RULE.GIT_LOCATOR_INVALID, 'Git locator contains backslash'),
     );
     return { ok: false, findings };
   }
@@ -148,7 +146,6 @@ export function normalizeGitLocator(input: string, scope: Scope): LocatorResult 
   if (input.includes('?') || input.includes('#')) {
     findings.push(
       locatorFinding(
-        scope,
         CODE.GIT_LOCATOR_QUERY_FRAGMENT,
         RULE.GIT_LOCATOR_QUERY_FRAGMENT,
         'Git locator must not contain query (?) or fragment (#)',
@@ -162,7 +159,6 @@ export function normalizeGitLocator(input: string, scope: Scope): LocatorResult 
   if (amb.bad) {
     findings.push(
       locatorFinding(
-        scope,
         CODE.GIT_LOCATOR_AMBIGUOUS_ENCODING,
         RULE.GIT_LOCATOR_AMBIGUOUS_ENCODING,
         `Git locator has ambiguous encoding: ${amb.reason}`,
@@ -180,7 +176,7 @@ export function normalizeGitLocator(input: string, scope: Scope): LocatorResult 
     // Check if it looks like a local path or file:// without scheme
     if (input.startsWith('/') || input.startsWith('.') || input.startsWith('file:')) {
       findings.push(
-        locatorFinding(scope, CODE.GIT_LOCATOR_PLAINTEXT, RULE.GIT_LOCATOR_PLAINTEXT, `Git locator transport is not allowed: local/file transport rejected — use https:// or ssh://`),
+        locatorFinding(CODE.GIT_LOCATOR_PLAINTEXT, RULE.GIT_LOCATOR_PLAINTEXT, `Git locator transport is not allowed: local/file transport rejected — use https:// or ssh://`),
       );
       return { ok: false, findings };
     }
@@ -192,26 +188,26 @@ export function normalizeGitLocator(input: string, scope: Scope): LocatorResult 
       // path from scp is like owner/repo.git without leading slash; ensure we treat
       if (path.startsWith('/')) {
         findings.push(
-          locatorFinding(scope, CODE.GIT_LOCATOR_INVALID, RULE.GIT_LOCATOR_INVALID, 'SCP-like path must not start with /'),
+          locatorFinding(CODE.GIT_LOCATOR_INVALID, RULE.GIT_LOCATOR_INVALID, 'SCP-like path must not start with /'),
         );
         return { ok: false, findings };
       }
       // Check for embedded credentials: path should not contain @ or : beyond the initial separator
       if (path.includes('@')) {
         findings.push(
-          locatorFinding(scope, CODE.GIT_LOCATOR_CREDENTIAL, RULE.GIT_LOCATOR_CREDENTIAL, 'SCP-like locator must not contain @ in path (embedded credential)'),
+          locatorFinding(CODE.GIT_LOCATOR_CREDENTIAL, RULE.GIT_LOCATOR_CREDENTIAL, 'SCP-like locator must not contain @ in path (embedded credential)'),
         );
         return { ok: false, findings };
       }
       if (!validateHost(host)) {
-        findings.push(locatorFinding(scope, CODE.GIT_LOCATOR_INVALID, RULE.GIT_LOCATOR_INVALID, `invalid host '${host}'`));
+        findings.push(locatorFinding(CODE.GIT_LOCATOR_INVALID, RULE.GIT_LOCATOR_INVALID, `invalid host '${host}'`));
         return { ok: false, findings };
       }
       const normPath = normalizePath(path);
       const pathCheck = validatePath(normPath);
       if (!pathCheck.ok) {
         findings.push(
-          locatorFinding(scope, CODE.GIT_LOCATOR_INVALID, RULE.GIT_LOCATOR_INVALID, `invalid path '${path}': ${pathCheck.reason}`),
+          locatorFinding(CODE.GIT_LOCATOR_INVALID, RULE.GIT_LOCATOR_INVALID, `invalid path '${path}': ${pathCheck.reason}`),
         );
         return { ok: false, findings };
       }
@@ -231,7 +227,7 @@ export function normalizeGitLocator(input: string, scope: Scope): LocatorResult 
     }
     // No scheme and not SCP => invalid
     findings.push(
-      locatorFinding(scope, CODE.GIT_LOCATOR_INVALID, RULE.GIT_LOCATOR_INVALID, 'Git locator must be https://, ssh://, or scp-like user@host:path — missing scheme'),
+      locatorFinding(CODE.GIT_LOCATOR_INVALID, RULE.GIT_LOCATOR_INVALID, 'Git locator must be https://, ssh://, or scp-like user@host:path — missing scheme'),
     );
     return { ok: false, findings };
   }
@@ -242,7 +238,7 @@ export function normalizeGitLocator(input: string, scope: Scope): LocatorResult 
     url = new URL(input);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    findings.push(locatorFinding(scope, CODE.GIT_LOCATOR_INVALID, RULE.GIT_LOCATOR_INVALID, `unable to parse locator: ${msg}`));
+    findings.push(locatorFinding(CODE.GIT_LOCATOR_INVALID, RULE.GIT_LOCATOR_INVALID, `unable to parse locator: ${msg}`));
     return { ok: false, findings };
   }
 
@@ -250,7 +246,6 @@ export function normalizeGitLocator(input: string, scope: Scope): LocatorResult 
   if (scheme === 'http:') {
     findings.push(
       locatorFinding(
-        scope,
         CODE.GIT_LOCATOR_PLAINTEXT,
         RULE.GIT_LOCATOR_PLAINTEXT,
         'plaintext http:// transport is not allowed — use https://',
@@ -260,13 +255,13 @@ export function normalizeGitLocator(input: string, scope: Scope): LocatorResult 
   }
   if (scheme === 'ftp:' || scheme === 'file:' || scheme === 'git:') {
     findings.push(
-      locatorFinding(scope, CODE.GIT_LOCATOR_PLAINTEXT, RULE.GIT_LOCATOR_PLAINTEXT, `transport '${scheme.slice(0, -1)}' is not allowed — use https:// or ssh://`),
+      locatorFinding(CODE.GIT_LOCATOR_PLAINTEXT, RULE.GIT_LOCATOR_PLAINTEXT, `transport '${scheme.slice(0, -1)}' is not allowed — use https:// or ssh://`),
     );
     return { ok: false, findings };
   }
   if (scheme !== 'https:' && scheme !== 'ssh:') {
     findings.push(
-      locatorFinding(scope, CODE.GIT_LOCATOR_INVALID, RULE.GIT_LOCATOR_INVALID, `unsupported transport '${scheme.slice(0, -1)}' — use https:// or ssh://`),
+      locatorFinding(CODE.GIT_LOCATOR_INVALID, RULE.GIT_LOCATOR_INVALID, `unsupported transport '${scheme.slice(0, -1)}' — use https:// or ssh://`),
     );
     return { ok: false, findings };
   }
@@ -275,7 +270,6 @@ export function normalizeGitLocator(input: string, scope: Scope): LocatorResult 
   if (scheme === 'https:' && (url.username.length > 0 || url.password.length > 0)) {
     findings.push(
       locatorFinding(
-        scope,
         CODE.GIT_LOCATOR_CREDENTIAL,
         RULE.GIT_LOCATOR_CREDENTIAL,
         'https locator must not contain embedded credentials (user:pass@)',
@@ -286,7 +280,6 @@ export function normalizeGitLocator(input: string, scope: Scope): LocatorResult 
   if (scheme === 'ssh:' && url.password.length > 0) {
     findings.push(
       locatorFinding(
-        scope,
         CODE.GIT_LOCATOR_CREDENTIAL,
         RULE.GIT_LOCATOR_CREDENTIAL,
         'ssh locator must not contain password (user:pass@)',
@@ -299,7 +292,6 @@ export function normalizeGitLocator(input: string, scope: Scope): LocatorResult 
   if (url.search.length > 0 || url.hash.length > 0) {
     findings.push(
       locatorFinding(
-        scope,
         CODE.GIT_LOCATOR_QUERY_FRAGMENT,
         RULE.GIT_LOCATOR_QUERY_FRAGMENT,
         'Git locator must not contain query or fragment',
@@ -310,7 +302,7 @@ export function normalizeGitLocator(input: string, scope: Scope): LocatorResult 
 
   const host = normalizeHost(url.hostname);
   if (!validateHost(host)) {
-    findings.push(locatorFinding(scope, CODE.GIT_LOCATOR_INVALID, RULE.GIT_LOCATOR_INVALID, `invalid host '${host}'`));
+    findings.push(locatorFinding(CODE.GIT_LOCATOR_INVALID, RULE.GIT_LOCATOR_INVALID, `invalid host '${host}'`));
     return { ok: false, findings };
   }
 
@@ -319,7 +311,7 @@ export function normalizeGitLocator(input: string, scope: Scope): LocatorResult 
   if (url.port) {
     const p = Number(url.port);
     if (!Number.isInteger(p) || p <= 0 || p > 65535) {
-      findings.push(locatorFinding(scope, CODE.GIT_LOCATOR_INVALID, RULE.GIT_LOCATOR_INVALID, `invalid port '${url.port}'`));
+      findings.push(locatorFinding(CODE.GIT_LOCATOR_INVALID, RULE.GIT_LOCATOR_INVALID, `invalid port '${url.port}'`));
       return { ok: false, findings };
     }
     port = p;
@@ -333,14 +325,14 @@ export function normalizeGitLocator(input: string, scope: Scope): LocatorResult 
   const rawPath = url.pathname; // includes leading slash
   // For ssh/https, pathname must be at least /something
   if (!rawPath || rawPath === '/') {
-    findings.push(locatorFinding(scope, CODE.GIT_LOCATOR_INVALID, RULE.GIT_LOCATOR_INVALID, 'Git locator path is empty — expected /owner/repo'));
+    findings.push(locatorFinding(CODE.GIT_LOCATOR_INVALID, RULE.GIT_LOCATOR_INVALID, 'Git locator path is empty — expected /owner/repo'));
     return { ok: false, findings };
   }
   const normPath = normalizePath(rawPath);
   const pathCheck = validatePath(normPath);
   if (!pathCheck.ok) {
     findings.push(
-      locatorFinding(scope, CODE.GIT_LOCATOR_INVALID, RULE.GIT_LOCATOR_INVALID, `invalid path '${rawPath}': ${pathCheck.reason}`),
+      locatorFinding(CODE.GIT_LOCATOR_INVALID, RULE.GIT_LOCATOR_INVALID, `invalid path '${rawPath}': ${pathCheck.reason}`),
     );
     return { ok: false, findings };
   }
@@ -374,7 +366,7 @@ export function normalizeGitLocator(input: string, scope: Scope): LocatorResult 
 }
 
 /** Check if a locator string is canonical (already normalized). */
-export function isCanonicalGitLocator(canonical: string, scope: Scope): boolean {
-  const res = normalizeGitLocator(canonical, scope);
+export function isCanonicalGitLocator(canonical: string): boolean {
+  const res = normalizeGitLocator(canonical);
   return res.ok && res.locator!.canonicalUrl === canonical;
 }

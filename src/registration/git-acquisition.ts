@@ -17,7 +17,6 @@ import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { Scope } from '../bridge-state/types.js';
 import { CODE, RULE, blocking, type ValidationFinding } from './findings.js';
 import type { CanonicalGitLocator } from './git-locator.js';
 import type { NormalizedGitSelector } from './git-selector.js';
@@ -63,7 +62,6 @@ export interface AcquisitionTrustOptions {
 }
 
 export interface AcquireOptions {
-  scope: Scope;
   /** For isolated test dirs */
   cwd?: string;
   agentDir?: string;
@@ -91,20 +89,19 @@ export interface AcquireResult {
   createdTemp?: boolean;
 }
 
-function trustFinding(scope: Scope, code: string, rule: string, outcome: string): ValidationFinding {
+function trustFinding(code: string, rule: string, outcome: string): ValidationFinding {
   return blocking({
     code,
     phase: 'validation',
     target: 'source',
-    scope,
     pointer: '',
     rule,
     outcome,
   });
 }
 
-function acquireFinding(scope: Scope, outcome: string): ValidationFinding {
-  return trustFinding(scope, CODE.GIT_ACQUISITION_FAILED, RULE.GIT_ACQUISITION_FAILED, outcome);
+function acquireFinding(outcome: string): ValidationFinding {
+  return trustFinding(CODE.GIT_ACQUISITION_FAILED, RULE.GIT_ACQUISITION_FAILED, outcome);
 }
 
 /** Build hardened git env and config for non-executing acquisition */
@@ -168,7 +165,6 @@ function isFullHex(s: string): boolean {
 async function resolveRevision(
   locator: CanonicalGitLocator,
   selector: NormalizedGitSelector,
-  scope: Scope,
   executor: GitExecutor,
   env: Record<string, string>,
   configArgs: string[],
@@ -180,7 +176,7 @@ async function resolveRevision(
       return {
         ok: false,
         findings: [
-          trustFinding(scope, CODE.GIT_RESOLVED_REVISION_INVALID, RULE.GIT_RESOLVED_REVISION_INVALID, `commit selector resolved revision is not full hex: '${sha}'`),
+          trustFinding(CODE.GIT_RESOLVED_REVISION_INVALID, RULE.GIT_RESOLVED_REVISION_INVALID, `commit selector resolved revision is not full hex: '${sha}'`),
         ],
       };
     }
@@ -209,7 +205,6 @@ async function resolveRevision(
         ok: false,
         findings: [
           trustFinding(
-            scope,
             code,
             RULE.GIT_TRUST_HOST_KEY,
             `Acquisition Trust Base violation: SSH host key ${isChanged ? 'changed' : 'unknown'} for ${locator.host} — ${res.stderr.trim()} (only pre-established known-host keys are trusted)`,
@@ -222,7 +217,7 @@ async function resolveRevision(
       return {
         ok: false,
         findings: [
-          trustFinding(scope, CODE.GIT_TRUST_REDIRECT, RULE.GIT_TRUST_REDIRECT, `Acquisition Trust Base violation: redirect that would change canonical locator (followRedirects disabled) — ${res.stderr.trim()}`),
+          trustFinding(CODE.GIT_TRUST_REDIRECT, RULE.GIT_TRUST_REDIRECT, `Acquisition Trust Base violation: redirect that would change canonical locator (followRedirects disabled) — ${res.stderr.trim()}`),
         ],
         stderr: res.stderr,
       };
@@ -232,7 +227,6 @@ async function resolveRevision(
         ok: false,
         findings: [
           trustFinding(
-            scope,
             CODE.GIT_ACQUISITION_FAILED,
             RULE.GIT_TRUST_CREDENTIAL_HELPER,
             `Acquisition Trust Base: credential helper/agent not approved — ${res.stderr.trim()}`,
@@ -243,7 +237,7 @@ async function resolveRevision(
     }
     return {
       ok: false,
-      findings: [acquireFinding(scope, `failed to resolve ${remoteRef} via ls-remote: ${res.stderr.trim() || `exit ${res.exitCode}`}`)],
+      findings: [acquireFinding(`failed to resolve ${remoteRef} via ls-remote: ${res.stderr.trim() || `exit ${res.exitCode}`}`)],
       stderr: res.stderr,
     };
   }
@@ -252,7 +246,7 @@ async function resolveRevision(
   if (!out) {
     return {
       ok: false,
-      findings: [acquireFinding(scope, `ls-remote returned no match for ${remoteRef} at ${locator.canonicalUrl}`)],
+      findings: [acquireFinding(`ls-remote returned no match for ${remoteRef} at ${locator.canonicalUrl}`)],
       stderr: res.stderr,
     };
   }
@@ -268,7 +262,7 @@ async function resolveRevision(
   if (!isFullHex(sha.toLowerCase())) {
     return {
       ok: false,
-      findings: [trustFinding(scope, CODE.GIT_RESOLVED_REVISION_INVALID, RULE.GIT_RESOLVED_REVISION_INVALID, `resolved revision is not full hex: '${sha}'`)],
+      findings: [trustFinding(CODE.GIT_RESOLVED_REVISION_INVALID, RULE.GIT_RESOLVED_REVISION_INVALID, `resolved revision is not full hex: '${sha}'`)],
       stderr: res.stderr,
     };
   }
@@ -279,12 +273,11 @@ async function resolveRevision(
 export async function resolveGitRevision(
   locator: CanonicalGitLocator,
   selector: NormalizedGitSelector,
-  scope: Scope,
   opts: { executor?: GitExecutor; trust?: AcquisitionTrustOptions } = {},
 ): Promise<{ ok: true; sha: string } | { ok: false; findings: ValidationFinding[]; stderr?: string }> {
   const env = hardenedEnv(opts.trust, locator);
   const configArgs = hardenedConfigArgs(opts.trust);
-  return resolveRevision(locator, selector, scope, opts.executor ?? defaultGitExecutor(), env, configArgs);
+  return resolveRevision(locator, selector, opts.executor ?? defaultGitExecutor(), env, configArgs);
 }
 
 /**
@@ -293,7 +286,6 @@ export async function resolveGitRevision(
  * Caller is responsible for cleaning the acquiredPath when done (if createdTemp is true) after validation.
  */
 export async function acquireGitSource(opts: AcquireOptions): Promise<AcquireResult> {
-  const scope = opts.scope;
   const locator = opts.locator;
   const selector = opts.selector;
   const executor = opts.executor ?? defaultGitExecutor();
@@ -302,7 +294,7 @@ export async function acquireGitSource(opts: AcquireOptions): Promise<AcquireRes
   const configArgs = hardenedConfigArgs(trust);
 
   // Resolve revision first (before clone) — binds full commit
-  const resolved = await resolveRevision(locator, selector, scope, executor, env, configArgs);
+  const resolved = await resolveRevision(locator, selector, executor, env, configArgs);
   if (!resolved.ok) {
     return { ok: false, findings: (resolved as { findings: ValidationFinding[] }).findings, stderr: (resolved as { stderr?: string }).stderr };
   }
@@ -334,7 +326,6 @@ export async function acquireGitSource(opts: AcquireOptions): Promise<AcquireRes
         ok: false,
         findings: [
           trustFinding(
-            scope,
             code,
             RULE.GIT_TRUST_HOST_KEY,
             `Acquisition Trust Base violation: SSH host key ${isChanged ? 'changed' : 'unknown'} — ${stderr.trim()}`,
@@ -348,7 +339,7 @@ export async function acquireGitSource(opts: AcquireOptions): Promise<AcquireRes
       return {
         ok: false,
         findings: [
-          trustFinding(scope, CODE.GIT_TRUST_REDIRECT, RULE.GIT_TRUST_REDIRECT, `Acquisition Trust Base violation: redirect changing canonical locator — ${stderr.trim()}`),
+          trustFinding(CODE.GIT_TRUST_REDIRECT, RULE.GIT_TRUST_REDIRECT, `Acquisition Trust Base violation: redirect changing canonical locator — ${stderr.trim()}`),
         ],
         stderr,
       };
@@ -356,7 +347,7 @@ export async function acquireGitSource(opts: AcquireOptions): Promise<AcquireRes
     if (createdTemp) try { rmSync(dest, { recursive: true, force: true }); } catch {}
     return {
       ok: false,
-      findings: [acquireFinding(scope, `git clone failed: ${stderr.trim() || `exit ${cloneRes.exitCode}`}`)],
+      findings: [acquireFinding(`git clone failed: ${stderr.trim() || `exit ${cloneRes.exitCode}`}`)],
       stderr,
     };
   }
@@ -391,7 +382,6 @@ export async function acquireGitSource(opts: AcquireOptions): Promise<AcquireRes
               ok: false,
               findings: [
                 trustFinding(
-                  scope,
                   CODE.GIT_TRUST_REDIRECT,
                   RULE.GIT_TRUST_REDIRECT,
                   `Acquisition Trust Base violation: canonical-locator-changing redirect — origin '${originUrl}' host '${oh}' differs from requested '${ch}'`,
@@ -417,7 +407,7 @@ export async function acquireGitSource(opts: AcquireOptions): Promise<AcquireRes
         if (createdTemp) try { rmSync(dest, { recursive: true, force: true }); } catch {}
         return {
           ok: false,
-          findings: [acquireFinding(scope, `commit ${sha} not found at ${locator.canonicalUrl}: ${fetchRes.stderr.trim() || catRes.stderr.trim()}`)],
+          findings: [acquireFinding(`commit ${sha} not found at ${locator.canonicalUrl}: ${fetchRes.stderr.trim() || catRes.stderr.trim()}`)],
           stderr: fetchRes.stderr,
         };
       }
@@ -426,7 +416,7 @@ export async function acquireGitSource(opts: AcquireOptions): Promise<AcquireRes
         if (createdTemp) try { rmSync(dest, { recursive: true, force: true }); } catch {}
         return {
           ok: false,
-          findings: [acquireFinding(scope, `commit ${sha} still not resolvable after fetch: ${cat2.stderr.trim()}`)],
+          findings: [acquireFinding(`commit ${sha} still not resolvable after fetch: ${cat2.stderr.trim()}`)],
           stderr: cat2.stderr,
         };
       }
@@ -441,7 +431,7 @@ export async function acquireGitSource(opts: AcquireOptions): Promise<AcquireRes
         if (createdTemp) try { rmSync(dest, { recursive: true, force: true }); } catch {}
         return {
           ok: false,
-          findings: [acquireFinding(scope, `resolved revision ${sha} not fetchable: ${fetchRes.stderr.trim()}`)],
+          findings: [acquireFinding(`resolved revision ${sha} not fetchable: ${fetchRes.stderr.trim()}`)],
           stderr: fetchRes.stderr,
         };
       }
@@ -461,7 +451,7 @@ export async function acquireGitSource(opts: AcquireOptions): Promise<AcquireRes
       if (createdTemp) try { rmSync(dest, { recursive: true, force: true }); } catch {}
       return {
         ok: false,
-        findings: [acquireFinding(scope, `failed to checkout resolved revision ${sha}: ${checkoutRes.stderr.trim() || checkout2.stderr.trim()}`)],
+        findings: [acquireFinding(`failed to checkout resolved revision ${sha}: ${checkoutRes.stderr.trim() || checkout2.stderr.trim()}`)],
         stderr: checkoutRes.stderr,
       };
     }

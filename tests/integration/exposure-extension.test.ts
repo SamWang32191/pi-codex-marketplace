@@ -2,8 +2,9 @@
  * Integration: the Bridge Extension registers the host resource-discovery handler and returns
  * Runtime Skill Exposure paths through `resources_discover` (Issue #54, ADR 0001).
  *
- * External observable behavior only: startup and reload reasons produce identical contributions,
- * Project Trust gates project additions, and passive inspection writes no Attempt Receipt.
+ * Global-only (#61): discovery reads the single Global document only. External observable
+ * behavior only: startup and reload reasons produce identical contributions, and passive
+ * inspection writes no Attempt Receipt.
  */
 
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -41,7 +42,6 @@ function makeEnv() {
   const env = {
     root,
     agentDir: join(root, 'agent'),
-    projectDir: join(root, 'project'),
     marketplace: join(root, 'marketplace'),
   };
   mkdirSync(join(env.marketplace, '.agents', 'plugins'), { recursive: true });
@@ -62,10 +62,8 @@ function makeEnv() {
   return env;
 }
 
-async function seedEnabledGlobalInstallation(agentDir: string, projectDir: string): Promise<void> {
-  await commitBridgeState(
-    'global',
-    (state: BridgeState) => ({
+async function seedEnabledGlobalInstallation(agentDir: string): Promise<void> {
+  await commitBridgeState((state: BridgeState) => ({
       ...state,
       registrations: [
         ...state.registrations,
@@ -92,7 +90,7 @@ async function seedEnabledGlobalInstallation(agentDir: string, projectDir: strin
         },
       ],
     }),
-    { agentDir, cwd: projectDir },
+    { agentDir },
   );
 }
 
@@ -114,7 +112,7 @@ describe('Bridge Extension resources_discover seam (#54)', () => {
     envs.push(env);
     // Acquire the marketplace tree into the Source Cache exactly like Git acquisition.
     await new SourceCache({ agentDir: env.agentDir }).storeTree(env.marketplace, FINGERPRINT);
-    await seedEnabledGlobalInstallation(env.agentDir, env.projectDir);
+    await seedEnabledGlobalInstallation(env.agentDir);
     process.env.PI_CODING_AGENT_DIR = env.agentDir;
     process.env.PI_AGENT_DIR = env.agentDir;
 
@@ -122,9 +120,9 @@ describe('Bridge Extension resources_discover seam (#54)', () => {
     const handler = handlers.get('resources_discover');
     expect(handler).toBeDefined();
 
-    const ctx = { cwd: env.projectDir, isProjectTrusted: () => true };
-    const startup = await handler!({ type: 'resources_discover', cwd: env.projectDir, reason: 'startup' }, ctx);
-    const reload = await handler!({ type: 'resources_discover', cwd: env.projectDir, reason: 'reload' }, ctx);
+    const ctx = { cwd: env.root, isProjectTrusted: () => true };
+    const startup = await handler!({ type: 'resources_discover', cwd: env.root, reason: 'startup' }, ctx);
+    const reload = await handler!({ type: 'resources_discover', cwd: env.root, reason: 'reload' }, ctx);
 
     expect(startup.skillPaths).toHaveLength(1);
     expect(startup.skillPaths).toEqual(reload.skillPaths);
@@ -132,32 +130,29 @@ describe('Bridge Extension resources_discover seam (#54)', () => {
     expect(existsSync(join(startup.skillPaths![0]!, 'SKILL.md'))).toBe(true);
   });
 
-  it('gates project additions on Project Trust through the host context and writes no Attempt Receipt', async () => {
+  it('contributes identically regardless of the host trust flag (Global-only) and writes no Attempt Receipt', async () => {
     const env = makeEnv();
     envs.push(env);
     await new SourceCache({ agentDir: env.agentDir }).storeTree(env.marketplace, FINGERPRINT);
-    await seedEnabledGlobalInstallation(env.agentDir, env.projectDir);
+    await seedEnabledGlobalInstallation(env.agentDir);
     process.env.PI_CODING_AGENT_DIR = env.agentDir;
     process.env.PI_AGENT_DIR = env.agentDir;
 
     const handlers = captureHandlers();
     const handler = handlers.get('resources_discover')!;
-    let trusted = false;
     const untrusted = await handler(
-      { type: 'resources_discover', cwd: env.projectDir, reason: 'startup' },
-      { cwd: env.projectDir, isProjectTrusted: () => trusted },
+      { type: 'resources_discover', cwd: env.root, reason: 'startup' },
+      { cwd: env.root, isProjectTrusted: () => false },
     );
-    expect(untrusted.skillPaths).toHaveLength(1); // global baseline still contributes
+    expect(untrusted.skillPaths).toHaveLength(1); // Global contributions never depend on a trust flag
 
-    trusted = true;
-    const result = await handler(
-      { type: 'resources_discover', cwd: env.projectDir, reason: 'reload' },
-      { cwd: env.projectDir, isProjectTrusted: () => trusted },
+    const trusted = await handler(
+      { type: 'resources_discover', cwd: env.root, reason: 'reload' },
+      { cwd: env.root, isProjectTrusted: () => true },
     );
-    expect(result.skillPaths).toEqual(untrusted.skillPaths);
+    expect(trusted.skillPaths).toEqual(untrusted.skillPaths);
 
     // Passive inspection creates none.
-    expect(existsSync(getReceiptsJournalPath('global', { agentDir: env.agentDir, cwd: env.projectDir }))).toBe(false);
-    expect(existsSync(getReceiptsJournalPath('project', { agentDir: env.agentDir, cwd: env.projectDir }))).toBe(false);
+    expect(existsSync(getReceiptsJournalPath(env.agentDir))).toBe(false);
   });
 });

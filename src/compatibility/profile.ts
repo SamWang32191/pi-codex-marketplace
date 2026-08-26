@@ -14,7 +14,6 @@ import { TextDecoder } from 'node:util';
 import { parseFrontmatter } from '@earendil-works/pi-coding-agent';
 import { CST, Lexer, isCollection, parseDocument, visit } from 'yaml';
 
-import type { Scope } from '../bridge-state/types.js';
 import { readBoundedFileSync } from '../registration/bounded-read.js';
 import { BUDGET } from '../registration/budget.js';
 import { CODE, RULE, blocking, sortFindings, warning, type ValidationFinding } from '../registration/findings.js';
@@ -48,7 +47,6 @@ export interface ClassificationResult {
 }
 
 export interface ClassificationOptions {
-  scope: Scope;
   marketplaceId: string;
   marketplaceEntryId: string;
 }
@@ -73,7 +71,7 @@ function finding(
   pointer: string,
   outcome: string,
 ): ValidationFinding {
-  return blocking({ code, rule, target, pointer, outcome, scope: opts.scope, phase: 'validation' });
+  return blocking({ code, rule, target, pointer, outcome, phase: 'validation' });
 }
 
 function parseDescriptor(text: string): { frontmatter?: Record<string, unknown>; body?: string } {
@@ -301,7 +299,6 @@ function validateAgentProfile(text: string, pointer: string, opts: Classificatio
         target: 'skill',
         pointer: `${pointer}#/interface/${key}`,
         outcome: `Ignored malformed or unknown Skill Agent Profile presentation member '${key}'`,
-        scope: opts.scope,
         phase: 'validation',
       }));
     }
@@ -312,7 +309,6 @@ function validateAgentProfile(text: string, pointer: string, opts: Classificatio
       target: 'skill',
       pointer: `${pointer}#/interface`,
       outcome: 'Ignored malformed Skill Agent Profile interface metadata',
-      scope: opts.scope,
       phase: 'validation',
     }));
   }
@@ -526,7 +522,6 @@ export function classifyPlugin(root: string, opts: ClassificationOptions): Class
           target: 'plugin',
           pointer: `.codex-plugin/plugin.json#/${key}`,
           outcome: `Ignored Inert Metadata '${key}' does not change Plugin classification`,
-          scope: opts.scope,
           phase: 'validation',
         }));
       } else {
@@ -605,7 +600,6 @@ export function classifyPlugin(root: string, opts: ClassificationOptions): Class
           target: 'skill',
           pointer: `skills/${entry.name}/agents/openai.yaml#/policy/allow_implicit_invocation`,
           outcome: 'Skill Agent Profile declares explicit-only Invocation Policy that remains unenforceable because the Skill Descriptor does not declare disable-model-invocation; declare disable-model-invocation: true in the Skill Descriptor frontmatter to make it enforceable',
-          scope: opts.scope,
           phase: 'validation',
         }));
       }

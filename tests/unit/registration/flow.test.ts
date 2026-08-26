@@ -18,11 +18,11 @@ import {
 } from '../../../src/registration/flow.js';
 import { commitBridgeState, readBridgeState } from '../../../src/bridge-state/store.js';
 
-type Env = { agentDir: string; projectDir: string; tmpRoot: string };
+type Env = { agentDir: string; tmpRoot: string };
 
 function makeEnv(): Env {
   const tmpRoot = mkdtempSync(join(tmpdir(), 'reg-flow-'));
-  return { agentDir: join(tmpRoot, 'agent'), projectDir: join(tmpRoot, 'project'), tmpRoot };
+  return { agentDir: join(tmpRoot, 'agent'), tmpRoot };
 }
 
 function makeMarketplace(root: string, name = 'acme-marketplace', plugins = { 'release-helper': './plugins/release-helper' }) {
@@ -39,7 +39,7 @@ function makeMarketplace(root: string, name = 'acme-marketplace', plugins = { 'r
 }
 
 function opts(env: Env, extra: Record<string, unknown> = {}) {
-  return { agentDir: env.agentDir, cwd: env.projectDir, fenceTimeoutMs: 300, ...extra };
+  return { agentDir: env.agentDir, fenceTimeoutMs: 300, ...extra };
 }
 
 describe('Local Marketplace Registration flow', () => {
@@ -60,7 +60,7 @@ describe('Local Marketplace Registration flow', () => {
   });
 
   it('preflight produces a complete Validation Disclosure for the confirmation', async () => {
-    const res = await preflightLocalRegistration('global', root, opts(env, { preallocatedId: '11111111-1111-4111-8111-111111111111' }));
+    const res = await preflightLocalRegistration(root, opts(env, { preallocatedId: '11111111-1111-4111-8111-111111111111' }));
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     const pf = res.preflight;
@@ -83,7 +83,7 @@ describe('Local Marketplace Registration flow', () => {
   });
 
   it('confirmation yes commits atomically, bumps State Revision, and returns an immutable Completed receipt', async () => {
-    const res = await preflightLocalRegistration('global', root, opts(env));
+    const res = await preflightLocalRegistration(root, opts(env));
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     const outcome = await confirmLocalRegistration(res.preflight, true, opts(env));
@@ -98,7 +98,7 @@ describe('Local Marketplace Registration flow', () => {
     expect(outcome.receipt.stateChanged).toBe(true);
     expect(Object.isFrozen(outcome.receipt)).toBe(true);
 
-    const state = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
+    const state = await readBridgeState({ agentDir: env.agentDir });
     expect(state.status).toBe('ok');
     expect(state.state!.stateRevision).toBe('1');
     expect(state.state!.registrations).toHaveLength(1);
@@ -108,7 +108,7 @@ describe('Local Marketplace Registration flow', () => {
   });
 
   it('confirmation no (Default No) declines without mutating state', async () => {
-    const res = await preflightLocalRegistration('global', root, opts(env));
+    const res = await preflightLocalRegistration(root, opts(env));
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     const outcome = await confirmLocalRegistration(res.preflight, false, opts(env));
@@ -116,19 +116,19 @@ describe('Local Marketplace Registration flow', () => {
     if (outcome.status !== 'declined') return;
     expect(outcome.receipt.summary).toBe('Declined');
     expect(outcome.receipt.stateChanged).toBe(false);
-    const state = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
+    const state = await readBridgeState({ agentDir: env.agentDir });
     expect(state.state!.registrations).toHaveLength(0);
     expect(state.state!.stateRevision).toBe('0');
   });
 
-  it('detects a duplicate local Source Key in the same scope and directs to the existing Registration without a duplicate ID', async () => {
-    const first = await preflightLocalRegistration('global', root, opts(env, { preallocatedId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }));
+  it('detects a duplicate local Source Key and directs to the existing Registration without a duplicate ID', async () => {
+    const first = await preflightLocalRegistration(root, opts(env, { preallocatedId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }));
     expect(first.ok).toBe(true);
     if (!first.ok) return;
     const committed = await confirmLocalRegistration(first.preflight, true, opts(env));
     expect(committed.status).toBe('completed');
 
-    const second = await preflightLocalRegistration('global', root, opts(env, { preallocatedId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }));
+    const second = await preflightLocalRegistration(root, opts(env, { preallocatedId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }));
     expect(second.ok).toBe(false);
     if (second.ok) return;
     expect(second.outcome.status).toBe('blocked');
@@ -137,30 +137,14 @@ describe('Local Marketplace Registration flow', () => {
     expect(second.outcome.existing?.id).toBe('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
     expect(second.outcome.receipt.summary).toBe('Blocked');
     // The pre-allocated second ID was never persisted
-    const state = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
+    const state = await readBridgeState({ agentDir: env.agentDir });
     expect(state.state!.registrations).toHaveLength(1);
     expect(state.state!.registrations[0].id).toBe('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
   });
 
-  it('equal Source Keys across scopes do not merge registrations', async () => {
-    const g = await preflightLocalRegistration('global', root, opts(env));
-    expect(g.ok).toBe(true);
-    if (!g.ok) return;
-    expect((await confirmLocalRegistration(g.preflight, true, opts(env))).status).toBe('completed');
-
-    const p = await preflightLocalRegistration('project', root, opts(env, { projectTrusted: true }));
-    expect(p.ok).toBe(true);
-    if (!p.ok) return;
-    expect((await confirmLocalRegistration(p.preflight, true, opts(env))).status).toBe('completed');
-
-    const gs = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
-    const ps = await readBridgeState('project', { agentDir: env.agentDir, cwd: env.projectDir });
-    expect(gs.state!.registrations).toHaveLength(1);
-    expect(ps.state!.registrations).toHaveLength(1);
-  });
-
+  
   it('rejects confirmation as Stale when the Validation Snapshot changed between preflight and confirm (source tree drifted)', async () => {
-    const res = await preflightLocalRegistration('global', root, opts(env));
+    const res = await preflightLocalRegistration(root, opts(env));
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     // live tree changes after disclosure (no state revision change)
@@ -172,20 +156,18 @@ describe('Local Marketplace Registration flow', () => {
     expect(outcome.receipt.findings[0].rule).toBe('STALE-02');
     expect(outcome.receipt.stateChanged).toBe(false);
     // nothing was committed
-    const state = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
+    const state = await readBridgeState({ agentDir: env.agentDir });
     expect(state.state!.registrations).toHaveLength(0);
     expect(state.state!.stateRevision).toBe('0');
   });
 
   it('rejects confirmation as Stale when the State Revision changed between preflight and confirm', async () => {
-    const res = await preflightLocalRegistration('global', root, opts(env));
+    const res = await preflightLocalRegistration(root, opts(env));
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     // concurrent commit bumps the revision
-    await commitBridgeState(
-      'global',
-      (c) => ({ ...c, registrations: [...c.registrations, { id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', alias: 'other' }] }),
-      { agentDir: env.agentDir, cwd: env.projectDir },
+    await commitBridgeState((c) => ({ ...c, registrations: [...c.registrations, { id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', alias: 'other' }] }),
+      { agentDir: env.agentDir },
     );
     const outcome = await confirmLocalRegistration(res.preflight, true, opts(env));
     expect(outcome.status).toBe('rejected-as-stale');
@@ -193,16 +175,16 @@ describe('Local Marketplace Registration flow', () => {
     expect(outcome.receipt.summary).toBe('Rejected as Stale');
     expect(outcome.receipt.stateChanged).toBe(false);
     // no duplicate was created
-    const state = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
+    const state = await readBridgeState({ agentDir: env.agentDir });
     expect(state.state!.registrations.map((r) => r.source)).not.toContain(root);
   });
 
   it('blocks a concurrent same-scope attempt with an ATTEMPT_IN_PROGRESS Blocking Finding (Attempt Fence)', async () => {
-    const a = await preflightLocalRegistration('global', root, opts(env));
+    const a = await preflightLocalRegistration(root, opts(env));
     expect(a.ok).toBe(true);
     if (!a.ok) return;
 
-    const b = await preflightLocalRegistration('global', root, opts(env, { fenceTimeoutMs: 100 }));
+    const b = await preflightLocalRegistration(root, opts(env, { fenceTimeoutMs: 100 }));
     expect(b.ok).toBe(false);
     if (b.ok) return;
     expect(b.outcome.status).toBe('blocked');
@@ -212,53 +194,16 @@ describe('Local Marketplace Registration flow', () => {
 
     // releasing the first attempt frees the fence
     cancelLocalRegistration(a.preflight);
-    const c = await preflightLocalRegistration('global', root, opts(env));
+    const c = await preflightLocalRegistration(root, opts(env));
     expect(c.ok).toBe(true);
     if (!c.ok) return;
     cancelLocalRegistration(c.preflight);
   });
 
-  it('keeps per-scope fences independent: neither Global nor Project fence blocks the other scope', async () => {
-    // 1. While global fence is held, a project attempt proceeds (Global Pending Barrier retired)
-    const g = await preflightLocalRegistration('global', root, opts(env));
-    expect(g.ok).toBe(true);
-    if (!g.ok) return;
-    const pAllowed = await preflightLocalRegistration('project', root, opts(env, { projectTrusted: true }));
-    expect(pAllowed.ok).toBe(true);
-    if (pAllowed.ok) cancelLocalRegistration(pAllowed.preflight);
-    cancelLocalRegistration(g.preflight);
-
-    // 2. While project fence is held, global attempt is NOT blocked
-    const p = await preflightLocalRegistration('project', root, opts(env, { projectTrusted: true }));
-    expect(p.ok).toBe(true);
-    if (!p.ok) return;
-    const gAllowed = await preflightLocalRegistration('global', root, opts(env));
-    expect(gAllowed.ok).toBe(true);
-    if (gAllowed.ok) cancelLocalRegistration(gAllowed.preflight);
-    cancelLocalRegistration(p.preflight);
-  });
-
-  it('blocks Project Scope registration without Project Trust while retaining stored project records', async () => {
-    // first, grant trust and store a project record
-    const trusted = await preflightLocalRegistration('project', root, opts(env, { projectTrusted: true }));
-    expect(trusted.ok).toBe(true);
-    if (!trusted.ok) return;
-    expect((await confirmLocalRegistration(trusted.preflight, true, opts(env))).status).toBe('completed');
-
-    // newer attempt without trust: blocked, record retained (excluded from Effective State is a later ticket)
-    const untrusted = await preflightLocalRegistration('project', root, opts(env, { projectTrusted: false }));
-    expect(untrusted.ok).toBe(false);
-    if (untrusted.ok) return;
-    expect(untrusted.outcome.status).toBe('blocked');
-    if (untrusted.outcome.status !== 'blocked') return;
-    expect(untrusted.outcome.findings[0].code).toBe('PROJECT_TRUST_DENIED');
-
-    const state = await readBridgeState('project', { agentDir: env.agentDir, cwd: env.projectDir });
-    expect(state.state!.registrations).toHaveLength(1);
-  });
-
+  
+  
   it('blocks registration when the local root is missing', async () => {
-    const res = await preflightLocalRegistration('global', join(root, 'missing'), opts(env));
+    const res = await preflightLocalRegistration(join(root, 'missing'), opts(env));
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.outcome.status).toBe('blocked');
@@ -268,7 +213,7 @@ describe('Local Marketplace Registration flow', () => {
 
   it('blocks registration when the Marketplace Catalog is missing', async () => {
     rmSync(join(root, '.agents'), { recursive: true, force: true });
-    const res = await preflightLocalRegistration('global', root, opts(env));
+    const res = await preflightLocalRegistration(root, opts(env));
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.outcome.status).toBe('blocked');
@@ -278,7 +223,7 @@ describe('Local Marketplace Registration flow', () => {
 
   it('surfaces the structured CATALOG_MALFORMED finding when marketplace.json is valid JSON but not an object', async () => {
     writeFileSync(join(root, '.agents', 'plugins', 'marketplace.json'), '[]', 'utf-8');
-    const res = await preflightLocalRegistration('global', root, opts(env));
+    const res = await preflightLocalRegistration(root, opts(env));
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.outcome.status).toBe('blocked');
@@ -289,7 +234,7 @@ describe('Local Marketplace Registration flow', () => {
 
   it('surfaces the structured CATALOG_MALFORMED finding when marketplace.json lacks a plugins array', async () => {
     writeFileSync(join(root, '.agents', 'plugins', 'marketplace.json'), '{"name":"acme"}', 'utf-8');
-    const res = await preflightLocalRegistration('global', root, opts(env));
+    const res = await preflightLocalRegistration(root, opts(env));
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.outcome.status).toBe('blocked');
@@ -297,22 +242,13 @@ describe('Local Marketplace Registration flow', () => {
     expect(res.outcome.findings.some((f) => f.code === 'CATALOG_MALFORMED')).toBe(true);
   });
 
-  it('blocks Project Scope registration when the trust flag is omitted (fail-closed default)', async () => {
-    // opts() does not set projectTrusted → not granted (Bridge never grants trust)
-    const res = await preflightLocalRegistration('project', root, opts(env));
-    expect(res.ok).toBe(false);
-    if (res.ok) return;
-    expect(res.outcome.status).toBe('blocked');
-    if (res.outcome.status !== 'blocked') return;
-    expect(res.outcome.findings[0].code).toBe('PROJECT_TRUST_DENIED');
-  });
-
+  
   it('blocks registration on Contained Path violations at the entry boundary', async () => {
     // entry path escapes the owning root
     const outside = mkdtempSync(join(tmpdir(), 'outside-mkt-'));
     writeFileSync(join(root, '.agents', 'plugins', 'marketplace.json'),
       JSON.stringify({ name: 'evil', plugins: [{ name: 'x', path: '../../outside' }] }));
-    const res = await preflightLocalRegistration('global', root, opts(env));
+    const res = await preflightLocalRegistration(root, opts(env));
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.outcome.status).toBe('blocked');
@@ -329,7 +265,7 @@ describe('Local Marketplace Registration flow', () => {
     let deep = root;
     for (let i = 0; i < 40; i++) deep = join(deep, 'd');
     mkdirSync(deep, { recursive: true });
-    const res = await preflightLocalRegistration('global', root, opts(env));
+    const res = await preflightLocalRegistration(root, opts(env));
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.outcome.status).toBe('blocked');
@@ -341,17 +277,17 @@ describe('Local Marketplace Registration flow', () => {
   it('keeps state unchanged after a blocked attempt and the fence is released', async () => {
     mkdirSync(join(root, '.agents'), { recursive: true }); // remove catalog → blocked
     rmSync(join(root, '.agents', 'plugins', 'marketplace.json'), { force: true });
-    const res = await preflightLocalRegistration('global', root, opts(env));
+    const res = await preflightLocalRegistration(root, opts(env));
     expect(res.ok).toBe(false);
     if (res.ok) return;
-    const state = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
+    const state = await readBridgeState({ agentDir: env.agentDir });
     expect(state.state!.stateRevision).toBe('0');
     expect(state.state!.registrations).toHaveLength(0);
     // fence released: a follow-up attempt with a valid root succeeds
     const okRoot = mkdtempSync(join(tmpdir(), 'mkt-ok-'));
     try {
       makeMarketplace(okRoot, 'second-marketplace');
-      const again = await preflightLocalRegistration('global', realpathSync.native(okRoot), opts(env));
+      const again = await preflightLocalRegistration(realpathSync.native(okRoot), opts(env));
       expect(again.ok).toBe(true);
       if (again.ok) cancelLocalRegistration(again.preflight);
     } finally {
@@ -366,7 +302,7 @@ describe('Local Marketplace Registration flow', () => {
       join(root, '.agents', 'plugins', 'marketplace.json'),
       JSON.stringify({ name: 'acme-marketplace', plugins: [{ name: 'ghost', path: './plugins/ghost' }] }),
     );
-    const res = await preflightLocalRegistration('global', root, opts(env));
+    const res = await preflightLocalRegistration(root, opts(env));
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.preflight.catalog.entries[0].available).toBe(false);
@@ -380,8 +316,8 @@ describe('Local Marketplace Registration flow', () => {
   });
 
   it('Marketplace Entry IDs are stable on re-read of the same snapshot', async () => {
-    const a = await preflightLocalRegistration('global', root, opts(env));
-    const b = await preflightLocalRegistration('global', root, opts(env, { fenceTimeoutMs: 100 }));
+    const a = await preflightLocalRegistration(root, opts(env));
+    const b = await preflightLocalRegistration(root, opts(env, { fenceTimeoutMs: 100 }));
     // second attempt blocked by fence — ids not comparable; instead verify within one preflight
     expect(a.ok).toBe(true);
     if (!a.ok) return;
@@ -393,7 +329,7 @@ describe('Local Marketplace Registration flow', () => {
   it('disclosure marks the catalog relpath in findings pointers', async () => {
     // missing catalog finding carries the canonical relpath
     rmSync(join(root, '.agents'), { recursive: true, force: true });
-    const res = await preflightLocalRegistration('global', root, opts(env));
+    const res = await preflightLocalRegistration(root, opts(env));
     expect(res.ok).toBe(false);
     if (res.ok) return;
     if (res.outcome.status !== 'blocked') return;

@@ -19,12 +19,10 @@ describe('Receipt Journal — Storage & Bounded Retention', () => {
   const PENDING_RECEIPT = 'rcpt_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
   let tmpRoot: string;
   let agentDir: string;
-  let projectDir: string;
 
   beforeEach(() => {
     tmpRoot = mkdtempSync(join(tmpdir(), 'rcpt-journal-'));
     agentDir = join(tmpRoot, 'agent');
-    projectDir = join(tmpRoot, 'project');
   });
 
   afterEach(() => {
@@ -37,7 +35,6 @@ describe('Receipt Journal — Storage & Bounded Retention', () => {
     const rcpt1 = createReceipt({
       id: RECEIPT_1,
       operation: 'Marketplace Registration',
-      scope: 'global',
       trigger: 'register local /path',
       expectedStateRevision: '0',
       targetStateRevision: '1',
@@ -47,10 +44,10 @@ describe('Receipt Journal — Storage & Bounded Retention', () => {
       summary: 'Completed',
     });
 
-    const res = await appendReceipt('global', rcpt1, { agentDir, cwd: projectDir });
+    const res = await appendReceipt(rcpt1, { agentDir });
     expect(res.success).toBe(true);
 
-    const journal = await readReceiptJournal('global', { agentDir, cwd: projectDir });
+    const journal = await readReceiptJournal({ agentDir });
     expect(journal.receipts).toHaveLength(1);
     expect(journal.receipts[0].id).toBe(RECEIPT_1);
     expect(journal.receipts[0].summary).toBe('Completed');
@@ -62,15 +59,14 @@ describe('Receipt Journal — Storage & Bounded Retention', () => {
     const rcpt1 = createReceipt({
       id: RECEIPT_1,
       operation: 'Marketplace Registration',
-      scope: 'global',
       trigger: 'register',
       expectedStateRevision: '0',
       durableOutcome: 'committed',
       summary: 'Completed',
     });
-    await appendReceipt('global', rcpt1, { agentDir, cwd: projectDir });
+    await appendReceipt(rcpt1, { agentDir });
 
-    const journalPath = getReceiptsJournalPath('global', { agentDir, cwd: projectDir });
+    const journalPath = getReceiptsJournalPath(agentDir);
     mkdirSync(dirname(journalPath), { recursive: true });
     // Manually inject corrupted line
     writeFileSync(journalPath, readFileSync(journalPath, 'utf-8') + '{ invalid json\n', 'utf-8');
@@ -78,15 +74,14 @@ describe('Receipt Journal — Storage & Bounded Retention', () => {
     const rcpt2 = createReceipt({
       id: RECEIPT_2,
       operation: 'Plugin Installation',
-      scope: 'global',
       trigger: 'install',
       expectedStateRevision: '1',
       durableOutcome: 'committed',
       summary: 'Completed',
     });
-    await appendReceipt('global', rcpt2, { agentDir, cwd: projectDir });
+    await appendReceipt(rcpt2, { agentDir });
 
-    const journal = await readReceiptJournal('global', { agentDir, cwd: projectDir });
+    const journal = await readReceiptJournal({ agentDir });
     expect(journal.receipts).toHaveLength(2);
     expect(journal.receipts.map((r) => r.id)).toEqual([RECEIPT_1, RECEIPT_2]);
     expect(journal.corruptedLineCount).toBe(1);
@@ -94,7 +89,7 @@ describe('Receipt Journal — Storage & Bounded Retention', () => {
   });
 
   it('treats structurally incomplete Receipt JSON as a degraded line', async () => {
-    const journalPath = getReceiptsJournalPath('global', { agentDir, cwd: projectDir });
+    const journalPath = getReceiptsJournalPath(agentDir);
     mkdirSync(dirname(journalPath), { recursive: true });
     writeFileSync(
       journalPath,
@@ -102,7 +97,7 @@ describe('Receipt Journal — Storage & Bounded Retention', () => {
       'utf-8',
     );
 
-    const journal = await readReceiptJournal('global', { agentDir, cwd: projectDir });
+    const journal = await readReceiptJournal({ agentDir });
 
     expect(journal.receipts).toEqual([]);
     expect(journal.corruptedLineCount).toBe(1);
@@ -120,19 +115,18 @@ describe('Receipt Journal — Storage & Bounded Retention', () => {
     ['an empty supersedesReceiptId', { supersedesReceiptId: '' }],
     ['a non-canonical supersedesReceiptId', { supersedesReceiptId: 'rcpt_pending' }],
   ])('rejects JSONL containing %s as JOURNAL-02', async (_case, override) => {
-    const journalPath = getReceiptsJournalPath('global', { agentDir, cwd: projectDir });
+    const journalPath = getReceiptsJournalPath(agentDir);
     mkdirSync(dirname(journalPath), { recursive: true });
     const valid = createReceipt({
       id: RECEIPT_1,
       operation: 'Inspect',
-      scope: 'global',
       trigger: 'inspect',
       expectedStateRevision: '0',
       summary: 'Completed',
     });
     writeFileSync(journalPath, `${JSON.stringify({ ...valid, ...override })}\n`, 'utf-8');
 
-    const journal = await readReceiptJournal('global', { agentDir, cwd: projectDir });
+    const journal = await readReceiptJournal({ agentDir });
 
     expect(journal.receipts).toEqual([]);
     expect(journal.corruptedLineCount).toBe(1);
@@ -141,26 +135,24 @@ describe('Receipt Journal — Storage & Bounded Retention', () => {
     ]);
   });
 
-  it('rejects a valid Project receipt found in the Global JSONL as JOURNAL-02', async () => {
-    const journalPath = getReceiptsJournalPath('global', { agentDir, cwd: projectDir });
+  it('tolerates legacy persisted per-scope keys: every structurally valid line counts', async () => {
+    const journalPath = getReceiptsJournalPath(agentDir);
     mkdirSync(dirname(journalPath), { recursive: true });
-    const projectReceipt = createReceipt({
+    const legacy = createReceipt({
       id: RECEIPT_1,
       operation: 'Inspect',
-      scope: 'project',
       trigger: 'inspect',
       expectedStateRevision: '0',
       summary: 'Completed',
     });
-    writeFileSync(journalPath, `${JSON.stringify(projectReceipt)}\n`, 'utf-8');
+    // Pre-Global-only journals stamped every receipt with the retired scope key; the reader ignores it.
+    writeFileSync(journalPath, `${JSON.stringify({ ...legacy, scope: 'global' })}\n`, 'utf-8');
 
-    const journal = await readReceiptJournal('global', { agentDir, cwd: projectDir });
+    const journal = await readReceiptJournal({ agentDir });
 
-    expect(journal.receipts).toEqual([]);
-    expect(journal.corruptedLineCount).toBe(1);
-    expect(journal.findings).toEqual([
-      expect.objectContaining({ code: 'RECEIPT_CORRUPT', rule: 'JOURNAL-02' }),
-    ]);
+    expect(journal.receipts).toHaveLength(1);
+    expect(journal.receipts[0].id).toBe(RECEIPT_1);
+    expect(journal.corruptedLineCount).toBe(0);
   });
 
   it('prunes resolved receipts outside active chains while keeping ALL active recovery chains intact', async () => {
@@ -168,7 +160,6 @@ describe('Receipt Journal — Storage & Bounded Retention', () => {
     const pendingRcpt = createReceipt({
       id: PENDING_RECEIPT,
       operation: 'Marketplace Registration',
-      scope: 'global',
       trigger: 'register',
       expectedStateRevision: '0',
       targetStateRevision: '1',
@@ -177,28 +168,27 @@ describe('Receipt Journal — Storage & Bounded Retention', () => {
       runtimeOutcome: 'pending-application',
       summary: 'Pending Application',
     });
-    await appendReceipt('global', pendingRcpt, { agentDir, cwd: projectDir });
+    await appendReceipt(pendingRcpt, { agentDir });
 
     // 2. Create 15 resolved receipts
     for (let i = 1; i <= 15; i++) {
       const rcpt = createReceipt({
         id: `rcpt_00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
         operation: 'Test Operation',
-        scope: 'global',
         trigger: 'test',
         expectedStateRevision: '1',
         durableOutcome: 'unchanged',
         runtimeOutcome: 'none',
         summary: 'Completed',
       });
-      await appendReceipt('global', rcpt, { agentDir, cwd: projectDir });
+      await appendReceipt(rcpt, { agentDir });
     }
 
     // Prune with keepCount = 5
-    const pruneRes = await pruneReceiptJournal('global', 5, { agentDir, cwd: projectDir });
+    const pruneRes = await pruneReceiptJournal(5, { agentDir });
     expect(pruneRes.prunedCount).toBe(10); // 15 - 5 = 10 pruned
 
-    const journal = await readReceiptJournal('global', { agentDir, cwd: projectDir });
+    const journal = await readReceiptJournal({ agentDir });
     // Total receipts = 1 active root + 5 retained historical = 6
     expect(journal.receipts).toHaveLength(6);
     expect(journal.receipts.map((r) => r.id)).toContain(PENDING_RECEIPT);
@@ -207,17 +197,16 @@ describe('Receipt Journal — Storage & Bounded Retention', () => {
   });
 
   it('preserves a Pending receipt appended during the prune rewrite window', async () => {
-    const opts = { agentDir, cwd: projectDir };
-    const journalPath = getReceiptsJournalPath('global', opts);
+    const opts = { agentDir };
+    const journalPath = getReceiptsJournalPath(agentDir);
     const historical = createReceipt({
       id: RECEIPT_1,
       operation: 'Inspect',
-      scope: 'global',
       trigger: 'inspect',
       expectedStateRevision: '0',
       summary: 'Completed',
     });
-    await appendReceipt('global', historical, opts);
+    await appendReceipt(historical, opts);
 
     let signalRewriteWindow!: () => void;
     const rewriteWindow = new Promise<void>((resolve) => {
@@ -228,7 +217,7 @@ describe('Receipt Journal — Storage & Bounded Retention', () => {
       resumeRewrite = resolve;
     });
 
-    const pruning = pruneReceiptJournal('global', 1, {
+    const pruning = pruneReceiptJournal(1, {
       ...opts,
       testHooks: {
         beforePruneRewrite: async () => {
@@ -254,39 +243,37 @@ describe('Receipt Journal — Storage & Bounded Retention', () => {
     const pending = createReceipt({
       id: PENDING_RECEIPT,
       operation: 'Runtime Application',
-      scope: 'global',
       trigger: 'reload',
       expectedStateRevision: '0',
       runtimeOutcome: 'pending-application',
       summary: 'Pending Application',
     });
-    const appending = appendReceipt('global', pending, opts);
+    const appending = appendReceipt(pending, opts);
     resumeRewrite();
 
     const [pruneResult, appendResult] = await Promise.all([pruning, appending]);
     expect(pruneResult.retainedCount).toBe(1);
     expect(appendResult.success).toBe(true);
 
-    const journal = await readReceiptJournal('global', opts);
+    const journal = await readReceiptJournal(opts);
     expect(journal.receipts.map((receipt) => receipt.id)).toEqual([RECEIPT_1, PENDING_RECEIPT]);
     expect(journal.activeChains[0]?.rootReceiptId).toBe(PENDING_RECEIPT);
   });
 
   it('fails closed without rewriting when the journal cannot be read during prune', async () => {
-    const opts = { agentDir, cwd: projectDir };
-    const journalPath = getReceiptsJournalPath('global', opts);
+    const opts = { agentDir };
+    const journalPath = getReceiptsJournalPath(agentDir);
     const historical = createReceipt({
       id: RECEIPT_1,
       operation: 'Inspect',
-      scope: 'global',
       trigger: 'inspect',
       expectedStateRevision: '0',
       summary: 'Completed',
     });
-    await appendReceipt('global', historical, opts);
+    await appendReceipt(historical, opts);
     const originalBytes = readFileSync(journalPath);
 
-    await expect(pruneReceiptJournal('global', 0, {
+    await expect(pruneReceiptJournal(0, {
       ...opts,
       testHooks: {
         beforeJournalRead: () => {
@@ -299,19 +286,18 @@ describe('Receipt Journal — Storage & Bounded Retention', () => {
   });
 
   it('rejects prune when the atomic journal replacement fails', async () => {
-    const opts = { agentDir, cwd: projectDir };
-    const journalPath = getReceiptsJournalPath('global', opts);
+    const opts = { agentDir };
+    const journalPath = getReceiptsJournalPath(agentDir);
     const historical = createReceipt({
       id: RECEIPT_1,
       operation: 'Inspect',
-      scope: 'global',
       trigger: 'inspect',
       expectedStateRevision: '0',
       summary: 'Completed',
     });
-    await appendReceipt('global', historical, opts);
+    await appendReceipt(historical, opts);
 
-    await expect(pruneReceiptJournal('global', 0, {
+    await expect(pruneReceiptJournal(0, {
       ...opts,
       testHooks: {
         beforePruneRewrite: () => {
@@ -326,13 +312,13 @@ describe('Receipt Journal — Storage & Bounded Retention', () => {
   });
 
   it('uses the journal lock while reconstructing', async () => {
-    const opts = { agentDir, cwd: projectDir };
-    const journalPath = getReceiptsJournalPath('global', opts);
+    const opts = { agentDir };
+    const journalPath = getReceiptsJournalPath(agentDir);
     const lockPath = `${journalPath}.lock`;
     const lockFd = acquireLockSync(lockPath);
 
     try {
-      await expect(reconstructJournalFromState('global', {
+      await expect(reconstructJournalFromState({
         ...opts,
         journalLockTimeoutMs: 1,
       })).rejects.toThrow(`Failed to acquire lock ${lockPath}`);
@@ -342,7 +328,7 @@ describe('Receipt Journal — Storage & Bounded Retention', () => {
   });
 
   it('reconstructs journal when missing from state', async () => {
-    const journal = await reconstructJournalFromState('global', { agentDir, cwd: projectDir });
+    const journal = await reconstructJournalFromState({ agentDir });
     expect(journal.receipts).toHaveLength(0);
     expect(journal.isDegraded).toBe(false);
   });

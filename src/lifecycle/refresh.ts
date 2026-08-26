@@ -11,7 +11,7 @@
 
 import { readBridgeState } from '../bridge-state/store.js';
 import type { BridgeState } from '../bridge-state/types.js';
-import type { Registration, Scope } from '../bridge-state/types.js';
+import type { Registration } from '../bridge-state/types.js';
 import type { MarketplaceInspection } from '../installation/inspection.js';
 import { inspectMarketplaceEntries } from '../installation/inspection.js';
 import type { Catalog } from '../registration/catalog.js';
@@ -43,10 +43,7 @@ import {
 import type { SourceKey } from '../registration/source-key.js';
 
 export interface LifecycleFlowOptions {
-  cwd?: string;
   agentDir?: string;
-  /** Host-owned Project Trust decision; refresh is non-mutating so it stays readable without it. */
-  projectTrusted?: boolean;
   fenceTimeoutMs?: number;
   /** Injected git executor for tests. */
   executor?: GitExecutor;
@@ -60,7 +57,6 @@ export interface LifecycleFlowOptions {
  * Registration Rebind) under a complete Update Plan.
  */
 export interface UpdateCandidate {
-  scope: Scope;
   registrationId: string;
   /** State Revision observed while this candidate was validated; plans bind exactly this. */
   stateRevision: string;
@@ -86,17 +82,16 @@ export type RefreshOutcome =
 
 const OPERATION = 'Marketplace Refresh';
 
-function finding(scope: Scope, code: string, rule: string, target: ValidationFinding['target'], pointer: string, outcome: string): ValidationFinding {
-  return blocking({ code, rule, target, pointer, outcome, scope, phase: 'validation' });
+function finding(code: string, rule: string, target: ValidationFinding['target'], pointer: string, outcome: string): ValidationFinding {
+  return blocking({ code, rule, target, pointer, outcome, phase: 'validation' });
 }
 
-function blocked(scope: Scope, registrationId: string, revision: string, findings: ValidationFinding[], snapshot?: string): RefreshOutcome {
+function blocked(registrationId: string, revision: string, findings: ValidationFinding[], snapshot?: string): RefreshOutcome {
   return {
     status: 'blocked',
     findings: sortFindings(findings),
     receipt: createReceipt({
       operation: OPERATION,
-      scope,
       trigger: `refresh ${registrationId}`,
       expectedStateRevision: revision,
       validationSnapshot: snapshot,
@@ -127,8 +122,8 @@ export function selectorInputFromStored(gs: NonNullable<Registration['gitSelecto
   }
 }
 
-async function readStateForRefresh(scope: Scope, opts: LifecycleFlowOptions) {
-  return readBridgeState(scope, { cwd: opts.cwd, agentDir: opts.agentDir });
+function readStateForRefresh(opts: LifecycleFlowOptions) {
+  return readBridgeState({ agentDir: opts.agentDir });
 }
 
 /**
@@ -138,56 +133,52 @@ async function readStateForRefresh(scope: Scope, opts: LifecycleFlowOptions) {
  * movement alone never produces an Update Candidate). Bridge State is never written.
  */
 export async function refreshRegistration(
-  scope: Scope,
   registrationId: string,
   opts: LifecycleFlowOptions = {},
 ): Promise<RefreshOutcome> {
-  const read = await readStateForRefresh(scope, opts);
+  const read = await readStateForRefresh(opts);
   if (read.status !== 'ok' && read.status !== 'missing') {
     return blocked(
-      scope,
       registrationId,
       '?',
-      [finding(scope, CODE.PERSISTENCE_INDETERMINATE, 'PERSIST-01', 'attempt', '', read.error ?? 'Bridge State is not readable; neither previous nor target verifiable')],
+      [finding(CODE.PERSISTENCE_INDETERMINATE, 'PERSIST-01', 'attempt', '', read.error ?? 'Bridge State is not readable; neither previous nor target verifiable')],
     );
   }
   const state = read.state!;
   const revision = state.stateRevision;
   const registration = state.registrations.find((item) => item.id === registrationId);
   if (!registration) {
-    return blocked(scope, registrationId, revision, [
-      finding(scope, CODE.REGISTRATION_NOT_FOUND, RULE.REGISTRATION_NOT_FOUND, 'registration', '', `Registration '${registrationId}' is not in ${scope} Bridge State`),
+    return blocked(registrationId, revision, [
+      finding(CODE.REGISTRATION_NOT_FOUND, RULE.REGISTRATION_NOT_FOUND, 'registration', '', `Registration '${registrationId}' is not in Bridge State`),
     ]);
   }
 
   if (registration.sourceKind === 'git') {
-    return refreshGitRegistration(scope, registration, revision, opts);
+    return refreshGitRegistration(registration, revision, opts);
   }
-  return refreshLocalRegistration(scope, registration, revision, opts);
+  return refreshLocalRegistration(registration, revision, opts);
 }
 
 function refreshLocalRegistration(
-  scope: Scope,
   registration: Registration,
   revision: string,
   opts: LifecycleFlowOptions,
 ): RefreshOutcome {
   if (!registration.sourceKey || !registration.source) {
-    return blocked(scope, registration.id, revision, [
-      finding(scope, CODE.SOURCE_REACQUISITION_REQUIRED, RULE.SOURCE_REACQUISITION_REQUIRED, 'registration', '', 'Registration has no retained local Source Key to revalidate'),
+    return blocked(registration.id, revision, [
+      finding(CODE.SOURCE_REACQUISITION_REQUIRED, RULE.SOURCE_REACQUISITION_REQUIRED, 'registration', '', 'Registration has no retained local Source Key to revalidate'),
     ], registration.validationSnapshot);
   }
 
-  const snap = buildLocalSnapshot(registration.source, registration.sourceKey, scope);
+  const snap = buildLocalSnapshot(registration.source, registration.sourceKey);
   if (!snap.ok || !snap.snapshot) {
-    return blocked(scope, registration.id, revision, snap.findings, registration.validationSnapshot);
+    return blocked(registration.id, revision, snap.findings, registration.validationSnapshot);
   }
 
   if (!registration.validationSnapshot || snap.snapshot.fingerprint !== registration.validationSnapshot) {
-    const inspection = inspectMarketplaceEntries(registration, scope, { ignoreRecordedDrift: true });
+    const inspection = inspectMarketplaceEntries(registration, { ignoreRecordedDrift: true });
     const name = marketplaceNameOf(registration.id, inspection.marketplaceId) || registration.marketplaceName || '';
     const candidate: UpdateCandidate = {
-      scope,
       registrationId: registration.id,
       stateRevision: revision,
       recordedFingerprint: registration.validationSnapshot,
@@ -203,7 +194,6 @@ function refreshLocalRegistration(
       candidate,
       receipt: createReceipt({
         operation: OPERATION,
-        scope,
         trigger: `refresh ${registration.id}`,
         expectedStateRevision: revision,
         validationSnapshot: snap.snapshot.fingerprint,
@@ -218,7 +208,6 @@ function refreshLocalRegistration(
     status: 'no-change',
     receipt: createReceipt({
       operation: OPERATION,
-      scope,
       trigger: `refresh ${registration.id}`,
       expectedStateRevision: revision,
       validationSnapshot: registration.validationSnapshot,
@@ -234,21 +223,20 @@ function sourceKeyAt(registration: Registration, resolvedRevision: string): Sour
 }
 
 async function refreshGitRegistration(
-  scope: Scope,
   registration: Registration,
   revision: string,
   opts: LifecycleFlowOptions,
 ): Promise<RefreshOutcome> {
   if (!registration.canonicalLocator || !registration.gitSelector || !registration.sourceKey) {
-    return blocked(scope, registration.id, revision, [
-      finding(scope, CODE.SOURCE_REACQUISITION_REQUIRED, RULE.SOURCE_REACQUISITION_REQUIRED, 'registration', '', 'Registration has no retained Canonical Git Locator / Git Selector to revalidate'),
+    return blocked(registration.id, revision, [
+      finding(CODE.SOURCE_REACQUISITION_REQUIRED, RULE.SOURCE_REACQUISITION_REQUIRED, 'registration', '', 'Registration has no retained Canonical Git Locator / Git Selector to revalidate'),
     ], registration.validationSnapshot);
   }
 
-  const locRes = normalizeGitLocator(registration.canonicalLocator, scope);
-  if (!locRes.ok) return blocked(scope, registration.id, revision, locRes.findings, registration.validationSnapshot);
-  const selRes = normalizeGitSelector(selectorInputFromStored(registration.gitSelector), scope);
-  if (!selRes.ok) return blocked(scope, registration.id, revision, selRes.findings, registration.validationSnapshot);
+  const locRes = normalizeGitLocator(registration.canonicalLocator);
+  if (!locRes.ok) return blocked(registration.id, revision, locRes.findings, registration.validationSnapshot);
+  const selRes = normalizeGitSelector(selectorInputFromStored(registration.gitSelector));
+  if (!selRes.ok) return blocked(registration.id, revision, selRes.findings, registration.validationSnapshot);
   const locator = locRes.locator!;
   const selector = selRes.selector!;
   const cache = opts.cache ?? new SourceCache({ agentDir: opts.agentDir });
@@ -256,7 +244,6 @@ async function refreshGitRegistration(
   const noChangeReceipt = () =>
     createReceipt({
       operation: OPERATION,
-      scope,
       trigger: `refresh ${registration.id}`,
       expectedStateRevision: revision,
       validationSnapshot: registration.validationSnapshot,
@@ -266,7 +253,7 @@ async function refreshGitRegistration(
     });
 
   // Cheap resolution first — a hit path never needs a clone.
-  const resolution = await resolveGitRevision(locator, selector, scope, { executor: opts.executor });
+  const resolution = await resolveGitRevision(locator, selector, { executor: opts.executor });
 
   if (!resolution.ok) {
     // Offline / unreachable remote: only an exact fingerprint hit may be reused. The cached
@@ -276,7 +263,7 @@ async function refreshGitRegistration(
       ? await cache.offlineHit(locator.canonicalUrl, selector.canonical, registration.validationSnapshot)
       : null;
     if (offline) {
-      const verified = buildGitSnapshot(offline.path, sourceKeyAt(registration, registration.resolvedRevision!), scope, {
+      const verified = buildGitSnapshot(offline.path, sourceKeyAt(registration, registration.resolvedRevision!), {
         canonicalLocator: locator.canonicalUrl,
         resolvedRevision: registration.resolvedRevision!,
         selectorCanonical: selector.canonical,
@@ -284,11 +271,11 @@ async function refreshGitRegistration(
       if (verified.ok && verified.snapshot!.fingerprint === registration.validationSnapshot) {
         return { status: 'no-change', receipt: noChangeReceipt() };
       }
-      return blocked(scope, registration.id, revision, [
-        finding(scope, CODE.SOURCE_DRIFT, RULE.SOURCE_DRIFT, 'registration', '', `Source Drift: cached tree at fingerprint ${String(registration.validationSnapshot).slice(0, 16)}… no longer hashes to the recorded Validation Snapshot; Marketplace Refresh against a reachable source is required`),
+      return blocked(registration.id, revision, [
+        finding(CODE.SOURCE_DRIFT, RULE.SOURCE_DRIFT, 'registration', '', `Source Drift: cached tree at fingerprint ${String(registration.validationSnapshot).slice(0, 16)}… no longer hashes to the recorded Validation Snapshot; Marketplace Refresh against a reachable source is required`),
       ], registration.validationSnapshot);
     }
-    return blocked(scope, registration.id, revision, resolution.findings, registration.validationSnapshot);
+    return blocked(registration.id, revision, resolution.findings, registration.validationSnapshot);
   }
 
   const resolvedRevision = resolution.sha;
@@ -297,7 +284,7 @@ async function refreshGitRegistration(
     // Same Resolved Revision: exact-fingerprint cache hit avoids a full acquisition.
     const hit = await cache.hitExact(registration.validationSnapshot);
     if (hit) {
-      const verified = buildGitSnapshot(hit.path, sourceKeyAt(registration, resolvedRevision), scope, {
+      const verified = buildGitSnapshot(hit.path, sourceKeyAt(registration, resolvedRevision), {
         canonicalLocator: locator.canonicalUrl,
         resolvedRevision,
         selectorCanonical: selector.canonical,
@@ -311,12 +298,11 @@ async function refreshGitRegistration(
 
   // Full non-executing acquisition (clone).
   const acq = await acquireGitSource({
-    scope,
     locator,
     selector,
     executor: opts.executor,
   });
-  if (!acq.ok) return blocked(scope, registration.id, revision, acq.findings, registration.validationSnapshot);
+  if (!acq.ok) return blocked(registration.id, revision, acq.findings, registration.validationSnapshot);
 
   try {
     const resolvedRevision = acq.resolvedRevision!;
@@ -336,7 +322,6 @@ async function refreshGitRegistration(
         status: 'no-change',
         receipt: createReceipt({
           operation: OPERATION,
-          scope,
           trigger: `refresh ${registration.id}`,
           expectedStateRevision: revision,
           validationSnapshot: registration.validationSnapshot,
@@ -348,22 +333,21 @@ async function refreshGitRegistration(
 
     // Resolved Revision changed ⇒ new validation is mandatory before any confirmation.
     const newSourceKey: SourceKey = { ...registration.sourceKey, resolvedRevision };
-    const snap = buildGitSnapshot(root, newSourceKey, scope, {
+    const snap = buildGitSnapshot(root, newSourceKey, {
       canonicalLocator: locator.canonicalUrl,
       resolvedRevision,
       selectorCanonical: selector.canonical,
     });
     if (!snap.ok || !snap.snapshot) {
-      return blocked(scope, registration.id, revision, snap.findings, registration.validationSnapshot);
+      return blocked(registration.id, revision, snap.findings, registration.validationSnapshot);
     }
-    const inspection = inspectMarketplaceEntries(registration, scope, {
+    const inspection = inspectMarketplaceEntries(registration, {
       root,
       baseSnapshot: snap.snapshot,
       ignoreRecordedDrift: true,
     });
     const name = marketplaceNameOf(registration.id, inspection.marketplaceId) || registration.marketplaceName || '';
     const candidate: UpdateCandidate = {
-      scope,
       registrationId: registration.id,
       stateRevision: revision,
       recordedFingerprint: registration.validationSnapshot,
@@ -386,13 +370,12 @@ async function refreshGitRegistration(
       canonicalLocator: locator.canonicalUrl,
       selectorCanonical: selector.canonical,
     });
-    cache.recordPendingUpdate({ scope, registrationId: registration.id, fingerprint: snap.snapshot!.fingerprint });
+    cache.recordPendingUpdate({ registrationId: registration.id, fingerprint: snap.snapshot!.fingerprint });
     return {
       status: 'update-candidate',
       candidate,
       receipt: createReceipt({
         operation: OPERATION,
-        scope,
         trigger: `refresh ${registration.id}`,
         expectedStateRevision: revision,
         validationSnapshot: snap.snapshot.fingerprint,

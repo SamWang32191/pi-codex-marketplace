@@ -1,12 +1,10 @@
 /**
- * Bridge State Store — dual-document atomic persistence.
+ * Bridge State Store — single-document atomic persistence.
  *
- * Each scope (global/project) has its own file:
- *   global:  {getAgentDir()}/codex-marketplace/state.json
- *   project: {cwd}/.pi/codex-marketplace/state.json
+ * The one document lives at {getAgentDir()}/codex-marketplace/state.json.
  *
  * Guarantees:
- * - State Revision monotonic per scope (opaque numeric string)
+ * - State Revision monotonic (opaque numeric string)
  * - Atomic write: temp → fsync → rename + dir fsync
  * - File lock protects RMW races
  * - Read-after-verify after every write
@@ -20,7 +18,7 @@ import { dirname } from 'node:path';
 
 import { atomicWriteFile, acquireLock, releaseLock, withFileLock } from './atomic.js';
 import { commitMigratedState, migrateForward, recoverWalIfNeeded } from './migrate.js';
-import { getLockPath, getStatePath } from './paths.js';
+import { getGlobalStatePath, getLockPath } from './paths.js';
 import { parseJson, validateSchema } from './schema.js';
 import {
   CURRENT_SCHEMA_VERSION,
@@ -28,19 +26,16 @@ import {
   nextRevision,
   type BridgeState,
   type ReadResult,
-  type Scope,
   type WriteResult,
 } from './types.js';
 
 export interface BridgeStateLockOptions {
-  cwd?: string;
   agentDir?: string;
   /** Timeout for acquiring the state lock around a coordinated read/action (default 5000). */
   stateLockTimeoutMs?: number;
 }
 
 export interface StoreOptions {
-  cwd?: string;
   agentDir?: string;
   /** lock timeout ms (default 5000) */
   lockTimeoutMs?: number;
@@ -152,16 +147,15 @@ async function tryReadBridgeStateUnderFileLock(
 }
 
 /**
- * Hold one scope's State lock across an asynchronous action. The ReadResult is obtained only
+ * Hold the State lock across an asynchronous action. The ReadResult is obtained only
  * after the lock is held, including any WAL recovery or forward migration, and remains exact
- * until the action settles. The action must not call public State readers/writers for this scope.
+ * until the action settles. The action must not call public State readers/writers.
  */
 export function withBridgeStateLock<T>(
-  scope: Scope,
   opts: BridgeStateLockOptions,
   action: (read: ReadResult) => Promise<T> | T,
 ): Promise<T> {
-  const statePath = getStatePath(scope, opts);
+  const statePath = getGlobalStatePath(opts.agentDir);
   return withFileLock(
     getLockPath(statePath),
     () => action(readBridgeStateUnderFileLock(statePath)),
@@ -169,9 +163,9 @@ export function withBridgeStateLock<T>(
   );
 }
 
-/** Read a scope's Bridge State with closed handling of missing/corrupted/incompatible + WAL forward migration. */
-export async function readBridgeState(scope: Scope, opts: StoreOptions = {}): Promise<ReadResult> {
-  const statePath = getStatePath(scope, opts);
+/** Read the Bridge State with closed handling of missing/corrupted/incompatible + WAL forward migration. */
+export async function readBridgeState(opts: StoreOptions = {}): Promise<ReadResult> {
+  const statePath = getGlobalStatePath(opts.agentDir);
 
   if (!existsSync(statePath)) {
     // WAL recovery may have materialized a file after a prior crash — attempt lock-protected replay
@@ -245,8 +239,8 @@ export async function readBridgeState(scope: Scope, opts: StoreOptions = {}): Pr
 }
 
 /** Synchronously read (for extension startup / tests). Same closed semantics; WAL migration is async, so sync path never auto-migrates — it surfaces incompatible/corrupted to the caller who must use the async read for migration. Downgrade never writes back. */
-export function readBridgeStateSync(scope: Scope, opts: StoreOptions = {}): ReadResult {
-  const statePath = getStatePath(scope, opts);
+export function readBridgeStateSync(opts: StoreOptions = {}): ReadResult {
+  const statePath = getGlobalStatePath(opts.agentDir);
   if (!existsSync(statePath)) {
     return { status: 'missing', state: createEmptyState(), isEmptyInit: true };
   }
@@ -298,11 +292,10 @@ export function readBridgeStateSync(scope: Scope, opts: StoreOptions = {}): Read
  * If the file was corrupted/incompatible, commit is rejected as Indeterminate (fail-closed).
  */
 export async function commitBridgeState(
-  scope: Scope,
   updater: (current: BridgeState) => BridgeState,
   opts: StoreOptions = {},
 ): Promise<WriteResult> {
-  const statePath = getStatePath(scope, opts);
+  const statePath = getGlobalStatePath(opts.agentDir);
   const lockPath = getLockPath(statePath);
   const timeout = opts.lockTimeoutMs ?? 5000;
 
@@ -378,16 +371,11 @@ export async function commitBridgeState(
     }
     const draft = updater(structuredClone(current));
 
-    // Ensure draft has correct schemaVersion and scopeOverrides shape
+    // Ensure draft has correct schemaVersion and collection shapes
     draft.schemaVersion = CURRENT_SCHEMA_VERSION;
     if (!Array.isArray(draft.registrations)) draft.registrations = [];
     if (!Array.isArray(draft.installations)) draft.installations = [];
     if (!Array.isArray(draft.scopeOverrides)) draft.scopeOverrides = [];
-    // Global scope must not persist overrides (but we allow empty)
-    if (scope === 'global' && draft.scopeOverrides.length > 0) {
-      // For scaffold we keep but warn — spec says overrides are project-only; we normalize to empty for global
-      draft.scopeOverrides = [];
-    }
 
     // Bump revision monotonically
     const newRevision = nextRevision(current.stateRevision);
@@ -473,11 +461,10 @@ export async function commitBridgeState(
  * Still uses lock + atomic + verify.
  */
 export async function writeBridgeState(
-  scope: Scope,
   state: BridgeState,
   opts: StoreOptions = {},
 ): Promise<WriteResult> {
-  const statePath = getStatePath(scope, opts);
+  const statePath = getGlobalStatePath(opts.agentDir);
   const lockPath = getLockPath(statePath);
   const timeout = opts.lockTimeoutMs ?? 5000;
 
@@ -555,16 +542,4 @@ export async function writeBridgeState(
     } catch {}
     return { success: false, error: msg };
   }
-}
-
-/** Convenience: read both scopes (global + project) */
-export async function readBothStates(opts: StoreOptions = {}): Promise<{
-  global: ReadResult;
-  project: ReadResult;
-}> {
-  const [global, project] = await Promise.all([
-    readBridgeState('global', opts),
-    readBridgeState('project', opts),
-  ]);
-  return { global, project };
 }

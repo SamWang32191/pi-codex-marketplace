@@ -1,23 +1,24 @@
 /**
  * TUI flows for Receipt Journal inspection and State Repair action (Issue #23).
  * All user-visible strings come from the centralized ui-strings module (Issue #41).
+ *
+ * Global-only (#61): the journal and Repair State act on the single Global document only.
  */
 
 import type { ExtensionCommandContext, ExtensionUIContext } from '@earendil-works/pi-coding-agent';
 
-import type { BridgeState, Scope } from '../../src/bridge-state/types.js';
+import type { BridgeState } from '../../src/bridge-state/types.js';
 import { readBridgeState } from '../../src/bridge-state/store.js';
 import { inspectMarketplaceEntries } from '../../src/installation/inspection.js';
 import { appendReceipt, readReceiptJournal } from '../../src/journal/journal.js';
 import type { JournalAppendResult } from '../../src/journal/types.js';
 import { createRepairStateExpectation, repairBridgeState } from '../../src/bridge-state/repair.js';
-import { requestRuntimeApplication } from '../../src/projection/project.js';
+import { requestRuntimeApplication } from '../../src/projection/runtime.js';
 import { acquireAttemptFence } from '../../src/registration/fence.js';
 import { blocking, CODE, notice, RULE, type ValidationFinding } from '../../src/registration/findings.js';
 import { createReceipt, type AttemptReceipt } from '../../src/registration/receipt.js';
 import { fullValidationDisclosureLines, reportOutcome } from './registration.js';
-import { attemptSummaryText, uiText,
-  scopeOptions } from './ui-strings.js';
+import { attemptSummaryText, uiText } from './ui-strings.js';
 import { quoteTerminalText } from './terminal-presentation.js';
 import { openTransactionSheet, type TransactionSheetModel } from './transaction-sheet.js';
 
@@ -25,30 +26,17 @@ function quote(value: string): string {
   return quoteTerminalText(value);
 }
 
-async function pickScope(
-  ui: ExtensionUIContext,
-  prompt: string,
-  explicit?: Scope,
-): Promise<Scope | undefined> {
-  if (explicit) return explicit;
-  const labels = scopeOptions();
-  const selected = await ui.select(prompt, [...labels.keys()]);
-  return selected ? labels.get(selected) : undefined;
-}
-
 async function showTransactionStep(ctx: ExtensionCommandContext, model: TransactionSheetModel): Promise<boolean> {
   return await openTransactionSheet(ctx, model) === 'continue';
 }
 
 function receiptPersistenceFailureFinding(
-  receipt: AttemptReceipt,
   appended: JournalAppendResult,
 ): ValidationFinding {
   return appended.finding ?? notice({
     code: CODE.RECEIPT_PERSISTENCE_FAILED,
     phase: 'post-commit',
     target: 'attempt',
-    scope: receipt.scope,
     pointer: '',
     rule: RULE.RECEIPT_PERSISTENCE_FAILED,
     outcome: uiText('journal.finding.persistFailed', {
@@ -62,12 +50,11 @@ export function receiptAfterJournalAppendFailure(
   receipt: AttemptReceipt,
   appended: JournalAppendResult,
 ): AttemptReceipt {
-  const journalFinding = receiptPersistenceFailureFinding(receipt, appended);
+  const journalFinding = receiptPersistenceFailureFinding(appended);
   return createReceipt({
     id: receipt.id,
     kind: receipt.kind,
     operation: receipt.operation,
-    scope: receipt.scope,
     trigger: receipt.trigger,
     startedAt: receipt.startedAt,
     completedAt: receipt.completedAt,
@@ -90,7 +77,7 @@ export async function appendAndReportReceipt(
   ctx: ExtensionCommandContext,
   receipt: AttemptReceipt,
 ): Promise<void> {
-  const appended = await appendReceipt(receipt.scope, receipt, { cwd: ctx.cwd });
+  const appended = await appendReceipt(receipt);
   await reportOutcome(ctx, {
     receipt: appended.success ? receipt : receiptAfterJournalAppendFailure(receipt, appended),
   });
@@ -98,14 +85,12 @@ export async function appendAndReportReceipt(
 
 async function reportDeclinedRepair(
   ctx: ExtensionCommandContext,
-  scope: Scope,
   stateRevision: string,
 ): Promise<void> {
   const receipt = createReceipt({
     kind: 'State Repair',
     operation: 'Repair State',
-    scope,
-    trigger: `declined repair ${scope} Bridge State`,
+    trigger: 'declined repair Bridge State',
     expectedStateRevision: stateRevision,
     summary: 'Declined',
     stateChanged: false,
@@ -114,7 +99,6 @@ async function reportDeclinedRepair(
 }
 
 function retryFinding(
-  scope: Scope,
   code: string,
   rule: string,
   outcome: string,
@@ -126,21 +110,19 @@ function retryFinding(
     target: 'attempt',
     pointer: '',
     outcome,
-    scope,
     phase,
   });
 }
 
 /** Revalidate that the bound snapshot still describes live source material in this authority. */
 function exactValidationSnapshotStillValid(
-  scope: Scope,
   state: BridgeState,
   validationSnapshot: string,
 ): boolean {
   try {
     for (const registration of state.registrations) {
       if (registration.validationSnapshot !== validationSnapshot) continue;
-      const inspection = inspectMarketplaceEntries(registration, scope);
+      const inspection = inspectMarketplaceEntries(registration);
       if (inspection.treeFingerprint === validationSnapshot) return true;
     }
 
@@ -149,7 +131,7 @@ function exactValidationSnapshotStillValid(
       const registration = state.registrations.find((candidate) =>
         candidate.id === installation.registrationId);
       if (!registration) continue;
-      const inspection = inspectMarketplaceEntries(registration, scope);
+      const inspection = inspectMarketplaceEntries(registration);
       const entry = inspection.entries.find((candidate) =>
         candidate.plugin?.marketplaceEntryId === installation.marketplaceEntryId);
       if (
@@ -168,7 +150,6 @@ function exactValidationSnapshotStillValid(
 async function reportRetryTerminal(
   ctx: ExtensionCommandContext,
   input: {
-    scope: Scope;
     receiptId: string;
     stateRevision: string;
     summary: 'Declined' | 'Blocked' | 'Rejected as Stale' | 'Persistence Indeterminate';
@@ -180,7 +161,6 @@ async function reportRetryTerminal(
   const receipt = createReceipt({
     kind: 'Runtime Application',
     operation: 'Runtime Application',
-    scope: input.scope,
     trigger: `retry application ${input.receiptId}`,
     expectedStateRevision: input.stateRevision,
     validationSnapshot: input.validationSnapshot,
@@ -193,12 +173,10 @@ async function reportRetryTerminal(
 }
 
 export interface ReceiptJournalViewTarget {
-  scope?: Scope;
   receiptId?: string;
 }
 
 export interface RetryApplicationTarget {
-  scope: Scope;
   receiptId: string;
 }
 
@@ -207,14 +185,10 @@ export async function runRetryApplicationFlow(
   ctx: ExtensionCommandContext,
   target: RetryApplicationTarget,
 ): Promise<void> {
-  const fence = await acquireAttemptFence(target.scope, {
-    cwd: ctx.cwd,
-    projectTrusted: ctx.isProjectTrusted(),
-  });
+  const fence = await acquireAttemptFence({});
   if (!fence.ok) {
-    const state = await readBridgeState(target.scope, { cwd: ctx.cwd });
+    const state = await readBridgeState();
     await reportRetryTerminal(ctx, {
-      scope: target.scope,
       receiptId: target.receiptId,
       stateRevision: state.state?.stateRevision ?? '?',
       summary: 'Blocked',
@@ -235,22 +209,20 @@ async function runRetryApplicationUnderFence(
   ctx: ExtensionCommandContext,
   target: RetryApplicationTarget,
 ): Promise<void> {
-  const { scope, receiptId } = target;
+  const { receiptId } = target;
   const [journal, state] = await Promise.all([
-    readReceiptJournal(scope, { cwd: ctx.cwd }),
-    readBridgeState(scope, { cwd: ctx.cwd }),
+    readReceiptJournal(),
+    readBridgeState(),
   ]);
   const chain = journal.activeChains.find(
     (candidate) => candidate.rootReceiptId === receiptId && candidate.condition === 'pending-application',
   );
   if (!chain) {
     await reportRetryTerminal(ctx, {
-      scope,
       receiptId,
       stateRevision: state.state?.stateRevision ?? '?',
       summary: 'Rejected as Stale',
       findings: [retryFinding(
-        scope,
         CODE.REJECTED_AS_STALE,
         RULE.REJECTED_AS_STALE,
         uiText('journal.retry.chainStale'),
@@ -262,13 +234,11 @@ async function runRetryApplicationUnderFence(
   const rootValidationSnapshot = rootReceipt.validationSnapshot;
   if (state.status !== 'ok' && state.status !== 'missing') {
     await reportRetryTerminal(ctx, {
-      scope,
       receiptId,
       stateRevision: chain.stateRevision,
       validationSnapshot: rootValidationSnapshot,
       summary: 'Persistence Indeterminate',
       findings: [retryFinding(
-        scope,
         CODE.PERSISTENCE_INDETERMINATE,
         RULE.STATE_CORRUPT,
         state.error ?? uiText('journal.retry.unreadable'),
@@ -280,13 +250,11 @@ async function runRetryApplicationUnderFence(
   }
   if (state.state!.stateRevision !== chain.stateRevision) {
     await reportRetryTerminal(ctx, {
-      scope,
       receiptId,
       stateRevision: chain.stateRevision,
       validationSnapshot: rootValidationSnapshot,
       summary: 'Rejected as Stale',
       findings: [retryFinding(
-        scope,
         CODE.REJECTED_AS_STALE,
         RULE.REJECTED_AS_STALE,
         uiText('journal.retry.staleDuringConfirm', {
@@ -301,12 +269,10 @@ async function runRetryApplicationUnderFence(
   }
   if (!rootValidationSnapshot) {
     await reportRetryTerminal(ctx, {
-      scope,
       receiptId,
       stateRevision: chain.stateRevision,
       summary: 'Rejected as Stale',
       findings: [retryFinding(
-        scope,
         CODE.REJECTED_AS_STALE,
         RULE.REJECTED_AS_STALE,
         uiText('journal.retry.noSnapshot'),
@@ -315,15 +281,13 @@ async function runRetryApplicationUnderFence(
     });
     return;
   }
-  if (!exactValidationSnapshotStillValid(scope, state.state!, rootValidationSnapshot)) {
+  if (!exactValidationSnapshotStillValid(state.state!, rootValidationSnapshot)) {
     await reportRetryTerminal(ctx, {
-      scope,
       receiptId,
       stateRevision: chain.stateRevision,
       validationSnapshot: rootValidationSnapshot,
       summary: 'Rejected as Stale',
       findings: [retryFinding(
-        scope,
         CODE.REJECTED_AS_STALE,
         RULE.REJECTED_AS_STALE_SNAPSHOT,
         uiText('journal.retry.snapshotMismatch'),
@@ -333,33 +297,15 @@ async function runRetryApplicationUnderFence(
     });
     return;
   }
-  if (scope === 'project' && !ctx.isProjectTrusted()) {
-    await reportRetryTerminal(ctx, {
-      scope,
-      receiptId,
-      stateRevision: chain.stateRevision,
-      validationSnapshot: rootValidationSnapshot,
-      summary: 'Blocked',
-      findings: [retryFinding(
-        scope,
-        CODE.PROJECT_TRUST_DENIED,
-        RULE.PROJECT_TRUST_DENIED,
-        uiText('journal.retry.trustDenied'),
-      )],
-      attachToChain: true,
-    });
-    return;
-  }
 
   const model = {
     actionLabel: uiText('ledger.action.retry-application'),
-    authority: scope,
+    authority: 'global',
     target: receiptId,
     stateRevision: chain.stateRevision,
     validationSnapshot: rootValidationSnapshot,
   } satisfies Omit<TransactionSheetModel, 'step'>;
   const decline = async () => reportRetryTerminal(ctx, {
-    scope,
     receiptId,
     stateRevision: chain.stateRevision,
     validationSnapshot: rootValidationSnapshot,
@@ -391,7 +337,7 @@ async function runRetryApplicationUnderFence(
   })) return void await decline();
   if (!await ctx.ui.confirm(
     uiText('journal.retry.consent.title'),
-    uiText('journal.retry.consent.body', { scope, revision: quote(chain.stateRevision) }),
+    uiText('journal.retry.consent.body', { scope: 'global', revision: quote(chain.stateRevision) }),
   )) return void await decline();
   if (!await showTransactionStep(ctx, {
     ...model,
@@ -406,16 +352,14 @@ async function runRetryApplicationUnderFence(
 
   // Consent can remain open while either Bridge State or live source material changes.
   // Revalidate at the last possible point before invoking the host reload seam.
-  const preReloadState = await readBridgeState(scope, { cwd: ctx.cwd });
+  const preReloadState = await readBridgeState();
   if (preReloadState.status !== 'ok' && preReloadState.status !== 'missing') {
     await reportRetryTerminal(ctx, {
-      scope,
       receiptId,
       stateRevision: chain.stateRevision,
       validationSnapshot: rootValidationSnapshot,
       summary: 'Persistence Indeterminate',
       findings: [retryFinding(
-        scope,
         CODE.PERSISTENCE_INDETERMINATE,
         RULE.STATE_CORRUPT,
         preReloadState.error ?? uiText('journal.retry.persistenceBeforeReload'),
@@ -427,13 +371,11 @@ async function runRetryApplicationUnderFence(
   }
   if (preReloadState.state!.stateRevision !== chain.stateRevision) {
     await reportRetryTerminal(ctx, {
-      scope,
       receiptId,
       stateRevision: chain.stateRevision,
       validationSnapshot: rootValidationSnapshot,
       summary: 'Rejected as Stale',
       findings: [retryFinding(
-        scope,
         CODE.REJECTED_AS_STALE,
         RULE.REJECTED_AS_STALE,
         uiText('journal.retry.staleDuringConfirm', {
@@ -446,15 +388,13 @@ async function runRetryApplicationUnderFence(
     });
     return;
   }
-  if (!exactValidationSnapshotStillValid(scope, preReloadState.state!, rootValidationSnapshot)) {
+  if (!exactValidationSnapshotStillValid(preReloadState.state!, rootValidationSnapshot)) {
     await reportRetryTerminal(ctx, {
-      scope,
       receiptId,
       stateRevision: chain.stateRevision,
       validationSnapshot: rootValidationSnapshot,
       summary: 'Rejected as Stale',
       findings: [retryFinding(
-        scope,
         CODE.REJECTED_AS_STALE,
         RULE.REJECTED_AS_STALE_SNAPSHOT,
         uiText('journal.retry.staleDuringConfirmSnapshot'),
@@ -464,69 +404,25 @@ async function runRetryApplicationUnderFence(
     });
     return;
   }
-  if (scope === 'project' && !ctx.isProjectTrusted()) {
-    await reportRetryTerminal(ctx, {
-      scope,
-      receiptId,
-      stateRevision: chain.stateRevision,
-      validationSnapshot: rootValidationSnapshot,
-      summary: 'Blocked',
-      findings: [retryFinding(
-        scope,
-        CODE.PROJECT_TRUST_DENIED,
-        RULE.PROJECT_TRUST_DENIED,
-        uiText('journal.retry.trustRevoked'),
-      )],
-      attachToChain: true,
-    });
-    return;
-  }
 
-  const postReloadGuardBlocked = Symbol('post-reload-project-guard-blocked');
-  let postReloadGuardFinding: ValidationFinding | undefined;
-  try {
-    const outcome = await requestRuntimeApplication(async () => {
-      try {
-        await ctx.reload();
-      } catch {
-        return false;
-      }
-      const observed = await readBridgeState(scope, { cwd: ctx.cwd });
-      const reentered = (observed.status === 'ok' || observed.status === 'missing')
-        && observed.state!.stateRevision === chain.stateRevision
-        && exactValidationSnapshotStillValid(scope, observed.state!, rootValidationSnapshot);
-      if (!reentered) return false;
-      if (scope === 'project' && !ctx.isProjectTrusted()) {
-        postReloadGuardFinding = retryFinding(
-          scope,
-          CODE.PROJECT_TRUST_DENIED,
-          RULE.PROJECT_TRUST_DENIED,
-          uiText('journal.retry.trustRevokedReload'),
-        );
-        throw postReloadGuardBlocked;
-      }
-      return true;
-    }, {
-      scope,
-      stateRevision: chain.stateRevision,
-      validationSnapshot: rootValidationSnapshot,
-      cwd: ctx.cwd,
-      recoversReceiptId: receiptId,
-      wholePluginFindings: rootReceipt.findings,
-    });
-    await reportOutcome(ctx, outcome);
-  } catch (error) {
-    if (error !== postReloadGuardBlocked || !postReloadGuardFinding) throw error;
-    await reportRetryTerminal(ctx, {
-      scope,
-      receiptId,
-      stateRevision: chain.stateRevision,
-      validationSnapshot: rootValidationSnapshot,
-      summary: 'Blocked',
-      findings: [postReloadGuardFinding],
-      attachToChain: true,
-    });
-  }
+  const outcome = await requestRuntimeApplication(async () => {
+    try {
+      await ctx.reload();
+    } catch {
+      return false;
+    }
+    const observed = await readBridgeState();
+    const reentered = (observed.status === 'ok' || observed.status === 'missing')
+      && observed.state!.stateRevision === chain.stateRevision
+      && exactValidationSnapshotStillValid(observed.state!, rootValidationSnapshot);
+    return reentered;
+  }, {
+    stateRevision: chain.stateRevision,
+    validationSnapshot: rootValidationSnapshot,
+    recoversReceiptId: receiptId,
+    wholePluginFindings: rootReceipt.findings,
+  });
+  await reportOutcome(ctx, outcome);
 }
 
 export async function runReceiptJournalView(
@@ -534,10 +430,8 @@ export async function runReceiptJournalView(
   target: ReceiptJournalViewTarget = {},
 ): Promise<void> {
   const ui: ExtensionUIContext = ctx.ui;
-  const scope = await pickScope(ui, uiText('journal.pick.scope'), target.scope);
-  if (!scope) return;
 
-  const journal = await readReceiptJournal(scope, { cwd: ctx.cwd });
+  const journal = await readReceiptJournal();
   if (target.receiptId) {
     const receipt = journal.receipts.find((item) => item.id === target.receiptId);
     if (!receipt) {
@@ -549,7 +443,7 @@ export async function runReceiptJournalView(
   }
 
   const lines: string[] = [
-    uiText('journal.view.header', { scopeWord: scope === 'global' ? uiText('common.scope.word.global') : uiText('common.scope.word.project') }),
+    uiText('journal.view.header', { scopeWord: uiText('common.scope.word.global') }),
     uiText('journal.view.total', { count: journal.receipts.length }),
     journal.isDegraded
       ? uiText('journal.view.degraded.yes', { count: journal.corruptedLineCount })
@@ -574,7 +468,7 @@ export async function runReceiptJournalView(
     lines.push('  ' + uiText('journal.view.recent.empty'));
   } else {
     for (const rc of recent) {
-      lines.push(`${quote(rc.id)} ${quote(rc.completedAt)} · ${quote(rc.operation)} (${rc.scope})`);
+      lines.push(`${quote(rc.id)} ${quote(rc.completedAt)} · ${quote(rc.operation)}`);
       lines.push('  ' + uiText('journal.view.receipt.summary', {
         summary: attemptSummaryText(rc.summary),
         durable: quote(rc.durableOutcome),
@@ -600,7 +494,6 @@ export async function runReceiptJournalView(
 }
 
 export interface RepairStateTarget {
-  scope?: Scope;
   expectedStateRevision?: string;
 }
 
@@ -609,12 +502,10 @@ export async function runRepairStateFlow(
   target: RepairStateTarget = {},
 ): Promise<void> {
   const ui: ExtensionUIContext = ctx.ui;
-  const scope = await pickScope(ui, uiText('journal.repair.pick.scope'), target.scope);
-  if (!scope) return;
 
   const [initial, initialJournal] = await Promise.all([
-    readBridgeState(scope, { cwd: ctx.cwd }),
-    readReceiptJournal(scope, { cwd: ctx.cwd }),
+    readBridgeState(),
+    readReceiptJournal(),
   ]);
   const initialExpectation = createRepairStateExpectation(initial, initialJournal);
   const selectedStateRevision = target.expectedStateRevision ?? initialExpectation.stateRevision;
@@ -624,15 +515,14 @@ export async function runRepairStateFlow(
   };
   const model = {
     actionLabel: uiText('ledger.action.repair-state'),
-    authority: scope,
-    target: `${scope} Bridge State`,
+    authority: 'global',
+    target: 'Global Bridge State',
     stateRevision: selectedStateRevision,
   } satisfies Omit<TransactionSheetModel, 'step'>;
   const stateFindings = initial.status === 'ok' || initial.status === 'missing'
     ? []
     : [retryFinding(
-        scope,
-        initial.status === 'incompatible' ? CODE.PERSISTENCE_INDETERMINATE : CODE.PERSISTENCE_INDETERMINATE,
+        CODE.PERSISTENCE_INDETERMINATE,
         initial.status === 'incompatible' ? RULE.STATE_SCHEMA_UNKNOWN : RULE.STATE_CORRUPT,
         initial.error ?? uiText('journal.repair.stateError', { status: initial.status }),
         'persistence',
@@ -640,7 +530,6 @@ export async function runRepairStateFlow(
   const repairFindings = [...stateFindings, ...initialJournal.findings];
   const decline = async () => reportDeclinedRepair(
     ctx,
-    scope,
     selectedStateRevision ?? '?',
   );
   if (!await showTransactionStep(ctx, {
@@ -672,7 +561,7 @@ export async function runRepairStateFlow(
   const confirmed = await ui.confirm(
     uiText('journal.repair.consent.title'),
     uiText('journal.repair.consent.body', {
-      scopeWord: scope === 'global' ? uiText('common.scope.word.global') : uiText('common.scope.word.project'),
+      scopeWord: uiText('common.scope.word.global'),
     }),
   );
   if (!confirmed) {
@@ -690,8 +579,7 @@ export async function runRepairStateFlow(
     details: [uiText('journal.repair.commit.details')],
   })) return void await decline();
 
-  const res = await repairBridgeState(scope, {
-    cwd: ctx.cwd,
+  const res = await repairBridgeState({
     expected,
   });
 

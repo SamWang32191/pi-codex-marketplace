@@ -6,11 +6,11 @@
  * The rebind preflight is a non-mutating validation of the REPLACEMENT source: fresh validation,
  * a fresh Registration Confirmation and a complete Update Plan are required before the atomic
  * commit performed by `applyUpdate` (plan kind `rebind`). Prior activation consent never carries
- * over. Duplicate detection runs against every OTHER Registration in the scope.
+ * over. Duplicate detection runs against every OTHER Registration.
  */
 
 import { readBridgeState } from '../bridge-state/store.js';
-import type { Registration, Scope } from '../bridge-state/types.js';
+import type { Registration } from '../bridge-state/types.js';
 import { inspectMarketplaceEntries } from '../installation/inspection.js';
 import {
   CODE,
@@ -60,7 +60,7 @@ export type RebindPreflightResult =
 
 const OPERATION = 'Registration Rebind';
 
-function blocked(scope: Scope, trigger: string, revision: string, findings: ValidationFinding[], validationSnapshot?: string): RebindPreflightResult {
+function blocked(trigger: string, revision: string, findings: ValidationFinding[], validationSnapshot?: string): RebindPreflightResult {
   return {
     ok: false,
     outcome: {
@@ -68,7 +68,6 @@ function blocked(scope: Scope, trigger: string, revision: string, findings: Vali
       findings: sortFindings(findings),
       receipt: createReceipt({
         operation: OPERATION,
-        scope,
         trigger,
         expectedStateRevision: revision,
         validationSnapshot,
@@ -92,12 +91,11 @@ function identityProbe(registrationId: string): Registration {
  * no writes; consent and atomic application happen through the Update Plan and `applyUpdate`.
  */
 export async function preflightRebind(
-  scope: Scope,
   registrationId: string,
   target: RebindTarget,
   opts: LifecycleFlowOptions = {},
 ): Promise<RebindPreflightResult> {
-  const read = await readBridgeState(scope, { cwd: opts.cwd, agentDir: opts.agentDir });
+  const read = await readBridgeState({ agentDir: opts.agentDir });
   if (read.status !== 'ok' && read.status !== 'missing') {
     const findings: ValidationFinding[] = [
       blocking({
@@ -106,7 +104,6 @@ export async function preflightRebind(
         target: 'attempt',
         pointer: '',
         outcome: read.error ?? 'Bridge State is not readable; neither previous nor target verifiable',
-        scope,
         phase: 'persistence',
       }),
     ];
@@ -115,7 +112,7 @@ export async function preflightRebind(
       outcome: {
         status: 'persistence-failed',
         findings,
-        receipt: createReceipt({ operation: OPERATION, scope, trigger: `rebind ${registrationId}`, expectedStateRevision: '?', summary: 'Persistence Indeterminate', findings }),
+        receipt: createReceipt({ operation: OPERATION, trigger: `rebind ${registrationId}`, expectedStateRevision: '?', summary: 'Persistence Indeterminate', findings }),
         isIndeterminate: true,
       },
     };
@@ -124,21 +121,20 @@ export async function preflightRebind(
   const revision = state.stateRevision;
   const registration = state.registrations.find((item) => item.id === registrationId);
   if (!registration) {
-    return blocked(scope, `rebind ${registrationId}`, revision, [
-      blocking({ code: CODE.REGISTRATION_NOT_FOUND, rule: RULE.REGISTRATION_NOT_FOUND, target: 'registration', pointer: '', outcome: `Registration '${registrationId}' is not in ${scope} Bridge State`, scope, phase: 'admission' }),
+    return blocked(`rebind ${registrationId}`, revision, [
+      blocking({ code: CODE.REGISTRATION_NOT_FOUND, rule: RULE.REGISTRATION_NOT_FOUND, target: 'registration', pointer: '', outcome: `Registration '${registrationId}' is not in Bridge State`, phase: 'admission' }),
     ]);
   }
 
   // Duplicate detection runs against every OTHER Registration — the rebound one keeps its identity.
   const others = state.registrations.filter((item) => item.id !== registrationId);
   if (target.kind === 'local') {
-    return rebindToLocal(scope, registrationId, target.rootPath, others, revision, registration.validationSnapshot);
+    return rebindToLocal(registrationId, target.rootPath, others, revision, registration.validationSnapshot);
   }
-  return rebindToGit(scope, registrationId, target.locator, target.selector, others, revision, registration.validationSnapshot, opts);
+  return rebindToGit(registrationId, target.locator, target.selector, others, revision, registration.validationSnapshot, opts);
 }
 
 function rebindToLocal(
-  scope: Scope,
   registrationId: string,
   rootPath: string,
   others: Registration[],
@@ -146,30 +142,29 @@ function rebindToLocal(
   recordedSnapshot?: string,
 ): RebindPreflightResult {
   const trigger = `rebind ${registrationId}`;
-  const keyRes = sourceKeyForLocalRoot(rootPath, scope);
-  if (!keyRes.ok) return blocked(scope, trigger, revision, keyRes.findings, recordedSnapshot);
+  const keyRes = sourceKeyForLocalRoot(rootPath);
+  if (!keyRes.ok) return blocked(trigger, revision, keyRes.findings, recordedSnapshot);
   const sourceKey = keyRes.sourceKey!;
 
-  const dup = findDuplicateRegistration(scope, sourceKey, others);
-  if (dup.duplicate) return blocked(scope, trigger, revision, [dup.finding!], recordedSnapshot);
+  const dup = findDuplicateRegistration(sourceKey, others);
+  if (dup.duplicate) return blocked(trigger, revision, [dup.finding!], recordedSnapshot);
 
-  const snap = buildLocalSnapshot(sourceKey.canonicalPath!, sourceKey, scope);
-  if (!snap.ok || !snap.snapshot) return blocked(scope, trigger, revision, snap.findings, recordedSnapshot);
+  const snap = buildLocalSnapshot(sourceKey.canonicalPath!, sourceKey);
+  if (!snap.ok || !snap.snapshot) return blocked(trigger, revision, snap.findings, recordedSnapshot);
 
-  const inspection = inspectMarketplaceEntries(identityProbe(registrationId), scope, {
+  const inspection = inspectMarketplaceEntries(identityProbe(registrationId), {
     root: sourceKey.canonicalPath!,
     baseSnapshot: snap.snapshot,
     ignoreRecordedDrift: true,
   });
   const name = marketplaceNameOf(registrationId, inspection.marketplaceId);
   if (!inspection.marketplaceId || inspection.findings.some((f) => f.classification === 'blocking')) {
-    return blocked(scope, trigger, revision, inspection.findings.length > 0 ? inspection.findings : [
-      blocking({ code: CODE.CATALOG_MISSING, rule: RULE.CATALOG_MISSING, target: 'catalog', pointer: '', outcome: 'replacement source has no readable Marketplace Catalog', scope, phase: 'validation' }),
+    return blocked(trigger, revision, inspection.findings.length > 0 ? inspection.findings : [
+      blocking({ code: CODE.CATALOG_MISSING, rule: RULE.CATALOG_MISSING, target: 'catalog', pointer: '', outcome: 'replacement source has no readable Marketplace Catalog', phase: 'validation' }),
     ], snap.snapshot.fingerprint);
   }
 
   const candidate: UpdateCandidate = {
-    scope,
     registrationId,
     stateRevision: revision,
     recordedFingerprint: undefined,
@@ -191,7 +186,6 @@ function rebindToLocal(
 }
 
 async function rebindToGit(
-  scope: Scope,
   registrationId: string,
   locatorInput: string,
   selectorInput: GitSelectorInput | string,
@@ -201,30 +195,29 @@ async function rebindToGit(
   opts: LifecycleFlowOptions,
 ): Promise<RebindPreflightResult> {
   const trigger = `rebind ${registrationId}`;
-  const locRes = normalizeGitLocator(locatorInput, scope);
-  if (!locRes.ok) return blocked(scope, trigger, revision, locRes.findings, recordedSnapshot);
+  const locRes = normalizeGitLocator(locatorInput);
+  if (!locRes.ok) return blocked(trigger, revision, locRes.findings, recordedSnapshot);
 
   let selRes;
   if (typeof selectorInput === 'string') {
-    selRes = await import('../registration/git-selector.js').then((m) => m.parseGitSelectorString(selectorInput, scope));
+    selRes = await import('../registration/git-selector.js').then((m) => m.parseGitSelectorString(selectorInput));
   } else {
-    selRes = normalizeGitSelector(selectorInput as StoredSelectorInput, scope);
+    selRes = normalizeGitSelector(selectorInput as StoredSelectorInput);
   }
-  if (!selRes.ok) return blocked(scope, trigger, revision, selRes.findings, recordedSnapshot);
+  if (!selRes.ok) return blocked(trigger, revision, selRes.findings, recordedSnapshot);
   const selector = selRes.selector!;
 
   const sourceKey = gitSourceKey(locRes.locator!, selector);
 
-  const dup = findDuplicateRegistration(scope, sourceKey, others);
-  if (dup.duplicate) return blocked(scope, trigger, revision, [dup.finding!]);
+  const dup = findDuplicateRegistration(sourceKey, others);
+  if (dup.duplicate) return blocked(trigger, revision, [dup.finding!]);
 
   const acq = await acquireGitSource({
-    scope,
     locator: locRes.locator!,
     selector,
     executor: opts.executor,
   });
-  if (!acq.ok) return blocked(scope, trigger, revision, acq.findings, recordedSnapshot);
+  if (!acq.ok) return blocked(trigger, revision, acq.findings, recordedSnapshot);
 
   try {
     const resolvedRevision = acq.resolvedRevision!;
@@ -234,25 +227,24 @@ async function rebindToGit(
       canonicalUrl: locRes.locator!.canonicalUrl,
       selector: selector.canonical,
     };
-    const snap = buildGitSnapshot(acq.acquiredPath!, boundKey, scope, {
+    const snap = buildGitSnapshot(acq.acquiredPath!, boundKey, {
       canonicalLocator: locRes.locator!.canonicalUrl,
       resolvedRevision,
       selectorCanonical: selector.canonical,
     });
-    if (!snap.ok || !snap.snapshot) return blocked(scope, trigger, revision, snap.findings, recordedSnapshot);
+    if (!snap.ok || !snap.snapshot) return blocked(trigger, revision, snap.findings, recordedSnapshot);
 
-    const inspection = inspectMarketplaceEntries(identityProbe(registrationId), scope, {
+    const inspection = inspectMarketplaceEntries(identityProbe(registrationId), {
       root: acq.acquiredPath!,
       baseSnapshot: snap.snapshot,
       ignoreRecordedDrift: true,
     });
     const name = marketplaceNameOf(registrationId, inspection.marketplaceId);
     if (!inspection.marketplaceId || inspection.findings.some((f) => f.classification === 'blocking')) {
-      return blocked(scope, trigger, revision, inspection.findings, snap.snapshot.fingerprint);
+      return blocked(trigger, revision, inspection.findings, snap.snapshot.fingerprint);
     }
 
     const candidate: UpdateCandidate = {
-      scope,
       registrationId,
       stateRevision: revision,
       recordedFingerprint: undefined,

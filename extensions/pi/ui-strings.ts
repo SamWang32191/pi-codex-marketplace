@@ -16,7 +16,6 @@
 
 import type { AttemptSummary, RecoveryAction } from '../../src/registration/receipt.js';
 import type { ValidationFinding } from '../../src/registration/findings.js';
-import type { Scope } from '../../src/bridge-state/types.js';
 import type { TransactionStep } from './transaction-sheet.js';
 
 /** Supported presentation locales. Only zh_TW ships today; the seam stays explicit. */
@@ -96,7 +95,7 @@ const zhTW = {
 
   // --- finding rendering -----------------------------------------------------
   'finding.line':
-    'finding 分類 {classification}｜Scope {scope}｜階段 {phase}｜目標 {target}｜指標 {pointer}｜代碼 {code}｜規則 {rule}｜結果 {outcome}',
+    'finding 分類 {classification}｜階段 {phase}｜目標 {target}｜指標 {pointer}｜代碼 {code}｜規則 {rule}｜結果 {outcome}',
 
   // --- transaction-sheet.ts --------------------------------------------------
   'sheet.title': 'Transaction Sheet 交易單',
@@ -542,14 +541,6 @@ export function uiText(id: MessageId, params?: Record<string, string | number>):
 /** Canonical-first closed value rendering: `Canonical（中文釋義）`. */
 export function closedValue(canonical: string, gloss: string): string {
   return `${canonical}（${gloss}）`;
-}
-
-/** Localized scope-selection options bound to their structured Scope values. */
-export function scopeOptions(): Map<string, Scope> {
-  return new Map([
-    [uiText('common.scope.global'), 'global'],
-    [uiText('common.scope.project'), 'project'],
-  ]);
 }
 
 const ATTEMPT_SUMMARY_GLOSS: Record<AttemptSummary, MessageId> = {

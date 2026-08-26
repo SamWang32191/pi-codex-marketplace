@@ -14,7 +14,7 @@
  * The plan itself commits nothing; `applyUpdate` performs the single atomic commit.
  */
 
-import type { Installation, Registration, Scope } from '../bridge-state/types.js';
+import type { Installation, Registration } from '../bridge-state/types.js';
 import type { CompatiblePlugin } from '../compatibility/profile.js';
 import { CODE, RULE, blocking, type ValidationFinding } from '../registration/findings.js';
 import type { ValidationSnapshot } from '../registration/snapshot.js';
@@ -39,7 +39,6 @@ export interface PlanEntry {
 
 export interface UpdatePlan {
   kind: 'apply-update' | 'rebind';
-  scope: Scope;
   registrationId: string;
   /** State Revision observed while the plan was built; Apply Update re-verifies it under CAS. */
   stateRevision: string;
@@ -75,8 +74,8 @@ export type UpdatePlanResult =
   | { ok: true; plan: UpdatePlan }
   | { ok: false; problems: ValidationFinding[] };
 
-function planProblem(scope: Scope, target: ValidationFinding['target'], pointer: string, code: string, outcome: string): ValidationFinding {
-  return blocking({ code, rule: RULE.UPDATE_PLAN_INCOMPLETE, target, pointer, outcome, scope, phase: 'admission' });
+function planProblem(target: ValidationFinding['target'], pointer: string, code: string, outcome: string): ValidationFinding {
+  return blocking({ code, rule: RULE.UPDATE_PLAN_INCOMPLETE, target, pointer, outcome, phase: 'admission' });
 }
 
 /**
@@ -118,19 +117,16 @@ export function buildUpdatePlan(
   stateRevision: string,
   input: UpdatePlanInput,
 ): UpdatePlanResult {
-  const scope = candidate.scope;
   const problems: ValidationFinding[] = [];
   const kind = input.kind ?? 'apply-update';
 
   if (kind === 'rebind' && !input.rebindSource) {
-    problems.push(planProblem(scope, 'attempt', '', CODE.UPDATE_PLAN_INCOMPLETE, 'Registration Rebind requires validated replacement source attributes'));
+    problems.push(planProblem('attempt', '', CODE.UPDATE_PLAN_INCOMPLETE, 'Registration Rebind requires validated replacement source attributes'));
   }
 
   if (!input.registrationConfirmed) {
     problems.push(
-      planProblem(
-        scope,
-        'registration',
+      planProblem('registration',
         candidate.registrationId,
         CODE.UPDATE_PLAN_INCOMPLETE,
         'a fresh Registration Confirmation bound to the candidate Validation Snapshot and State Revision is required before Apply Update',
@@ -145,12 +141,12 @@ export function buildUpdatePlan(
     const choice = input.choices[installation.id];
     if (!choice) {
       problems.push(
-        planProblem(scope, 'installation', installation.id, CODE.UPDATE_PLAN_INCOMPLETE, `Installation '${installation.id}' has no update/disable/remove outcome; the plan cannot commit without an explicit choice`),
+        planProblem('installation', installation.id, CODE.UPDATE_PLAN_INCOMPLETE, `Installation '${installation.id}' has no update/disable/remove outcome; the plan cannot commit without an explicit choice`),
       );
       continue;
     }
     if (choice !== 'update' && choice !== 'disable' && choice !== 'remove') {
-      problems.push(planProblem(scope, 'installation', installation.id, CODE.UPDATE_PLAN_INCOMPLETE, `unknown outcome '${String(choice)}'`));
+      problems.push(planProblem('installation', installation.id, CODE.UPDATE_PLAN_INCOMPLETE, `unknown outcome '${String(choice)}'`));
       continue;
     }
 
@@ -158,9 +154,7 @@ export function buildUpdatePlan(
       const match = candidates.get(installation.pluginId);
       if (!match) {
         problems.push(
-          planProblem(
-            scope,
-            'installation',
+          planProblem('installation',
             installation.id,
             CODE.UPDATE_PLAN_INCOMPLETE,
             `no Compatible candidate for Plugin '${installation.pluginId}' exists in the new Validation Snapshot; the Installation must be disabled or removed, or the plan abandoned`,
@@ -177,7 +171,6 @@ export function buildUpdatePlan(
             target: 'installation',
             pointer: installation.id,
             outcome: 'an enabled Installation that remains enabled needs its own Activation Confirmation bound to the new Validation Snapshot (default No)',
-            scope,
             phase: 'admission',
           }),
         );
@@ -211,7 +204,6 @@ export function buildUpdatePlan(
     ok: true,
     plan: {
       kind,
-      scope,
       registrationId: candidate.registrationId,
       stateRevision,
       candidate,

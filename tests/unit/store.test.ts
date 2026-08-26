@@ -11,8 +11,8 @@ import {
   withBridgeStateLock,
   writeBridgeState,
 } from '../../src/bridge-state/store.js';
-import { getGlobalStatePath, getProjectStatePath, getAgentDir } from '../../src/bridge-state/paths.js';
-import { CURRENT_SCHEMA_VERSION, createEmptyState, nextRevision } from '../../src/bridge-state/types.js';
+import { getGlobalStatePath, getAgentDir } from '../../src/bridge-state/paths.js';
+import { CURRENT_SCHEMA_VERSION, createEmptyState } from '../../src/bridge-state/types.js';
 
 const EXITING_LOCK_OWNER = String.raw`
   const { closeSync, fsyncSync, openSync, writeFileSync } = require('node:fs');
@@ -35,12 +35,10 @@ const EXITING_LOCK_OWNER = String.raw`
 function makeTempEnv() {
   const tmpRoot = mkdtempSync(join(tmpdir(), 'bridge-store-test-'));
   const agentDir = join(tmpRoot, 'agent');
-  const projectDir = join(tmpRoot, 'project');
-  // mk dirs
-  return { tmpRoot, agentDir, projectDir };
+  return { tmpRoot, agentDir };
 }
 
-describe('Bridge State store — dual documents, atomicity, corruption', () => {
+describe('Bridge State store — single Global document, atomicity, corruption', () => {
   let env: ReturnType<typeof makeTempEnv>;
 
   beforeEach(() => {
@@ -54,14 +52,11 @@ describe('Bridge State store — dual documents, atomicity, corruption', () => {
   });
 
   it('reads missing files as empty state with revision 0', async () => {
-    const g = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
-    const p = await readBridgeState('project', { agentDir: env.agentDir, cwd: env.projectDir });
+    const g = await readBridgeState({ agentDir: env.agentDir });
     expect(g.status).toBe('missing');
     expect(g.state!.stateRevision).toBe('0');
     expect(g.state!.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
     expect(g.state!.registrations).toEqual([]);
-    expect(p.status).toBe('missing');
-    expect(p.state!.stateRevision).toBe('0');
   });
 
   it('replays a pending WAL after reclaiming an exited state-lock owner', async () => {
@@ -82,10 +77,7 @@ describe('Bridge State store — dual documents, atomicity, corruption', () => {
     }), 'utf-8');
     execFileSync(process.execPath, ['-e', EXITING_LOCK_OWNER, lockPath]);
 
-    const recovered = await readBridgeState('global', {
-      agentDir: env.agentDir,
-      cwd: env.projectDir,
-    });
+    const recovered = await readBridgeState({ agentDir: env.agentDir });
 
     expect(recovered.status).toBe('ok');
     expect(recovered.state?.stateRevision).toBe('7');
@@ -94,13 +86,13 @@ describe('Bridge State store — dual documents, atomicity, corruption', () => {
   });
 
   it('holds the state lock across an async callback and queues a direct writer', async () => {
-    const opts = { agentDir: env.agentDir, cwd: env.projectDir };
+    const opts = { agentDir: env.agentDir };
     let releaseAction!: () => void;
     const actionCanFinish = new Promise<void>((resolve) => { releaseAction = resolve; });
     let signalActionStarted!: () => void;
     const actionStarted = new Promise<void>((resolve) => { signalActionStarted = resolve; });
 
-    const lockedRead = withBridgeStateLock('global', opts, async (read) => {
+    const lockedRead = withBridgeStateLock(opts, async (read) => {
       signalActionStarted();
       await actionCanFinish;
       return read;
@@ -108,7 +100,7 @@ describe('Bridge State store — dual documents, atomicity, corruption', () => {
     await actionStarted;
 
     let writerSettled = false;
-    const writer = commitBridgeState('global', (current) => ({ ...current }), opts);
+    const writer = commitBridgeState((current) => ({ ...current }), opts);
     void writer.then(
       () => { writerSettled = true; },
       () => { writerSettled = true; },
@@ -138,9 +130,7 @@ describe('Bridge State store — dual documents, atomicity, corruption', () => {
       createdAt: new Date().toISOString(),
     }), 'utf-8');
 
-    const recovered = await withBridgeStateLock(
-      'global',
-      { agentDir: env.agentDir, cwd: env.projectDir, stateLockTimeoutMs: 100 },
+    const recovered = await withBridgeStateLock({ agentDir: env.agentDir, stateLockTimeoutMs: 100 },
       (read) => read,
     );
 
@@ -154,9 +144,7 @@ describe('Bridge State store — dual documents, atomicity, corruption', () => {
     mkdirSync(dirname(statePath), { recursive: true });
     writeFileSync(statePath, 'null\n', 'utf-8');
 
-    const read = await withBridgeStateLock(
-      'global',
-      { agentDir: env.agentDir, cwd: env.projectDir },
+    const read = await withBridgeStateLock({ agentDir: env.agentDir },
       (observed) => observed,
     );
 
@@ -166,74 +154,27 @@ describe('Bridge State store — dual documents, atomicity, corruption', () => {
     }));
   });
 
-  it('global and project are isolated documents with independent revisions', async () => {
-    // Commit to global
-    const r1 = await commitBridgeState(
-      'global',
-      (cur) => ({ ...cur, registrations: [{ id: '11111111-1111-4111-8111-111111111111', alias: 'global-mp' }] }),
-      { agentDir: env.agentDir, cwd: env.projectDir },
-    );
-    expect(r1.success).toBe(true);
-    expect(r1.newRevision).toBe('1');
-
-    // Commit to project — should still be 1 independently
-    const r2 = await commitBridgeState(
-      'project',
-      (cur) => ({ ...cur, registrations: [{ id: '22222222-2222-4222-8222-222222222222', alias: 'proj-mp' }] }),
-      { agentDir: env.agentDir, cwd: env.projectDir },
-    );
-    expect(r2.success).toBe(true);
-    expect(r2.newRevision).toBe('1');
-
-    // Verify isolation
-    const g = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
-    const p = await readBridgeState('project', { agentDir: env.agentDir, cwd: env.projectDir });
-    expect(g.state!.registrations[0].alias).toBe('global-mp');
-    expect(p.state!.registrations[0].alias).toBe('proj-mp');
-    expect(g.state!.stateRevision).toBe('1');
-    expect(p.state!.stateRevision).toBe('1');
-
-    // Second global commit bumps to 2, project stays 1
-    const r3 = await commitBridgeState(
-      'global',
-      (cur) => ({
-        ...cur,
-        installations: [{ id: 'inst-1', pluginId: 'mp/plugin@1.0.0', installationState: 'enabled' }],
-      }),
-      { agentDir: env.agentDir, cwd: env.projectDir },
-    );
-    expect(r3.newRevision).toBe('2');
-    const g2 = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
-    const p2 = await readBridgeState('project', { agentDir: env.agentDir, cwd: env.projectDir });
-    expect(g2.state!.stateRevision).toBe('2');
-    expect(p2.state!.stateRevision).toBe('1');
-  });
-
   it('State Revision monotonic increments on each successful commit', async () => {
     for (let i = 1; i <= 5; i++) {
-      const res = await commitBridgeState(
-        'global',
-        (cur) => ({ ...cur, registrations: [{ id: `id-${i}`, alias: `mp-${i}` }] }),
-        { agentDir: env.agentDir, cwd: env.projectDir },
+      const res = await commitBridgeState((cur) => ({ ...cur, registrations: [{ id: `id-${i}`, alias: `mp-${i}` }] }),
+        { agentDir: env.agentDir },
       );
       expect(res.success).toBe(true);
       expect(res.newRevision).toBe(String(i));
     }
-    const final = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
+    const final = await readBridgeState({ agentDir: env.agentDir });
     expect(final.state!.stateRevision).toBe('5');
   });
 
   it('persists only authoritative fields (no Effective State / catalogs)', async () => {
-    await commitBridgeState(
-      'global',
-      () => ({
+    await commitBridgeState(() => ({
         schemaVersion: CURRENT_SCHEMA_VERSION,
         stateRevision: '0', // will be bumped
         registrations: [{ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', alias: 'test' }],
-        installations: [{ id: 'global:test/plugin', pluginId: 'test/plugin', installationState: 'enabled' }],
-        scopeOverrides: [{ kind: 'installation', targetId: 'some-id' }], // global should be normalized to empty
+        installations: [{ id: 'test/plugin', pluginId: 'test/plugin', installationState: 'enabled' }],
+        scopeOverrides: [],
       }),
-      { agentDir: env.agentDir, cwd: env.projectDir },
+      { agentDir: env.agentDir },
     );
     const gPath = getGlobalStatePath(env.agentDir);
     const raw = JSON.parse(readFileSync(gPath, 'utf-8'));
@@ -241,7 +182,7 @@ describe('Bridge State store — dual documents, atomicity, corruption', () => {
     expect(raw.stateRevision).toBe('1');
     expect(raw.registrations).toHaveLength(1);
     expect(raw.installations).toHaveLength(1);
-    // Scaffold: global overrides are cleared (project-only)
+    // Retired field stays an empty array until the schema v2 migration strips it (#63)
     expect(raw.scopeOverrides).toEqual([]);
     // No Effective State fields
     expect(raw.effectiveState).toBeUndefined();
@@ -249,28 +190,9 @@ describe('Bridge State store — dual documents, atomicity, corruption', () => {
     expect(raw.diagnostics).toBeUndefined();
   });
 
-  it('project preserves scopeOverrides', async () => {
-    await commitBridgeState(
-      'project',
-      () => ({
-        schemaVersion: CURRENT_SCHEMA_VERSION,
-        stateRevision: '0',
-        registrations: [],
-        installations: [],
-        scopeOverrides: [{ kind: 'registration', targetId: 'reg-123' }],
-      }),
-      { agentDir: env.agentDir, cwd: env.projectDir },
-    );
-    const pPath = getProjectStatePath(env.projectDir);
-    const raw = JSON.parse(readFileSync(pPath, 'utf-8'));
-    expect(raw.scopeOverrides).toEqual([{ kind: 'registration', targetId: 'reg-123' }]);
-  });
-
   it('atomic write: temp+fsync+rename preserves file on success and verifies', async () => {
-    const r = await commitBridgeState(
-      'global',
-      (cur) => ({ ...cur, registrations: [{ id: 'b-b', alias: 'a' }] }),
-      { agentDir: env.agentDir, cwd: env.projectDir },
+    const r = await commitBridgeState((cur) => ({ ...cur, registrations: [{ id: 'b-b', alias: 'a' }] }),
+      { agentDir: env.agentDir },
     );
     expect(r.success).toBe(true);
     const gPath = getGlobalStatePath(env.agentDir);
@@ -288,21 +210,20 @@ describe('Bridge State store — dual documents, atomicity, corruption', () => {
   it('handles corrupted JSON as corrupted (Indeterminate) without auto-rollback', async () => {
     const gPath = getGlobalStatePath(env.agentDir);
     // Write initial valid
-    await commitBridgeState('global', (c) => ({ ...c }), { agentDir: env.agentDir, cwd: env.projectDir });
-    expect((await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir })).status).toBe('ok');
+    await commitBridgeState((c) => ({ ...c }), { agentDir: env.agentDir });
+    expect((await readBridgeState({ agentDir: env.agentDir })).status).toBe('ok');
     // Corrupt file
     const { mkdirSync } = await import('node:fs');
     mkdirSync(join(env.agentDir, 'codex-marketplace'), { recursive: true });
     writeFileSync(gPath, '{ corrupted json,,', 'utf-8');
 
-    const corrupted = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
+    const corrupted = await readBridgeState({ agentDir: env.agentDir });
     expect(corrupted.status).toBe('corrupted');
     expect(corrupted.error).toMatch(/Corrupted JSON/i);
 
     // Attempt to commit should fail as Indeterminate, not overwrite
-    const attempt = await commitBridgeState('global', (c) => ({ ...c }), {
+    const attempt = await commitBridgeState((c) => ({ ...c }), {
       agentDir: env.agentDir,
-      cwd: env.projectDir,
     });
     expect(attempt.success).toBe(false);
     expect(attempt.isIndeterminate).toBe(true);
@@ -326,14 +247,13 @@ describe('Bridge State store — dual documents, atomicity, corruption', () => {
     mkdirSync(join(env.agentDir, 'codex-marketplace'), { recursive: true });
     writeFileSync(gPath, JSON.stringify(futureState, null, 2), 'utf-8');
 
-    const result = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
+    const result = await readBridgeState({ agentDir: env.agentDir });
     expect(result.status).toBe('incompatible');
     expect(result.error).toMatch(/Incompatible.*schemaVersion/i);
 
     // Commit should be rejected, not auto-downgrade
-    const attempt = await commitBridgeState('global', (c) => ({ ...c }), {
+    const attempt = await commitBridgeState((c) => ({ ...c }), {
       agentDir: env.agentDir,
-      cwd: env.projectDir,
     });
     expect(attempt.success).toBe(false);
     expect(attempt.error).toMatch(/Incompatible/i);
@@ -347,14 +267,14 @@ describe('Bridge State store — dual documents, atomicity, corruption', () => {
     const { mkdirSync } = await import('node:fs');
     mkdirSync(join(env.agentDir, 'codex-marketplace'), { recursive: true });
     writeFileSync(gPath, '', 'utf-8');
-    const r = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
+    const r = await readBridgeState({ agentDir: env.agentDir });
     expect(r.status).toBe('corrupted');
   });
 
   it('readBridgeStateSync mirrors async behavior', async () => {
-    await commitBridgeState('global', (c) => ({ ...c }), { agentDir: env.agentDir, cwd: env.projectDir });
-    const asyncR = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
-    const syncR = readBridgeStateSync('global', { agentDir: env.agentDir, cwd: env.projectDir });
+    await commitBridgeState((c) => ({ ...c }), { agentDir: env.agentDir });
+    const asyncR = await readBridgeState({ agentDir: env.agentDir });
+    const syncR = readBridgeStateSync({ agentDir: env.agentDir });
     expect(syncR.status).toBe(asyncR.status);
     expect(syncR.state!.stateRevision).toBe(asyncR.state!.stateRevision);
   });
@@ -375,17 +295,16 @@ describe('Bridge State store — dual documents, atomicity, corruption', () => {
       installations: [],
       scopeOverrides: [],
     };
-    const w = await writeBridgeState('global', state, { agentDir: env.agentDir, cwd: env.projectDir });
+    const w = await writeBridgeState(state, { agentDir: env.agentDir });
     expect(w.success).toBe(true);
-    const r = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
+    const r = await readBridgeState({ agentDir: env.agentDir });
     expect(r.state!.stateRevision).toBe('1');
   });
 
   it('Stale State Revision rejection releases the lock — subsequent commit with correct revision succeeds and no *.lock remains (issue #24 fix)', async () => {
     // Initial commit to establish revision 1
-    const r1 = await commitBridgeState('global', (cur) => ({ ...cur, registrations: [{ id: 'aaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', alias: 'a' }] }), {
+    const r1 = await commitBridgeState((cur) => ({ ...cur, registrations: [{ id: 'aaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', alias: 'a' }] }), {
       agentDir: env.agentDir,
-      cwd: env.projectDir,
     });
     expect(r1.success).toBe(true);
     expect(r1.newRevision).toBe('1');
@@ -393,9 +312,8 @@ describe('Bridge State store — dual documents, atomicity, corruption', () => {
     const lockPath = `${gPath}.lock`;
 
     // Stale rejection: expected 0 but observed is 1 — must release lock
-    const stale = await commitBridgeState('global', (cur) => ({ ...cur }), {
+    const stale = await commitBridgeState((cur) => ({ ...cur }), {
       agentDir: env.agentDir,
-      cwd: env.projectDir,
       expectedStateRevision: '0',
     });
     expect(stale.success).toBe(false);
@@ -403,18 +321,16 @@ describe('Bridge State store — dual documents, atomicity, corruption', () => {
     expect(existsSync(lockPath)).toBe(false);
 
     // Second stale attempt also must not leak
-    const stale2 = await commitBridgeState('global', (cur) => ({ ...cur }), {
+    const stale2 = await commitBridgeState((cur) => ({ ...cur }), {
       agentDir: env.agentDir,
-      cwd: env.projectDir,
       expectedStateRevision: '0',
     });
     expect(stale2.isStale).toBe(true);
     expect(existsSync(lockPath)).toBe(false);
 
     // Correct revision still succeeds
-    const ok = await commitBridgeState('global', (cur) => ({ ...cur, registrations: [...cur.registrations, { id: 'bbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', alias: 'b' }] }), {
+    const ok = await commitBridgeState((cur) => ({ ...cur, registrations: [...cur.registrations, { id: 'bbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', alias: 'b' }] }), {
       agentDir: env.agentDir,
-      cwd: env.projectDir,
       expectedStateRevision: '1',
     });
     expect(ok.success).toBe(true);

@@ -5,14 +5,14 @@
  *
  * Flow: preflight (fence → locator/selector normalization → Source Key → duplicate → acquisition
  * → snapshot + catalog/validation → disclosure) → Registration Confirmation
- * (snapshot + State Revision bound, Default No) → scope-atomic commit → Attempt Receipt.
+ * (snapshot + State Revision bound, Default No) → atomic commit → Attempt Receipt.
  */
 
 import { readFileSync, statSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { commitBridgeState, readBridgeState } from '../bridge-state/store.js';
-import type { Registration, Scope } from '../bridge-state/types.js';
+import type { Registration } from '../bridge-state/types.js';
 import { BUDGET } from './budget.js';
 import { CODE, RULE, blocking, hasBlocking, sortFindings, type ValidationFinding } from './findings.js';
 import { parseCatalog, type Catalog } from './catalog.js';
@@ -30,9 +30,7 @@ import { SourceCache } from '../cache/source-cache.js';
 import { MARKETPLACE_CATALOG_RELPATH } from './flow.js';
 
 export interface GitRegistrationFlowOptions {
-  cwd?: string;
   agentDir?: string;
-  projectTrusted?: boolean;
   preallocatedId?: string;
   fenceTimeoutMs?: number;
   /** Injected executor for tests (mocks git) */
@@ -46,7 +44,6 @@ export interface GitRegistrationFlowOptions {
 }
 
 export interface GitRegistrationPreflight {
-  scope: Scope;
   registrationId: string;
   alias?: string;
   sourceKey: SourceKey;
@@ -84,7 +81,6 @@ function triggerFor(locator: string, selector: string): string {
 }
 
 async function blockedResult(
-  scope: Scope,
   locatorInput: string,
   selectorInput: string,
   expectedRevision: string,
@@ -96,18 +92,17 @@ async function blockedResult(
   if (handle) handle.release();
   const receipt = createReceipt({
     operation: OPERATION,
-    scope,
     trigger: triggerFor(locatorInput, selectorInput),
     expectedStateRevision: expectedRevision,
     summary: 'Blocked',
     findings,
   });
-  await appendReceipt(scope, receipt, opts);
+  await appendReceipt(receipt, opts);
   return { ok: false, outcome: { status: 'blocked', findings, receipt, existing } };
 }
 
-async function readScopeState(scope: Scope, opts: GitRegistrationFlowOptions) {
-  return readBridgeState(scope, { cwd: opts.cwd, agentDir: opts.agentDir });
+function readScopeState(opts: GitRegistrationFlowOptions) {
+  return readBridgeState({ agentDir: opts.agentDir });
 }
 
 function selectorToString(input: GitSelectorInput | string): string {
@@ -119,12 +114,11 @@ function selectorToString(input: GitSelectorInput | string): string {
  * Run preflight for a Git Marketplace Source registration.
  */
 export async function preflightGitRegistration(
-  scope: Scope,
   locatorInput: string,
   selectorInput: GitSelectorInput | string,
   opts: GitRegistrationFlowOptions = {},
 ): Promise<GitPreflightResult> {
-  const read = await readScopeState(scope, opts);
+  const read = await readScopeState(opts);
   let expectedRevision = '0';
   let registrations: Registration[] = [];
   if (read.status === 'missing') {
@@ -135,7 +129,6 @@ export async function preflightGitRegistration(
   } else {
     const receipt = createReceipt({
       operation: OPERATION,
-      scope,
       trigger: triggerFor(String(locatorInput), selectorToString(selectorInput)),
       expectedStateRevision: '?',
       summary: 'Persistence Indeterminate',
@@ -144,41 +137,23 @@ export async function preflightGitRegistration(
           code: CODE.PERSISTENCE_INDETERMINATE,
           phase: 'persistence',
           target: 'registration',
-          scope,
           pointer: '',
           rule: 'PERSIST-01',
           outcome: read.error ?? `state is ${read.status}; neither previous nor target verifiable`,
         }),
       ],
     });
-    await appendReceipt(scope, receipt, opts);
+    await appendReceipt(receipt, opts);
     return { ok: false, outcome: { status: 'persistence-failed', receipt, isIndeterminate: true } };
   }
 
-  if (scope === 'project' && opts.projectTrusted !== true) {
-    const finding = blocking({
-      code: CODE.PROJECT_TRUST_DENIED,
-      phase: 'admission',
-      target: 'registration',
-      scope,
-      pointer: '',
-      rule: RULE.PROJECT_TRUST_DENIED,
-      outcome:
-        'Project Trust is not granted by the Pi host; project records remain stored but excluded from Effective State, and no Project Scope Lifecycle Operation may mutate them',
-    });
-    const selStr = selectorToString(selectorInput);
-    return blockedResult(scope, locatorInput, selStr, expectedRevision, [finding], null, opts);
-  }
-
-  const fence = await acquireAttemptFence(scope, {
-    cwd: opts.cwd,
+  const fence = await acquireAttemptFence({
     agentDir: opts.agentDir,
     fenceTimeoutMs: opts.fenceTimeoutMs,
-    projectTrusted: opts.projectTrusted,
   });
   if (!fence.ok) {
     const selStr = selectorToString(selectorInput);
-    return blockedResult(scope, locatorInput, selStr, expectedRevision, [fence.finding!], null, opts);
+    return blockedResult(locatorInput, selStr, expectedRevision, [fence.finding!], null, opts);
   }
   const handle = fence.handle!;
 
@@ -189,23 +164,22 @@ export async function preflightGitRegistration(
     const registrationId = opts.preallocatedId ?? allocateRegistrationId();
 
     // Normalize locator
-    const locRes = normalizeGitLocator(locatorInput, scope);
+    const locRes = normalizeGitLocator(locatorInput);
     if (!locRes.ok) {
       const selStr = selectorToString(selectorInput);
-      return blockedResult(scope, locatorInput, selStr, expectedRevision, locRes.findings, handle, opts);
+      return blockedResult(locatorInput, selStr, expectedRevision, locRes.findings, handle, opts);
     }
     const locator = locRes.locator!;
 
     // Normalize selector
     let selRes;
     if (typeof selectorInput === 'string') {
-      selRes = parseGitSelectorString(selectorInput, scope);
+      selRes = parseGitSelectorString(selectorInput);
     } else {
-      selRes = normalizeGitSelector(selectorInput as GitSelectorInput, scope);
+      selRes = normalizeGitSelector(selectorInput as GitSelectorInput);
     }
     if (!selRes.ok) {
       return blockedResult(
-        scope,
         locatorInput,
         selectorToString(selectorInput),
         expectedRevision,
@@ -221,14 +195,13 @@ export async function preflightGitRegistration(
     const sourceKey = gitSourceKey(locator, selector);
 
     // Duplicate check (same scope, same kind+key)
-    const dup = findDuplicateRegistration(scope, sourceKey, registrations);
+    const dup = findDuplicateRegistration(sourceKey, registrations);
     if (dup.duplicate) {
-      return blockedResult(scope, locatorInput, selCanonical, expectedRevision, [dup.finding!], handle, opts, dup.existing);
+      return blockedResult(locatorInput, selCanonical, expectedRevision, [dup.finding!], handle, opts, dup.existing);
     }
 
     // Non-executing Source Acquisition (clone --no-checkout, no hooks/filters/submodules)
     const acq = await acquireGitSource({
-      scope,
       locator,
       selector,
       trust: opts.trust,
@@ -236,7 +209,7 @@ export async function preflightGitRegistration(
       destDir: opts.destDir,
     });
     if (!acq.ok) {
-      return blockedResult(scope, locatorInput, selCanonical, expectedRevision, acq.findings, handle, opts);
+      return blockedResult(locatorInput, selCanonical, expectedRevision, acq.findings, handle, opts);
     }
     acquiredPath = realpathSync.native(acq.acquiredPath!);
     createdTemp = acq.createdTemp ?? false;
@@ -258,26 +231,24 @@ export async function preflightGitRegistration(
         code: CODE.CATALOG_MISSING,
         phase: 'validation',
         target: 'catalog',
-        scope,
         pointer: MARKETPLACE_CATALOG_RELPATH,
         rule: RULE.CATALOG_MISSING,
         outcome: `Marketplace Catalog not found at ${MARKETPLACE_CATALOG_RELPATH}; legacy marketplace shapes do not participate in Bridge ingestion`,
       });
       cleanupAcquisition(acquiredPath);
-      return blockedResult(scope, locatorInput, selCanonical, expectedRevision, [finding], handle, opts);
+      return blockedResult(locatorInput, selCanonical, expectedRevision, [finding], handle, opts);
     }
     if (catalogBytes > BUDGET.maxCatalogBytes) {
       const finding = blocking({
         code: CODE.BUDGET_EXCEEDED,
         phase: 'validation',
         target: 'catalog',
-        scope,
         pointer: MARKETPLACE_CATALOG_RELPATH,
         rule: RULE.BUDGET_EXCEEDED,
         outcome: `Validation Budget exceeded: catalog ${catalogBytes} bytes > ${BUDGET.maxCatalogBytes}`,
       });
       cleanupAcquisition(acquiredPath);
-      return blockedResult(scope, locatorInput, selCanonical, expectedRevision, [finding], handle, opts);
+      return blockedResult(locatorInput, selCanonical, expectedRevision, [finding], handle, opts);
     }
 
     let parsed: unknown;
@@ -289,20 +260,19 @@ export async function preflightGitRegistration(
         code: CODE.CATALOG_MALFORMED,
         phase: 'validation',
         target: 'catalog',
-        scope,
         pointer: MARKETPLACE_CATALOG_RELPATH,
         rule: RULE.CATALOG_MALFORMED,
         outcome: `unable to parse marketplace.json: ${msg}`,
       });
       cleanupAcquisition(acquiredPath);
-      return blockedResult(scope, locatorInput, selCanonical, expectedRevision, [finding], handle, opts);
+      return blockedResult(locatorInput, selCanonical, expectedRevision, [finding], handle, opts);
     }
 
-    const catalogResult = parseCatalog(parsed, { scope });
+    const catalogResult = parseCatalog(parsed);
     findings.push(...catalogResult.findings);
     if (!catalogResult.ok) {
       cleanupAcquisition(acquiredPath);
-      return blockedResult(scope, locatorInput, selCanonical, expectedRevision, sortFindings(findings), handle, opts);
+      return blockedResult(locatorInput, selCanonical, expectedRevision, sortFindings(findings), handle, opts);
     }
     const catalog = catalogResult.catalog!;
 
@@ -312,7 +282,6 @@ export async function preflightGitRegistration(
           code: CODE.BUDGET_EXCEEDED,
           phase: 'validation',
           target: 'catalog',
-          scope,
           pointer: '/name',
           rule: RULE.BUDGET_EXCEEDED,
           outcome: `Validation Budget exceeded: marketplace name ${catalog.name.length} chars > ${BUDGET.maxNameLength}`,
@@ -325,7 +294,6 @@ export async function preflightGitRegistration(
           code: CODE.BUDGET_EXCEEDED,
           phase: 'validation',
           target: 'catalog',
-          scope,
           pointer: '/plugins',
           rule: RULE.BUDGET_EXCEEDED,
           outcome: `Validation Budget exceeded: ${catalog.entries.length} entries > ${BUDGET.maxEntries}`,
@@ -344,7 +312,6 @@ export async function preflightGitRegistration(
             code: symlink ? CODE.CONTAINED_SYMLINK_VIOLATION : CODE.PATH_CONTAINMENT_VIOLATION,
             phase: 'validation',
             target: 'entry',
-            scope,
             pointer: `${entry.entryId}/path`,
             rule: symlink ? RULE.CONTAINED_SYMLINK_VIOLATION : RULE.PATH_CONTAINMENT_VIOLATION,
             outcome: `${entry.entryId}: ${reason}`,
@@ -358,7 +325,7 @@ export async function preflightGitRegistration(
       }
     }
 
-    const snapshotResult = buildGitSnapshot(acquiredPath, sourceKey, scope, {
+    const snapshotResult = buildGitSnapshot(acquiredPath, sourceKey, {
       canonicalLocator: locator.canonicalUrl,
       resolvedRevision,
       selectorCanonical: selCanonical,
@@ -368,7 +335,7 @@ export async function preflightGitRegistration(
     const sorted = sortFindings(findings);
     if (hasBlocking(sorted)) {
       cleanupAcquisition(acquiredPath);
-      return blockedResult(scope, locatorInput, selCanonical, expectedRevision, sorted, handle, opts);
+      return blockedResult(locatorInput, selCanonical, expectedRevision, sorted, handle, opts);
     }
 
     const alias = deriveInitialAlias(
@@ -393,7 +360,6 @@ export async function preflightGitRegistration(
 
     // Keep acquiredPath for potential cleanup on cancel/confirm; snapshot already captured
     const preflight: GitRegistrationPreflight = {
-      scope,
       registrationId,
       alias,
       sourceKey,
@@ -420,13 +386,12 @@ export async function preflightGitRegistration(
       code: CODE.GIT_ACQUISITION_FAILED,
       phase: 'validation',
       target: 'registration',
-      scope,
       pointer: '',
       rule: RULE.GIT_ACQUISITION_FAILED,
       outcome: `preflight failed: ${msg}`,
     });
     const selStr = selectorToString(selectorInput);
-    return blockedResult(scope, locatorInput, selStr, expectedRevision, [finding], null, opts);
+    return blockedResult(locatorInput, selStr, expectedRevision, [finding], null, opts);
   }
 }
 
@@ -442,7 +407,6 @@ export async function confirmGitRegistration(
   if (preflight.terminal) {
     const receipt = createReceipt({
       operation: OPERATION,
-      scope: preflight.scope,
       trigger: triggerFor(preflight.locator.canonicalUrl, preflight.selector.canonical),
       expectedStateRevision: preflight.stateRevision,
       validationSnapshot: preflight.snapshot.fingerprint,
@@ -452,18 +416,17 @@ export async function confirmGitRegistration(
           code: CODE.ATTEMPT_IN_PROGRESS,
           phase: 'admission',
           target: 'attempt',
-          scope: preflight.scope,
           pointer: '',
           rule: RULE.ATTEMPT_IN_PROGRESS,
           outcome: 'attempt already reached a terminal outcome',
         }),
       ],
     });
-    await appendReceipt(preflight.scope, receipt, opts);
+    await appendReceipt(receipt, opts);
     return { status: 'blocked', findings: [], receipt };
   }
   preflight.terminal = true;
-  const { fence, scope } = preflight;
+  const { fence } = preflight;
   const release = () => {
     fence.release();
     if (preflight.acquiredPath) cleanupAcquisition(preflight.acquiredPath);
@@ -472,7 +435,6 @@ export async function confirmGitRegistration(
   if (!yes) {
     const receipt = createReceipt({
       operation: OPERATION,
-      scope,
       trigger: triggerFor(preflight.locator.canonicalUrl, preflight.selector.canonical),
       expectedStateRevision: preflight.stateRevision,
       validationSnapshot: preflight.snapshot.fingerprint,
@@ -480,16 +442,15 @@ export async function confirmGitRegistration(
       findings: preflight.findings,
       stateChanged: false,
     });
-    await appendReceipt(scope, receipt, opts);
+    await appendReceipt(receipt, opts);
     release();
     return { status: 'declined', receipt };
   }
 
-  const fresh = await readScopeState(scope, opts);
+  const fresh = await readScopeState(opts);
   if (fresh.status !== 'ok' && fresh.status !== 'missing') {
     const receipt = createReceipt({
       operation: OPERATION,
-      scope,
       trigger: triggerFor(preflight.locator.canonicalUrl, preflight.selector.canonical),
       expectedStateRevision: preflight.stateRevision,
       validationSnapshot: preflight.snapshot.fingerprint,
@@ -499,14 +460,13 @@ export async function confirmGitRegistration(
           code: CODE.PERSISTENCE_INDETERMINATE,
           phase: 'persistence',
           target: 'registration',
-          scope,
           pointer: '',
           rule: 'PERSIST-01',
           outcome: fresh.error ?? `state is ${fresh.status}; neither previous nor target verifiable`,
         }),
       ],
     });
-    await appendReceipt(scope, receipt, opts);
+    await appendReceipt(receipt, opts);
     release();
     return { status: 'persistence-failed', receipt, isIndeterminate: true };
   }
@@ -514,7 +474,6 @@ export async function confirmGitRegistration(
   if (currentRevision !== preflight.stateRevision) {
     const receipt = createReceipt({
       operation: OPERATION,
-      scope,
       trigger: triggerFor(preflight.locator.canonicalUrl, preflight.selector.canonical),
       expectedStateRevision: preflight.stateRevision,
       targetStateRevision: currentRevision,
@@ -525,7 +484,6 @@ export async function confirmGitRegistration(
           code: CODE.REJECTED_AS_STALE,
           phase: 'persistence',
           target: 'attempt',
-          scope,
           pointer: '',
           rule: RULE.REJECTED_AS_STALE,
           outcome: `State Revision changed (${preflight.stateRevision} → ${currentRevision}); re-run preflight and confirmation — no automatic merge`,
@@ -533,23 +491,22 @@ export async function confirmGitRegistration(
       ],
       stateChanged: false,
     });
-    await appendReceipt(scope, receipt, opts);
+    await appendReceipt(receipt, opts);
     release();
     return { status: 'rejected-as-stale', receipt };
   }
 
-  const dup = findDuplicateRegistration(scope, preflight.sourceKey, fresh.state!.registrations);
+  const dup = findDuplicateRegistration(preflight.sourceKey, fresh.state!.registrations);
   if (dup.duplicate) {
     const receipt = createReceipt({
       operation: OPERATION,
-      scope,
       trigger: triggerFor(preflight.locator.canonicalUrl, preflight.selector.canonical),
       expectedStateRevision: preflight.stateRevision,
       validationSnapshot: preflight.snapshot.fingerprint,
       summary: 'Blocked',
       findings: [dup.finding!],
     });
-    await appendReceipt(scope, receipt, opts);
+    await appendReceipt(receipt, opts);
     release();
     return { status: 'blocked', findings: [dup.finding!], receipt, existing: dup.existing };
   }
@@ -569,9 +526,8 @@ export async function confirmGitRegistration(
   };
 
   const write = await commitBridgeState(
-    scope,
     (current) => ({ ...current, registrations: [...current.registrations, registration] }),
-    { cwd: opts.cwd, agentDir: opts.agentDir, lockTimeoutMs: opts.fenceTimeoutMs ?? 5000 },
+    { agentDir: opts.agentDir, lockTimeoutMs: opts.fenceTimeoutMs ?? 5000 },
   );
   if (!write.success) {
     const summary: 'Persistence Failed' | 'Persistence Indeterminate' = write.isIndeterminate
@@ -579,7 +535,6 @@ export async function confirmGitRegistration(
       : 'Persistence Failed';
     const receipt = createReceipt({
       operation: OPERATION,
-      scope,
       trigger: triggerFor(preflight.locator.canonicalUrl, preflight.selector.canonical),
       expectedStateRevision: preflight.stateRevision,
       targetStateRevision: '?',
@@ -590,7 +545,6 @@ export async function confirmGitRegistration(
           code: write.isIndeterminate ? CODE.PERSISTENCE_INDETERMINATE : CODE.PERSISTENCE_FAILED,
           phase: 'persistence',
           target: 'registration',
-          scope,
           pointer: '',
           rule: write.isIndeterminate ? 'PERSIST-01' : 'PERSIST-02',
           outcome: write.error ?? summary,
@@ -598,7 +552,7 @@ export async function confirmGitRegistration(
       ],
       stateChanged: false,
     });
-    await appendReceipt(scope, receipt, opts);
+    await appendReceipt(receipt, opts);
     release();
     return { status: 'persistence-failed', receipt, isIndeterminate: write.isIndeterminate ?? false };
   }
@@ -607,7 +561,6 @@ export async function confirmGitRegistration(
   const hasDiagnostics = preflight.findings.some((f) => f.classification !== 'blocking');
   const receipt = createReceipt({
     operation: OPERATION,
-    scope,
     trigger: triggerFor(preflight.locator.canonicalUrl, preflight.selector.canonical),
     expectedStateRevision: preflight.stateRevision,
     targetStateRevision: targetRevision,
@@ -617,7 +570,7 @@ export async function confirmGitRegistration(
     findings: preflight.findings,
     stateChanged: true,
   });
-  await appendReceipt(scope, receipt, opts);
+  await appendReceipt(receipt, opts);
   release();
   return { status: 'completed', registration, receipt, newRevision: targetRevision };
 }
@@ -636,7 +589,6 @@ export function disclosureSummaryGit(preflight: GitRegistrationPreflight): strin
   const blockingCount = preflight.findings.filter((f) => f.classification === 'blocking').length;
   const warningCount = preflight.findings.filter((f) => f.classification === 'warning').length;
   const lines = [
-    `Scope: ${preflight.scope}`,
     `Canonical Locator: ${preflight.locator.canonicalUrl} (${preflight.locator.transport} · ${preflight.locator.host}${preflight.locator.port ? `:${preflight.locator.port}` : ''}${preflight.locator.path}${preflight.locator.user ? ` · user=${preflight.locator.user}` : ''})`,
     `Git Selector: ${preflight.selector.kind} → ${preflight.selector.canonical}`,
     `Resolved Revision: ${preflight.resolvedRevision}`,

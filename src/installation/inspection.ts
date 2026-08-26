@@ -14,7 +14,7 @@ import {
   type CompatiblePlugin,
   type PluginClassification,
 } from '../compatibility/profile.js';
-import type { Registration, Scope } from '../bridge-state/types.js';
+import type { Registration } from '../bridge-state/types.js';
 import type { MarketplaceEntry } from '../registration/catalog.js';
 import { parseCatalog } from '../registration/catalog.js';
 import { resolveContained } from '../registration/contained.js';
@@ -54,12 +54,12 @@ export interface InspectionOptions {
   cache?: SourceCache;
 }
 
-function inspectionFinding(scope: Scope, code: string, rule: string, target: ValidationFinding['target'], outcome: string): ValidationFinding {
-  return blocking({ code, rule, target, pointer: '', outcome, scope, phase: 'validation' });
+function inspectionFinding(code: string, rule: string, target: ValidationFinding['target'], outcome: string): ValidationFinding {
+  return blocking({ code, rule, target, pointer: '', outcome, phase: 'validation' });
 }
 
 /** Inspect every Marketplace Entry once. All filesystem work occurs after a bounded snapshot. */
-export function inspectMarketplaceEntries(registration: Registration, scope: Scope, opts: InspectionOptions = {}): MarketplaceInspection {
+export function inspectMarketplaceEntries(registration: Registration, opts: InspectionOptions = {}): MarketplaceInspection {
   const override = Boolean(opts.root && opts.baseSnapshot);
   let root: string;
   let snapshotResult: { ok: boolean; snapshot?: ValidationSnapshot; findings: ValidationFinding[] };
@@ -74,7 +74,7 @@ export function inspectMarketplaceEntries(registration: Registration, scope: Sco
     if (!registration.validationSnapshot) {
       return {
         entries: [],
-        findings: [inspectionFinding(scope, CODE.SOURCE_REACQUISITION_REQUIRED, RULE.SOURCE_REACQUISITION_REQUIRED, 'registration', 'Git Registration has no retained Validation Snapshot; re-registration or Marketplace Refresh is required')],
+        findings: [inspectionFinding(CODE.SOURCE_REACQUISITION_REQUIRED, RULE.SOURCE_REACQUISITION_REQUIRED, 'registration', 'Git Registration has no retained Validation Snapshot; re-registration or Marketplace Refresh is required')],
       };
     }
     const cache = opts.cache ?? new SourceCache({ agentDir: opts.agentDir });
@@ -82,7 +82,7 @@ export function inspectMarketplaceEntries(registration: Registration, scope: Sco
     if (!hit) {
       return {
         entries: [],
-        findings: [inspectionFinding(scope, CODE.SOURCE_REACQUISITION_REQUIRED, RULE.SOURCE_REACQUISITION_REQUIRED, 'registration', `Git Source Cache miss: Validation Snapshot '${registration.validationSnapshot.slice(0, 16)}…' is not retained in Source Cache; Marketplace Refresh or re-acquisition is required`)],
+        findings: [inspectionFinding(CODE.SOURCE_REACQUISITION_REQUIRED, RULE.SOURCE_REACQUISITION_REQUIRED, 'registration', `Git Source Cache miss: Validation Snapshot '${registration.validationSnapshot.slice(0, 16)}…' is not retained in Source Cache; Marketplace Refresh or re-acquisition is required`)],
       };
     }
     try {
@@ -100,7 +100,7 @@ export function inspectMarketplaceEntries(registration: Registration, scope: Sco
       selector: selectorCanonical,
       resolvedRevision,
     };
-    const snapResult = buildGitSnapshot(root, sourceKey, scope, {
+    const snapResult = buildGitSnapshot(root, sourceKey, {
       canonicalLocator,
       resolvedRevision,
       selectorCanonical,
@@ -111,31 +111,31 @@ export function inspectMarketplaceEntries(registration: Registration, scope: Sco
     if (snapResult.snapshot.fingerprint !== registration.validationSnapshot) {
       return {
         entries: [],
-        findings: [inspectionFinding(scope, CODE.SOURCE_DRIFT, RULE.SOURCE_DRIFT, 'registration', `Source Drift: cached tree at fingerprint ${registration.validationSnapshot.slice(0, 16)}… no longer hashes to the recorded Validation Snapshot; Marketplace Refresh is required`)],
+        findings: [inspectionFinding(CODE.SOURCE_DRIFT, RULE.SOURCE_DRIFT, 'registration', `Source Drift: cached tree at fingerprint ${registration.validationSnapshot.slice(0, 16)}… no longer hashes to the recorded Validation Snapshot; Marketplace Refresh is required`)],
       };
     }
     snapshotResult = snapResult;
   } else if (registration.sourceKind === 'local' || (!registration.sourceKind && registration.source && !registration.canonicalLocator)) {
     if (!registration.source) {
-      return { entries: [], findings: [inspectionFinding(scope, CODE.SOURCE_REACQUISITION_REQUIRED, RULE.SOURCE_REACQUISITION_REQUIRED, 'registration', 'Local Registration has no source path')] };
+      return { entries: [], findings: [inspectionFinding(CODE.SOURCE_REACQUISITION_REQUIRED, RULE.SOURCE_REACQUISITION_REQUIRED, 'registration', 'Local Registration has no source path')] };
     }
     const key = localSourceKey(registration.source);
-    if (!key.ok) return { entries: [], findings: [inspectionFinding(scope, CODE.SOURCE_REACQUISITION_REQUIRED, RULE.SOURCE_REACQUISITION_REQUIRED, 'registration', key.error ?? 'Marketplace Root cannot be revalidated')] };
+    if (!key.ok) return { entries: [], findings: [inspectionFinding(CODE.SOURCE_REACQUISITION_REQUIRED, RULE.SOURCE_REACQUISITION_REQUIRED, 'registration', key.error ?? 'Marketplace Root cannot be revalidated')] };
     root = key.sourceKey!.canonicalPath!;
     const catalogPath = join(root, '.agents', 'plugins', 'marketplace.json');
     try {
       if (lstatSync(catalogPath).size > BUDGET.maxCatalogBytes) {
-        return { entries: [], findings: [inspectionFinding(scope, CODE.BUDGET_EXCEEDED, RULE.BUDGET_EXCEEDED, 'catalog', `Validation Budget exceeded: catalog exceeds ${BUDGET.maxCatalogBytes} bytes`)] };
+        return { entries: [], findings: [inspectionFinding(CODE.BUDGET_EXCEEDED, RULE.BUDGET_EXCEEDED, 'catalog', `Validation Budget exceeded: catalog exceeds ${BUDGET.maxCatalogBytes} bytes`)] };
       }
     } catch {
       // The catalog read below provides the stable catalog-missing finding.
     }
-    snapshotResult = buildLocalSnapshot(root, key.sourceKey!, scope);
+    snapshotResult = buildLocalSnapshot(root, key.sourceKey!);
     if (!snapshotResult.ok) return { entries: [], findings: snapshotResult.findings };
   } else {
     return {
       entries: [],
-      findings: [inspectionFinding(scope, CODE.SOURCE_REACQUISITION_REQUIRED, RULE.SOURCE_REACQUISITION_REQUIRED, 'registration', `Unknown or unsupported sourceKind '${registration.sourceKind}'`)],
+      findings: [inspectionFinding(CODE.SOURCE_REACQUISITION_REQUIRED, RULE.SOURCE_REACQUISITION_REQUIRED, 'registration', `Unknown or unsupported sourceKind '${registration.sourceKind}'`)],
     };
   }
 
@@ -145,17 +145,17 @@ export function inspectMarketplaceEntries(registration: Registration, scope: Sco
   let catalogValue: unknown;
   try {
     const bytes = readFileSync(catalogPath);
-    if (bytes.length > BUDGET.maxCatalogBytes) return { entries: [], snapshot: snapshotResult.snapshot, findings: [inspectionFinding(scope, CODE.BUDGET_EXCEEDED, RULE.BUDGET_EXCEEDED, 'catalog', `Validation Budget exceeded: catalog exceeds ${BUDGET.maxCatalogBytes} bytes`)] };
+    if (bytes.length > BUDGET.maxCatalogBytes) return { entries: [], snapshot: snapshotResult.snapshot, findings: [inspectionFinding(CODE.BUDGET_EXCEEDED, RULE.BUDGET_EXCEEDED, 'catalog', `Validation Budget exceeded: catalog exceeds ${BUDGET.maxCatalogBytes} bytes`)] };
     catalogRaw = bytes.toString('utf8');
     catalogValue = JSON.parse(catalogRaw);
   } catch {
-    return { entries: [], snapshot: snapshotResult.snapshot, findings: [inspectionFinding(scope, CODE.CATALOG_MISSING, RULE.CATALOG_MISSING, 'catalog', 'Marketplace Catalog cannot be read')] };
+    return { entries: [], snapshot: snapshotResult.snapshot, findings: [inspectionFinding(CODE.CATALOG_MISSING, RULE.CATALOG_MISSING, 'catalog', 'Marketplace Catalog cannot be read')] };
   }
-  const parsed = parseCatalog(catalogValue, { scope });
+  const parsed = parseCatalog(catalogValue);
   if (!parsed.catalog) return { entries: [], snapshot: snapshotResult.snapshot, findings: parsed.findings };
   const marketplaceId = `${registration.id}/${parsed.catalog.name}`;
   const drift = !opts.ignoreRecordedDrift && registration.validationSnapshot && registration.validationSnapshot !== snapshotResult.snapshot!.fingerprint
-    ? [inspectionFinding(scope, CODE.REJECTED_AS_STALE, RULE.REJECTED_AS_STALE_SNAPSHOT, 'registration', 'Registered Validation Snapshot no longer matches the source tree; Marketplace Refresh is required')]
+    ? [inspectionFinding(CODE.REJECTED_AS_STALE, RULE.REJECTED_AS_STALE_SNAPSHOT, 'registration', 'Registered Validation Snapshot no longer matches the source tree; Marketplace Refresh is required')]
     : [];
   const material = createHash('sha256');
   material.update('catalog\u001f').update(catalogRaw).update('\u001e');
@@ -166,7 +166,7 @@ export function inspectMarketplaceEntries(registration: Registration, scope: Sco
     if (contained.outcome.kind !== 'ok') return { entry, findings: [], unavailableReason: 'cannot resolve Plugin' };
     let baseClassification = classifications.get(contained.outcome.canonicalPath);
     if (!baseClassification) {
-      baseClassification = classifyPlugin(contained.outcome.canonicalPath, { scope, marketplaceId, marketplaceEntryId: `${marketplaceId}${entry.entryId}` });
+      baseClassification = classifyPlugin(contained.outcome.canonicalPath, { marketplaceId, marketplaceEntryId: `${marketplaceId}${entry.entryId}` });
       classifications.set(contained.outcome.canonicalPath, baseClassification);
     }
     const classification = baseClassification.plugin
@@ -186,7 +186,7 @@ export function inspectMarketplaceEntries(registration: Registration, scope: Sco
   for (const item of draft) if (item.identity) identities.set(item.identity, (identities.get(item.identity) ?? 0) + 1);
   const entries = draft.map((item): InspectedMarketplaceEntry => {
     const collision = item.identity && (identities.get(item.identity) ?? 0) > 1
-      ? [inspectionFinding(scope, CODE.PLUGIN_ID_COLLISION, RULE.PLUGIN_ID_COLLISION, 'plugin', `Plugin ID '${item.identity}' collides with another Marketplace Entry; neither entry is activatable`)]
+      ? [inspectionFinding(CODE.PLUGIN_ID_COLLISION, RULE.PLUGIN_ID_COLLISION, 'plugin', `Plugin ID '${item.identity}' collides with another Marketplace Entry; neither entry is activatable`)]
       : [];
     const catalogFindings = parsed.findings.filter((finding) => finding.target !== 'entry' || finding.pointer === item.entry.entryId);
     const findings = sortFindings([...catalogFindings, ...item.findings, ...collision, ...drift, ...snapshotResult.findings]);

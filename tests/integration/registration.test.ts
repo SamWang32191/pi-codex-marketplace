@@ -20,13 +20,12 @@ import {
   cancelLocalRegistration,
 } from '../../src/registration/flow.js';
 import { readBridgeState } from '../../src/bridge-state/store.js';
-import { getStatePath } from '../../src/bridge-state/paths.js';
+import { getGlobalStatePath } from '../../src/bridge-state/paths.js';
 
 function makeEnv() {
   const tmpRoot = mkdtempSync(join(tmpdir(), 'reg-integ-'));
   const agentDir = join(tmpRoot, 'agent');
-  const projectDir = join(tmpRoot, 'project');
-  return { tmpRoot, agentDir, projectDir };
+  return { tmpRoot, agentDir };
 }
 
 function makeMarketplace(root: string) {
@@ -88,8 +87,8 @@ describe('Local Marketplace Registration integration (fence + atomic persistence
   });
 
   it('commits under the Attempt Fence with a bumped, persisted State Revision', async () => {
-    const opts = { agentDir: env.agentDir, cwd: env.projectDir, fenceTimeoutMs: 500 };
-    const pf = await preflightLocalRegistration('global', root, opts);
+    const opts = { agentDir: env.agentDir, fenceTimeoutMs: 500 };
+    const pf = await preflightLocalRegistration(root, opts);
     expect(pf.ok).toBe(true);
     if (!pf.ok) return;
 
@@ -98,7 +97,7 @@ describe('Local Marketplace Registration integration (fence + atomic persistence
     if (outcome.status !== 'completed') return;
 
     // fresh read from a *second* process perspective: revision persisted atomically
-    const state = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
+    const state = await readBridgeState({ agentDir: env.agentDir });
     expect(state.status).toBe('ok');
     expect(state.state!.stateRevision).toBe('1');
     expect(state.state!.registrations).toHaveLength(1);
@@ -109,7 +108,7 @@ describe('Local Marketplace Registration integration (fence + atomic persistence
     const otherRoot = realpathSync.native(mkdtempSync(join(tmpdir(), 'mkt-int2-')));
     try {
       makeMarketplace(otherRoot);
-      const pf2 = await preflightLocalRegistration('global', otherRoot, { ...opts, fenceTimeoutMs: 500 });
+      const pf2 = await preflightLocalRegistration(otherRoot, { ...opts, fenceTimeoutMs: 500 });
       expect(pf2.ok).toBe(true);
       if (pf2.ok) cancelLocalRegistration(pf2.preflight);
     } finally {
@@ -119,9 +118,9 @@ describe('Local Marketplace Registration integration (fence + atomic persistence
     }
   });
 
-  it('blocks a second PROCESS holding the scope fence (ATTEMPT_IN_PROGRESS)', async () => {
-    const opts = { agentDir: env.agentDir, cwd: env.projectDir, fenceTimeoutMs: 500 };
-    const first = await preflightLocalRegistration('global', root, opts);
+  it('blocks a second PROCESS holding the Attempt Fence (ATTEMPT_IN_PROGRESS)', async () => {
+    const opts = { agentDir: env.agentDir, fenceTimeoutMs: 500 };
+    const first = await preflightLocalRegistration(root, opts);
     expect(first.ok).toBe(true);
     if (!first.ok) return;
 
@@ -136,11 +135,11 @@ describe('Local Marketplace Registration integration (fence + atomic persistence
   });
 
   it('fail-closed on corrupted state: preflight yields Persistence Indeterminate, state untouched', async () => {
-    const statePath = getStatePath('global', { agentDir: env.agentDir, cwd: env.projectDir });
+    const statePath = getGlobalStatePath(env.agentDir);
     mkdirSync(join(env.agentDir, 'codex-marketplace'), { recursive: true });
     writeFileSync(statePath, '{ corrupted', 'utf-8');
 
-    const res = await preflightLocalRegistration('global', root, { agentDir: env.agentDir, cwd: env.projectDir });
+    const res = await preflightLocalRegistration(root, { agentDir: env.agentDir });
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.outcome.status).toBe('persistence-failed');

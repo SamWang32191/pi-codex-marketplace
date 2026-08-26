@@ -7,7 +7,6 @@ import {
   type Component,
 } from '@earendil-works/pi-tui';
 
-import type { Scope } from '../../src/bridge-state/types.js';
 import { sortFindings } from '../../src/registration/findings.js';
 import type { AttemptReceipt, AttemptSummary, RecoveryAction } from '../../src/registration/receipt.js';
 import {
@@ -34,7 +33,8 @@ export type TransactionStep = (typeof TRANSACTION_STEPS)[number];
 export interface TransactionSheetModel {
   step: TransactionStep;
   actionLabel: string;
-  authority?: Scope;
+  /** Presentation-only authority tag ('global' since Global-only #61). */
+  authority?: 'global';
   target?: string;
   stateRevision?: string;
   validationSnapshot?: string;
@@ -48,8 +48,8 @@ function field(theme: TransactionSheetTheme, label: string, value: unknown): str
   return `${theme.fg('dim', `${label}:`)} ${theme.fg('text', quoteTerminalText(value))}`;
 }
 
-function authorityLabel(scope: Scope): string {
-  return scope === 'global' ? '[G] Global Scope' : '[P] Project Scope';
+function authorityLabel(authority: string | undefined): string {
+  return authority === 'global' ? '[G] Global Scope' : '[G] Global Scope';
 }
 
 function findingLine(theme: TransactionSheetTheme, finding: AttemptReceipt['findings'][number]): string {
@@ -177,7 +177,7 @@ export function renderTransactionSheet(
   const totalWidth = Math.max(4, Math.floor(width));
   const innerWidth = Math.max(1, totalWidth - 3);
   const receipt = model.receipt;
-  const authority = model.authority ?? receipt?.scope;
+  const authority = model.authority ?? 'global';
   const stateRevision = model.stateRevision ?? receipt?.observedStateRevision ?? receipt?.expectedStateRevision;
   const validationSnapshot = model.validationSnapshot ?? receipt?.validationSnapshot;
   const body: string[] = [

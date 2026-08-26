@@ -62,7 +62,7 @@ function classifyKind(raw: unknown): { type: EntryType; reason?: string } {
  * Structural/catalog-identity failures are Blocking (deny Registration); per-entry inability to
  * resolve to a plugin is an Unavailable Entry (disclosed, non-blocking).
  */
-export function parseCatalog(obj: unknown, opts: { scope: 'global' | 'project' }): CatalogResult {
+export function parseCatalog(obj: unknown): CatalogResult {
   const findings: ValidationFinding[] = [];
 
   if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) {
@@ -73,7 +73,6 @@ export function parseCatalog(obj: unknown, opts: { scope: 'global' | 'project' }
           code: CODE.CATALOG_MALFORMED,
           phase: 'validation',
           target: 'catalog',
-          scope: opts.scope,
           pointer: '/',
           rule: RULE.CATALOG_MALFORMED,
           outcome: 'marketplace.json is not an object',
@@ -89,7 +88,6 @@ export function parseCatalog(obj: unknown, opts: { scope: 'global' | 'project' }
         code: CODE.CATALOG_NAME_INVALID,
         phase: 'validation',
         target: 'catalog',
-        scope: opts.scope,
         pointer: '/name',
         rule: RULE.CATALOG_NAME_INVALID,
         outcome: 'declared marketplace name is missing',
@@ -101,7 +99,6 @@ export function parseCatalog(obj: unknown, opts: { scope: 'global' | 'project' }
         code: CODE.CATALOG_NAME_INVALID,
         phase: 'validation',
         target: 'catalog',
-        scope: opts.scope,
         pointer: '/name',
         rule: RULE.CATALOG_NAME_INVALID,
         outcome: `declared marketplace name '${o.name}' is not lowercase kebab-case`,
@@ -115,7 +112,6 @@ export function parseCatalog(obj: unknown, opts: { scope: 'global' | 'project' }
         code: CODE.CATALOG_MALFORMED,
         phase: 'validation',
         target: 'catalog',
-        scope: opts.scope,
         pointer: '/plugins',
         rule: RULE.CATALOG_MALFORMED,
         outcome: 'plugins is not an array',
@@ -134,7 +130,6 @@ export function parseCatalog(obj: unknown, opts: { scope: 'global' | 'project' }
         code: CODE.BUDGET_EXCEEDED,
         phase: 'validation',
         target: 'catalog',
-        scope: opts.scope,
         pointer: '/plugins',
         rule: RULE.BUDGET_EXCEEDED,
         outcome: `Validation Budget exceeded: ${o.plugins.length} entries > ${BUDGET.maxEntries}`,
@@ -151,7 +146,6 @@ export function parseCatalog(obj: unknown, opts: { scope: 'global' | 'project' }
           code: CODE.CATALOG_ENTRY_MALFORMED,
           phase: 'validation',
           target: 'entry',
-          scope: opts.scope,
           pointer: entryId,
           rule: RULE.CATALOG_ENTRY_MALFORMED,
           outcome: 'marketplace entry is not an object',

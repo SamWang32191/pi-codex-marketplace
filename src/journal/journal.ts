@@ -2,9 +2,7 @@
  * Receipt Journal implementation — append-only durable history of Attempt Receipts.
  * See CONTEXT.md: Receipt Journal, Attempt Receipt, Receipt Resolution.
  *
- * File location:
- * - Global:  {getAgentDir()}/codex-marketplace/receipts.jsonl
- * - Project: {cwd}/.pi/codex-marketplace/receipts.jsonl
+ * File location: {getAgentDir()}/codex-marketplace/receipts.jsonl
  */
 
 import { createHash } from 'node:crypto';
@@ -13,7 +11,6 @@ import { dirname } from 'node:path';
 
 import { atomicWriteFile, withFileLock } from '../bridge-state/atomic.js';
 import { getReceiptsJournalPath } from '../bridge-state/paths.js';
-import type { Scope } from '../bridge-state/types.js';
 import { CODE, notice, RULE, type ValidationFinding } from '../registration/findings.js';
 import { isAttemptReceipt, type AttemptReceipt } from '../registration/receipt.js';
 import { findActiveRecoveryChains } from './active-chains.js';
@@ -42,7 +39,6 @@ export interface JournalTestHooks {
 }
 
 export interface JournalOptions {
-  cwd?: string;
   agentDir?: string;
   journalLockTimeoutMs?: number;
   /** Refuse an append unless these exact raw Journal bytes are still current under lock. */
@@ -88,13 +84,12 @@ function appendReceiptUnlocked(
   }
 }
 
-/** Append an Attempt Receipt to the scope's Receipt Journal with fsync durability. */
+/** Append an Attempt Receipt to the Receipt Journal with fsync durability. */
 export async function appendReceipt(
-  scope: Scope,
   receipt: AttemptReceipt,
   opts: JournalOptions = {},
 ): Promise<JournalAppendResult> {
-  const journalPath = getReceiptsJournalPath(scope, opts);
+  const journalPath = getReceiptsJournalPath(opts.agentDir);
   try {
     return await withJournalLock(journalPath, opts, () => {
       if (opts.expectedRevision !== undefined) {
@@ -119,7 +114,6 @@ export async function appendReceipt(
       code: CODE.RECEIPT_PERSISTENCE_FAILED,
       phase: 'post-commit',
       target: 'attempt',
-      scope,
       pointer: journalPath,
       rule: RULE.RECEIPT_PERSISTENCE_FAILED,
       outcome: `Failed to persist Attempt Receipt to journal: ${msg}`,
@@ -130,9 +124,8 @@ export async function appendReceipt(
 
 /** Lock-free reader for callers that already hold the per-journal rewrite lock. */
 function readReceiptJournalUnlocked(
-  scope: Scope,
   opts: JournalOptions = {},
-  journalPath = getReceiptsJournalPath(scope, opts),
+  journalPath = getReceiptsJournalPath(opts.agentDir),
 ): ObservedJournalReadResult {
   if (!existsSync(journalPath)) {
     return {
@@ -164,7 +157,6 @@ function readReceiptJournalUnlocked(
           code: CODE.RECEIPT_CORRUPT,
           phase: 'post-commit',
           target: 'attempt',
-          scope,
           pointer: journalPath,
           rule: RULE.RECEIPT_CORRUPT,
           outcome: `Failed to read receipts journal: ${msg}`,
@@ -188,23 +180,20 @@ function readReceiptJournalUnlocked(
 
     try {
       const parsed = JSON.parse(line);
-      const receipt = isAttemptReceipt(parsed) ? parsed : undefined;
-      if (receipt?.scope === scope) {
-        receipts.push(receipt);
+      // Single Global journal: every structurally valid line belongs here. Legacy lines may
+      // still carry a retired per-scope key; it is ignored.
+      if (isAttemptReceipt(parsed)) {
+        receipts.push(parsed);
       } else {
-        const reason = receipt
-          ? `scope '${receipt.scope}' does not match requested scope '${scope}'`
-          : 'missing or invalid required receipt fields';
         corruptedLineCount++;
         findings.push(
           notice({
             code: CODE.RECEIPT_CORRUPT,
             phase: 'post-commit',
             target: 'attempt',
-            scope,
             pointer: `${journalPath}:${i + 1}`,
             rule: RULE.RECEIPT_CORRUPT,
-            outcome: `Corrupted receipt line ${i + 1}: ${reason}`,
+            outcome: `Corrupted receipt line ${i + 1}: missing or invalid required receipt fields`,
           }),
         );
       }
@@ -215,7 +204,6 @@ function readReceiptJournalUnlocked(
           code: CODE.RECEIPT_CORRUPT,
           phase: 'post-commit',
           target: 'attempt',
-          scope,
           pointer: `${journalPath}:${i + 1}`,
           rule: RULE.RECEIPT_CORRUPT,
           outcome: `Corrupted receipt line ${i + 1}: invalid JSON`,
@@ -259,25 +247,23 @@ function serializedJournal(receipts: AttemptReceipt[]): string {
   return receipts.map((receipt) => JSON.stringify(receipt)).join('\n') + (receipts.length > 0 ? '\n' : '');
 }
 
-/** Read the scope's Receipt Journal, parsing line-by-line with tolerance for single-line corruptions. */
+/** Read the Receipt Journal, parsing line-by-line with tolerance for single-line corruptions. */
 export async function readReceiptJournal(
-  scope: Scope,
   opts: JournalOptions = {},
 ): Promise<ObservedJournalReadResult> {
-  return readReceiptJournalUnlocked(scope, opts);
+  return readReceiptJournalUnlocked(opts);
 }
 
 /** Prune resolved receipts outside active chains while preserving ALL active recovery chains. */
 export async function pruneReceiptJournal(
-  scope: Scope,
   keepCount = 100,
   opts: JournalOptions = {},
 ): Promise<JournalPruneResult> {
-  const journalPath = getReceiptsJournalPath(scope, opts);
+  const journalPath = getReceiptsJournalPath(opts.agentDir);
   return withJournalLock(journalPath, opts, async () => {
     // Re-read only after acquiring the lock so every completed append participates
     // in this rewrite and cannot be overwritten by a stale snapshot.
-    const current = readReceiptJournalUnlocked(scope, opts, journalPath);
+    const current = readReceiptJournalUnlocked(opts, journalPath);
     if (current.revision === 'read-error' || current.error) {
       throw new Error(`Receipt Journal cannot be read safely: ${current.error ?? 'read failed'}`);
     }
@@ -300,15 +286,14 @@ export async function pruneReceiptJournal(
  * the Repair Receipt is durable, so neither side can overwrite the other.
  */
 export async function commitJournalRepair(
-  scope: Scope,
   receipt: AttemptReceipt,
   expectedRevision: JournalRevision,
   keepCount = 100,
   opts: JournalOptions = {},
 ): Promise<JournalRepairCommitResult> {
-  const journalPath = getReceiptsJournalPath(scope, opts);
+  const journalPath = getReceiptsJournalPath(opts.agentDir);
   return withJournalLock(journalPath, opts, async () => {
-    const current = readReceiptJournalUnlocked(scope, opts, journalPath);
+    const current = readReceiptJournalUnlocked(opts, journalPath);
     if (current.revision !== expectedRevision) {
       return {
         status: 'stale',
@@ -377,7 +362,7 @@ export async function commitJournalRepair(
 
     appendReceiptUnlocked(journalPath, receipt, opts);
     await opts.testHooks?.afterRepairReceiptAppend?.();
-    const verified = readReceiptJournalUnlocked(scope, opts, journalPath);
+    const verified = readReceiptJournalUnlocked(opts, journalPath);
     if (verified.error || verified.isDegraded || !verified.receipts.some((stored) => stored.id === receipt.id)) {
       throw new Error(`Bound Repair Receipt ${receipt.id} could not be verified in the readable Receipt Journal`);
     }
@@ -394,9 +379,8 @@ export async function commitJournalRepair(
 
 /** Reconstruct or initialize the Receipt Journal from state. */
 export async function reconstructJournalFromState(
-  scope: Scope,
   opts: JournalOptions = {},
 ): Promise<JournalReadResult> {
-  const journalPath = getReceiptsJournalPath(scope, opts);
-  return withJournalLock(journalPath, opts, () => readReceiptJournalUnlocked(scope, opts, journalPath));
+  const journalPath = getReceiptsJournalPath(opts.agentDir);
+  return withJournalLock(journalPath, opts, () => readReceiptJournalUnlocked(opts, journalPath));
 }

@@ -3,10 +3,6 @@ import { describe, it, expect } from 'vitest';
 import { parseCatalog, KEBAB_NAME_RE } from '../../../src/registration/catalog.js';
 import { sortFindings } from '../../../src/registration/findings.js';
 
-function scopeOpts() {
-  return { scope: 'global' as const };
-}
-
 describe('Marketplace Catalog parsing', () => {
   it('parses a valid catalog with local entries and snapshot-scoped Entry IDs', () => {
     const res = parseCatalog(
@@ -17,7 +13,6 @@ describe('Marketplace Catalog parsing', () => {
           { name: 'docs-helper', path: './plugins/docs-helper' },
         ],
       },
-      scopeOpts(),
     );
     expect(res.ok).toBe(true);
     expect(res.catalog!.name).toBe('acme-marketplace');
@@ -29,15 +24,15 @@ describe('Marketplace Catalog parsing', () => {
   });
 
   it('rejects a non-object catalog as malformed (Blocking)', () => {
-    const res = parseCatalog([1, 2], scopeOpts());
+    const res = parseCatalog([1, 2]);
     expect(res.ok).toBe(false);
     expect(res.findings[0].code).toBe('CATALOG_MALFORMED');
     expect(res.findings[0].classification).toBe('blocking');
   });
 
   it('rejects missing/non-kebab-case names as Blocking at the catalog boundary', () => {
-    expect(parseCatalog({ plugins: [] }, scopeOpts()).findings[0].code).toBe('CATALOG_NAME_INVALID');
-    const bad = parseCatalog({ name: 'My Marketplace', plugins: [] }, scopeOpts());
+    expect(parseCatalog({ plugins: [] }).findings[0].code).toBe('CATALOG_NAME_INVALID');
+    const bad = parseCatalog({ name: 'My Marketplace', plugins: [] });
     expect(bad.ok).toBe(false);
     expect(bad.findings).toHaveLength(1);
     expect(bad.findings[0].classification).toBe('blocking');
@@ -62,7 +57,6 @@ describe('Marketplace Catalog parsing', () => {
           { name: 'odd-d', type: 'weird' },
         ],
       },
-      scopeOpts(),
     );
     expect(res.ok).toBe(true);
     const entries = res.catalog!.entries;
@@ -77,14 +71,14 @@ describe('Marketplace Catalog parsing', () => {
   });
 
   it('flags malformed entry objects as Blocking at the entry boundary', () => {
-    const res = parseCatalog({ name: 'bad', plugins: ['not-an-object'] }, scopeOpts());
+    const res = parseCatalog({ name: 'bad', plugins: ['not-an-object'] });
     expect(res.ok).toBe(false);
     expect(res.findings[0].code).toBe('CATALOG_ENTRY_MALFORMED');
     expect(res.findings[0].pointer).toBe('/plugins/0');
   });
 
   it('local entries without a path are Unavailable (resolve failure), not Blocking', () => {
-    const res = parseCatalog({ name: 'nl', plugins: [{ name: 'x' }] }, scopeOpts());
+    const res = parseCatalog({ name: 'nl', plugins: [{ name: 'x' }] });
     expect(res.ok).toBe(true);
     expect(res.catalog!.entries[0].available).toBe(false);
     expect(res.catalog!.entries[0].unavailableReason).toMatch(/no local path declared/i);
@@ -94,16 +88,16 @@ describe('Marketplace Catalog parsing', () => {
     const res = parseCatalog({
       name: 'conflict',
       plugins: [{ type: 'local', path: './plugins/pretend-local', source: { source: 'git', path: 'https://example.test/plugin.git' } }],
-    }, scopeOpts());
+    });
     expect(res.ok).toBe(true);
     expect(res.catalog!.entries[0]).toMatchObject({ available: false, unavailableReason: 'conflicting nested and flat source declaration' });
   });
 
   it('enforces the Entry Validation Budget before any per-entry traversal', () => {
-    const within = parseCatalog({ name: 'bounded', plugins: Array.from({ length: 1024 }, () => ({ path: './plugin' })) }, scopeOpts());
+    const within = parseCatalog({ name: 'bounded', plugins: Array.from({ length: 1024 }, () => ({ path: './plugin' })) });
     expect(within.ok).toBe(true);
 
-    const over = parseCatalog({ name: 'over-budget', plugins: Array.from({ length: 1025 }, () => ({ path: './plugin' })) }, scopeOpts());
+    const over = parseCatalog({ name: 'over-budget', plugins: Array.from({ length: 1025 }, () => ({ path: './plugin' })) });
     expect(over.ok).toBe(false);
     expect(over.catalog).toBeUndefined();
     expect(over.findings).toEqual([expect.objectContaining({ code: 'BUDGET_EXCEEDED', pointer: '/plugins' })]);
@@ -112,7 +106,6 @@ describe('Marketplace Catalog parsing', () => {
   it('sortFindings orders by class → phase → target → pointer → rule deterministically', () => {
     const res = parseCatalog(
       { name: 'acme', plugins: [{ name: 'x', path: './x' }, 'malformed'] },
-      scopeOpts(),
     );
     const codes = res.findings.map((f) => f.code);
     expect(codes).toEqual(['CATALOG_ENTRY_MALFORMED']);

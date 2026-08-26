@@ -1,11 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import type { Installation, Scope } from '../../../src/bridge-state/types.js';
+import type { Installation } from '../../../src/bridge-state/types.js';
 import { buildUpdatePlan } from '../../../src/lifecycle/update-plan.js';
 import type { UpdateCandidate } from '../../../src/lifecycle/refresh.js';
 import type { CompatiblePlugin } from '../../../src/compatibility/profile.js';
 
-const SCOPE: Scope = 'global';
 const REG_ID = '11111111-1111-4111-8111-111111111111';
 
 function plugin(id: string): CompatiblePlugin {
@@ -22,14 +21,12 @@ function candidate(opts: {
 }): UpdateCandidate {
   const plugins = opts.plugins ?? [plugin(`${REG_ID}/acme-marketplace/release-helper`)];
   return {
-    scope: SCOPE,
     registrationId: REG_ID,
     stateRevision: '0',
     recordedFingerprint: 'old',
     snapshot: {
       fingerprint: 'new-snapshot-fingerprint',
-      scope: SCOPE,
-      entries: [],
+        entries: [],
       sourceKey: { kind: 'local', key: 'k', canonicalPath: '/tmp/marketplace' },
       profile: 'p',
       ruleset: 'r',
@@ -43,8 +40,7 @@ function candidate(opts: {
       marketplaceId: `${REG_ID}/acme-marketplace`,
       snapshot: {
         fingerprint: 'activation-bound-fingerprint',
-        scope: SCOPE,
-        entries: [],
+            entries: [],
         sourceKey: { kind: 'local', key: 'k', canonicalPath: '/tmp/marketplace' },
         profile: 'p',
         ruleset: 'r',
@@ -57,7 +53,7 @@ function candidate(opts: {
 
 function existingInstallation(pluginId: string, state: 'enabled' | 'disabled' = 'enabled'): Pick<Installation, 'id' | 'pluginId' | 'installationState'> {
   return {
-    id: `${SCOPE}/${pluginId}`,
+    id: pluginId,
     pluginId,
     installationState: state,
   };
