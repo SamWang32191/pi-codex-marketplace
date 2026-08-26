@@ -11,15 +11,23 @@
 
 import type { ValidationFinding } from '../registration/findings.js';
 
-export const CURRENT_SCHEMA_VERSION = 2;
+export const CURRENT_SCHEMA_VERSION = 3;
 
 /** Opaque monotonic identifier. Stored as decimal string, incremented on each successful commit. */
 export type StateRevision = string;
+
+/** Marketplace Format — codex | claude (persistence foundation, issue #44).
+ *  Format detection / claude parsing is delivered by later tickets; the persistence
+ *  layer carries the value through and legacy registrations are backfilled to 'codex'
+ *  by the v2→v3 migration. Absence (pre-v3) always reads back as 'codex' after migration. */
+export type MarketplaceFormat = 'codex' | 'claude';
 
 /** Minimal shape for scaffold — later tickets extend with Source Key, Validation Snapshot, etc. */
 export interface Registration {
   /** Immutable lowercase UUIDv4, allocated before preflight */
   id: string;
+  /** Marketplace Format carried by this Registration. v2→v3 migration backfills 'codex' for legacy records. */
+  format?: MarketplaceFormat;
   /** Human-readable alias, derived from marketplace name */
   alias?: string;
   /** Declared marketplace name (kebab-case) */
