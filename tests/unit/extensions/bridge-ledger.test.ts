@@ -145,7 +145,7 @@ describe('Bridge Ledger presentation model', () => {
       ),
     );
     expect(reachable).toEqual(new Set<LedgerActionId>([
-      'observe-partitions',
+      'observe-authority',
       'observe-effective-state',
       'register-local',
       'register-git',
@@ -500,11 +500,12 @@ describe('Bridge Ledger presentation model', () => {
     expect(lines.length).toBeGreaterThan(8);
     expect(screen).toContain('CODEX MARKETPLACE / BRIDGE LEDGER');
     expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
-    expect(screen).toContain(uiText('ledger.rail.revision', { marker: 'G', revision: '"12"' }));
-    // Global-only (#61): exactly one healthy rail, no trust indicator anywhere.
+    expect(screen).toContain(uiText('ledger.rail.revision', { revision: '"12"' }));
+    // Global-only (#62): one authority rail, no G/P markers, no trust indicator anywhere.
     expect(screen.match(new RegExp(uiText('ledger.badge.healthy'), 'g'))).toHaveLength(1);
     expect(screen).not.toMatch(/PROJECT|\bP\b/);
-    expect(screen).not.toContain(uiText('ledger.rail.trust.granted'));
+    expect(screen).not.toContain('Project Trust');
+    expect(screen).not.toMatch(/\bG\b/);
     expect(screen).toContain('狀態：');
     expect(screen).toContain('Esc/q');
     expect(screen).toContain(width >= 96 ? uiText('ledger.panel.navigation') : uiText('ledger.panel.sections'));
@@ -581,11 +582,11 @@ describe('Bridge Ledger presentation model', () => {
 
     instance.handleInput('\x1b[C'); // Sources
     instance.render(120);
-    expect(instance.render(120).join('\n')).toContain(uiText('ledger.row.registrationActions', { scopeWord: 'Global' }));
+    expect(instance.render(120).join('\n')).toContain(uiText('ledger.row.registrationActions'));
     // The retired g/p partition-focus keys are inert: no re-render, no dispatch.
     instance.handleInput('p');
     instance.handleInput('g');
-    expect(instance.render(120).join('\n')).toContain(uiText('ledger.row.registrationActions', { scopeWord: 'Global' }));
+    expect(instance.render(120).join('\n')).toContain(uiText('ledger.row.registrationActions'));
     instance.handleInput('\r');
 
     expect(results).toEqual([{
@@ -798,7 +799,7 @@ describe('Bridge Ledger presentation model', () => {
     narrow.instance.handleInput('\r');
     const detail = narrow.instance.render(width).join('\n');
     expect(detail).toContain(uiText('ledger.section.observe.label'));
-    expect(detail).toContain(`● ${uiText('ledger.availability.ready')} ${uiText('ledger.action.observe-partitions')}`);
+    expect(detail).toContain(`● ${uiText('ledger.availability.ready')} ${uiText('ledger.action.observe-authority')}`);
 
     narrow.instance.handleInput('\x1b');
     expect(narrow.instance.render(width).join('\n')).toContain(uiText('ledger.panel.sections'));

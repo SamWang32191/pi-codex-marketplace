@@ -94,8 +94,9 @@ describe('/codex-marketplace Bridge Ledger command seam', () => {
     for (const width of [120, 80, 60]) {
       const screen = rendered.get(width)!.join('\n');
       expect(screen).toContain('BRIDGE LEDGER');
-      expect(screen).toMatch(/GLOBAL|\bG\b/);
-      // Global-only (#61): no Project rail exists anymore.
+      // Global-only (#62): the single Global partition is named, with no G/P browse markers.
+      expect(screen).toContain(uiText('common.scope.global'));
+      expect(screen).not.toMatch(/\bG\b/);
       expect(screen).not.toMatch(/PROJECT|\bP\b/);
       expect(screen).toMatch(/rev(?:ision)?\s+"?0"?/i);
       expect(screen).toMatch(/Esc.*q|q.*Esc/i);
@@ -157,8 +158,8 @@ describe('/codex-marketplace Bridge Ledger command seam', () => {
     });
 
     expect(customCalls).toBe(2);
-    expect(screens[0]!.join('\n')).toContain(uiText('ledger.rail.revision', { marker: 'G', revision: '"0"' }));
-    expect(screens[1]!.join('\n')).toContain(uiText('ledger.rail.revision', { marker: 'G', revision: '"1"' }));
+    expect(screens[0]!.join('\n')).toContain(uiText('ledger.rail.revision', { revision: '"0"' }));
+    expect(screens[1]!.join('\n')).toContain(uiText('ledger.rail.revision', { revision: '"1"' }));
     expect(screens[1]!.join('\n')).toContain(uiText('ledger.rail.registrations', { count: 1 }));
   });
 
