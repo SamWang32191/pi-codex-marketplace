@@ -28,7 +28,7 @@ export function deriveInitialAlias(marketplaceName: string | undefined, existing
   let alias = marketplaceName.trim();
   const taken = new Set(existingAliases);
   if (!taken.has(alias)) return alias;
-  // scope-local uniqueness: append a numeric suffix
+  // uniqueness: append a numeric suffix
   let n = 2;
   while (taken.has(`${alias}-${n}`)) n += 1;
   return `${alias}-${n}`;
@@ -42,8 +42,8 @@ export interface DuplicateCheckResult {
 }
 
 /**
- * Detect repeated registration within one scope by identical Source Key (same kind).
- * Local and Git kinds remain distinct; equal keys across scopes do not merge registrations.
+ * Detect repeated registration by identical Source Key (same kind).
+ * Local and Git kinds remain distinct; equal keys do not merge registrations.
  */
 export function findDuplicateRegistration(
   sourceKey: SourceKey,

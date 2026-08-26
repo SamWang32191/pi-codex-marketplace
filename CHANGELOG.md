@@ -4,9 +4,35 @@ All notable changes to `pi-codex-marketplace` are documented here. Format follow
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-26
+
+### Removed (Breaking)
+- **Project Scope 與多範圍架構退休（Global-only simplification）** (#58, #61, ADR 0002)：
+  - 徹底移除多範圍維度，Bridge State 轉為單一 Global Scope 管理（`~/.pi/agent/codex-marketplace/state.json`）。
+  - 磁碟上殘留的既有 project state 檔（`{cwd}/.pi/codex-marketplace/state.json`）完全無視（不讀、不提示、不刪）。
+  - 刪除內部 API 之 `Scope` type 與 `'global' | 'project'` 參數；路徑、store、fence、journal、reconciliation 全部收斂為單一全域實例。
+  - 移除約 1,800 行專屬 project 模組（`src/projection/overrides.ts`、`src/projection/project.ts`、`src/barrier/global-barrier.ts` 等）。
+- **Scope Override 功能端到端退休** (#59)：
+  - 移除 overrides 核心模組與 TUI「Scope 與繼承」分區、建立／移除 Scope Override 動作與 inherited／suppresses 標記。
+  - 繼承自 Global 的 Registration / Installation 一律參與 Effective State，無任何抑制路徑。
+- **Global Pending Barrier 端到端退休** (#60)：
+  - 刪除 barrier 核心模組（`src/barrier/global-barrier.ts`）與全部呼叫點；Attempt Fence 取得前不再檢查 barrier。
+  - `BARRIER-01` finding code／rule／ui-strings 文案全數清除；Pending Application 復原語意由既有 active recovery chain（如 Retry Application）承擔。
+
 ### Changed
-- **Global-only 前置：Global Pending Barrier 端到端退休** (#60)：刪除 barrier 模組（`src/barrier/global-barrier.ts`）與全部呼叫點——Attempt Fence 取得前不再檢查 Global Pending 狀態（互斥 `FENCE-01` 與 stale 檢查 `STALE-01/02` 不變）、startup reconciliation 與 journal repair 不再經過 barrier 判斷、Retry Application 移除確認前／確認期間／宿主重載三個 barrier 關卡；TUI Bridge Ledger 移除 Barrier 徽章與原因列，Project 變異在 Global 有活躍復原鏈時保持可用（僅 Project Trust 照舊門檻）；`BARRIER-01` finding code／rule／ui-strings 文案全數清除。Pending Application 的復原語意由既有 active recovery chain（Retry Application 等 Recovery Action）承擔。暫態語意：本票落地後、核心單一化票完成前，global pending 期間不再阻擋 project 寫入（ADR 0002）。
-- **Global-only 前置：Scope Override 功能端到端退休** (#59)：`/codex-marketplace` TUI 移除「Scope 與繼承」分區、建立／移除 Scope Override 動作與 inherited／suppresses 列標記；刪除 overrides 核心模組（`src/projection/overrides.ts`）與 extension flow adapter（`extensions/pi/scope-overrides.ts`），Effective State 檢視搬移至 observe-only 的 `extensions/pi/effective-state-view.ts`。繼承自 Global 的 Registration / Installation 一律參與 Effective State，無任何抑制路徑；`BridgeState.scopeOverrides` 型別欄位保留但恆為空（schema v2 遷移才剝除）。暫態語意：既有 persisted overrides 立即停止生效（不再被採計）。雙文件持久化、Attempt Fence、Receipt Journal 行為不變。
+- **Bridge State Schema v2 + WAL Migration** (#63)：
+  - `schemaVersion` 升為 `2`。
+  - v1 → v2 WAL migration 剝除 `scopeOverrides` 死欄位；非空 overrides 剝除並產出 non-blocking `MIGRATE-01` 診斷 finding（不 fail-closed）。
+  - 規範化 Installation ID：自動剝除舊版 `global/` 前綴。
+- **Runtime Skill Collision 簡化為兩層** (#61)：
+  - 碰撞解析由 `Pi → Project Scope → Global Scope` 三層收斂為 `Pi → Global Scope` 兩層。
+  - 任何已啟用的 Global Plugin skill 只要未與 Pi 原生/本機 skill 碰撞即正常暴露；同層 Bridge 碰撞者皆為 unavailable。
+- **TUI Bridge Ledger 單軌收斂** (#62)：
+  - 移除 Project 軌、G/P marker、`g`/`p` 瀏覽焦點鍵與 Trust/Barrier 指示區。
+  - 導航重整為 **Observe**、**Sources**、**Plugins**、**Recovery & receipts** 四大正典群組。
+- **文件與版本定錨** (#64)：
+  - README 全面改寫為單一 Global 行為，釐清 `pi install -l` 屬 Pi host 套件位置，更新 v2 schema 與 TUI 導覽說明。
+  - `package.json` 版本定錨為 `0.2.0`，description 移除多範圍字樣。
 
 ## [0.1.10] - 2026-08-25
 
@@ -79,7 +105,11 @@ Initial Bridge Package release — single `pi` extension, Pi `0.84.2` baseline.
 - **TUI management flow** (`/codex-marketplace`): single aggregated command faithful to `prototype/tui-management-flow@c9107d2` — hybrid discovery/guided, explicit scope choice per operation, Registration/Activation separated snapshot+revision bound Default No confirmations, Update Plan Checklist, partitioned Global/Project lists, skill-granular diagnostics, synchronized Findings, closed Recovery Actions, immediate-reload three-orthogonal Receipt report, Pending/Global Barrier blocking hints.
 - **Verification matrix**: synthetic / pinned `SamWang32191/codex-plugins@98e78ca` / adversarial three-tier fixtures × (unit + integration + E2E at the TUI seam) on Pi `0.84.2` / macOS / Linux / Node `>=22.19.0`; every row is a release gate (`v*` → CI full matrix green → `npm publish --provenance` `latest`/`next` channels, `0.y`/`1.0` maintenance windows).
 
-[Unreleased]: https://github.com/SamWang32191/pi-codex-marketplace/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/SamWang32191/pi-codex-marketplace/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/SamWang32191/pi-codex-marketplace/compare/v0.1.10...v0.2.0
+[0.1.10]: https://github.com/SamWang32191/pi-codex-marketplace/compare/v0.1.9...v0.1.10
+[0.1.9]: https://github.com/SamWang32191/pi-codex-marketplace/compare/v0.1.8...v0.1.9
+[0.1.8]: https://github.com/SamWang32191/pi-codex-marketplace/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/SamWang32191/pi-codex-marketplace/releases/tag/v0.1.7
 [0.1.6]: https://github.com/SamWang32191/pi-codex-marketplace/releases/tag/v0.1.6
 [0.1.5]: https://github.com/SamWang32191/pi-codex-marketplace/releases/tag/v0.1.5

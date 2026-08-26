@@ -6,9 +6,7 @@
  * Only authoritative fields are persisted; Effective State, catalogs, compatibility
  * results, diagnostics are recomputed at read time.
  *
- * Scope Overrides are retired (issue #59): the persisted field remains in schema v1 but is
- * always empty for newly written global documents and never read; the schema v2 migration
- * will strip it entirely.
+ * Scope Overrides are retired (issue #59 / #63): schema v2 stripped the field entirely.
  */
 
 import type { ValidationFinding } from '../registration/findings.js';
@@ -90,7 +88,7 @@ export interface ScopeOverride {
 export interface BridgeState {
   /** Versioned JSON schema */
   schemaVersion: number;
-  /** Opaque monotonic per-scope revision */
+  /** Opaque monotonic revision */
   stateRevision: StateRevision;
   registrations: Registration[];
   installations: Installation[];
