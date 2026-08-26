@@ -106,7 +106,7 @@ describe('Attempt Receipt — Three Orthogonal Axes & Derivations', () => {
       }),
     ];
     expect(deriveRecoveryActions('Blocked', driftFinding)).toEqual(['Refresh']);
-    // Fence collision or barrier -> Inspect
+    // Fence collision -> Inspect
     const fenceFinding = [
       blocking({
         code: CODE.ATTEMPT_IN_PROGRESS,

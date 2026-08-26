@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { preflightLocalRegistration, confirmLocalRegistration } from '../../src/registration/flow.js';
-import { checkGlobalPendingBarrier } from '../../src/barrier/global-barrier.js';
 import { appendReceipt, readReceiptJournal, pruneReceiptJournal } from '../../src/journal/journal.js';
 import { repairBridgeState } from '../../src/bridge-state/repair.js';
 import { createReceipt } from '../../src/registration/receipt.js';
@@ -49,14 +48,14 @@ function makeMarketplace(root: string, name = 'test-market') {
   );
 }
 
-describe('Integration — Journal, Fence, and Global Barrier', () => {
+describe('Integration — Journal and Fence', () => {
   let tmpRoot: string;
   let agentDir: string;
   let projectDir: string;
   let marketplaceRoot: string;
 
   beforeEach(() => {
-    tmpRoot = mkdtempSync(join(tmpdir(), 'journal-barrier-int-'));
+    tmpRoot = mkdtempSync(join(tmpdir(), 'journal-fence-int-'));
     agentDir = join(tmpRoot, 'agent');
     projectDir = join(tmpRoot, 'project');
     marketplaceRoot = join(tmpRoot, 'marketplace');
@@ -215,31 +214,23 @@ describe('Integration — Journal, Fence, and Global Barrier', () => {
     }
   });
 
-  it('Global Pending Barrier blocks Project mutation when Global has active recovery, and clears upon repair', async () => {
+  it('Project mutations proceed independently of Global recovery conditions (Barrier retired)', async () => {
     const opts = { cwd: projectDir, agentDir, projectTrusted: true };
 
-    // 1. Initially barrier is inactive
-    let barrier = await checkGlobalPendingBarrier(opts);
-    expect(barrier.active).toBe(false);
-
-    // 2. Put global scope in Persistence Indeterminate condition
+    // 1. Put Global Scope into a Persistence Indeterminate condition
     const globalStatePath = getStatePath('global', opts);
     mkdirSync(join(agentDir, 'codex-marketplace'), { recursive: true });
     writeFileSync(globalStatePath, '{ corrupted global state json', 'utf-8');
 
-    barrier = await checkGlobalPendingBarrier(opts);
-    expect(barrier.active).toBe(true);
-
-    // 3. Project scope mutation attempt must be blocked with GLOBAL_PENDING_BARRIER
+    // 2. Project Scope mutation is NOT blocked by the Global recovery condition
     const projPreflight = await preflightLocalRegistration('project', marketplaceRoot, opts);
-    expect(projPreflight.ok).toBe(false);
-    if (!projPreflight.ok) {
-      expect(projPreflight.outcome.receipt.summary).toBe('Blocked');
-      expect(projPreflight.outcome.receipt.findings[0].code).toBe('GLOBAL_PENDING_BARRIER');
-      expect(projPreflight.outcome.receipt.findings[0].rule).toBe('BARRIER-01');
+    expect(projPreflight.ok).toBe(true);
+    if (projPreflight.ok) {
+      const conf = await confirmLocalRegistration(projPreflight.preflight, true, opts);
+      expect(conf.status).toBe('completed');
     }
 
-    // 4. Fix global state and run Repair State
+    // 3. Journal repair on the Global scope no longer routes through any barrier judgment
     writeFileSync(
       globalStatePath,
       JSON.stringify({
@@ -253,17 +244,5 @@ describe('Integration — Journal, Fence, and Global Barrier', () => {
     );
     const repairRes = await repairBridgeState('global', opts);
     expect(repairRes.success).toBe(true);
-
-    // 5. Barrier is now automatically cleared
-    barrier = await checkGlobalPendingBarrier(opts);
-    expect(barrier.active).toBe(false);
-
-    // 6. Project Scope attempt can now succeed
-    const projPreflight2 = await preflightLocalRegistration('project', marketplaceRoot, opts);
-    expect(projPreflight2.ok).toBe(true);
-    if (projPreflight2.ok) {
-      const conf = await confirmLocalRegistration(projPreflight2.preflight, true, opts);
-      expect(conf.status).toBe('completed');
-    }
   });
 });

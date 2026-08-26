@@ -5,8 +5,8 @@
  *
  * Tiers:
  * - unit: pure-function seams (selector/locator/contained/budget/profile/effective-state/collision)
- * - integration: Bridge State atomic WAL + file lock + Cache pinning/LRU/flock + Journal/Barrier, Git acquisition, lifecycle WAL commits
- * - E2E (highest seam — TUI): /codex-marketplace aggregated command through the mocked TUI seam, covering disclosure, confirmation, receipt, partitioned lists, skill-granular diagnostics, barrier/cache observability.
+ * - integration: Bridge State atomic WAL + file lock + Cache pinning/LRU/flock + Receipt Journal, Git acquisition, lifecycle WAL commits
+ * - E2E (highest seam — TUI): /codex-marketplace aggregated command through the mocked TUI seam, covering disclosure, confirmation, receipt, partitioned lists, skill-granular diagnostics, cache observability.
  *
  * Fixtures:
  * - synthetic: deterministic small marketplace (deterministic entries, stable fingerprint)

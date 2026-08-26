@@ -11,7 +11,7 @@ import type { Scope } from '../bridge-state/types.js';
 export type FindingClass = 'blocking' | 'warning' | 'notice';
 
 export type FindingPhase =
-  | 'admission' // Attempt Fence / barrier checks
+  | 'admission' // Attempt Fence checks
   | 'identity' // Source Key / duplicate / Registration ID
   | 'validation' // catalog / path / symlink / budget / snapshot
   | 'persistence' // commit / revision verify
@@ -86,7 +86,6 @@ export const RULE = {
   SOURCE_REACQUISITION_REQUIRED: 'INSTALL-04',
   RUNTIME_SKILL_COLLISION: 'COLLISION-01',
   SOURCE_DRIFT: 'DRIFT-01',
-  GLOBAL_PENDING_BARRIER: 'BARRIER-01',
   RECEIPT_PERSISTENCE_FAILED: 'JOURNAL-01',
   RECEIPT_CORRUPT: 'JOURNAL-02',
   STATE_CORRUPT: 'PERSIST-01',
@@ -141,7 +140,6 @@ export const CODE = {
   SOURCE_REACQUISITION_REQUIRED: 'SOURCE_REACQUISITION_REQUIRED',
   RUNTIME_SKILL_COLLISION: 'RUNTIME_SKILL_COLLISION',
   SOURCE_DRIFT: 'SOURCE_DRIFT',
-  GLOBAL_PENDING_BARRIER: 'GLOBAL_PENDING_BARRIER',
   RECEIPT_PERSISTENCE_FAILED: 'RECEIPT_PERSISTENCE_FAILED',
   RECEIPT_CORRUPT: 'RECEIPT_CORRUPT',
   STATE_CORRUPT: 'STATE_CORRUPT',

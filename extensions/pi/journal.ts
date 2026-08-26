@@ -5,7 +5,6 @@
 
 import type { ExtensionCommandContext, ExtensionUIContext } from '@earendil-works/pi-coding-agent';
 
-import { checkGlobalPendingBarrier } from '../../src/barrier/global-barrier.js';
 import type { BridgeState, Scope } from '../../src/bridge-state/types.js';
 import { readBridgeState } from '../../src/bridge-state/store.js';
 import { inspectMarketplaceEntries } from '../../src/installation/inspection.js';
@@ -351,26 +350,6 @@ async function runRetryApplicationUnderFence(
     });
     return;
   }
-  if (scope === 'project') {
-    const barrier = await checkGlobalPendingBarrier({ cwd: ctx.cwd });
-    if (barrier.active) {
-      await reportRetryTerminal(ctx, {
-        scope,
-        receiptId,
-        stateRevision: chain.stateRevision,
-        validationSnapshot: rootValidationSnapshot,
-        summary: 'Blocked',
-        findings: [barrier.finding ?? retryFinding(
-          scope,
-          CODE.GLOBAL_PENDING_BARRIER,
-          RULE.GLOBAL_PENDING_BARRIER,
-          barrier.reason ?? uiText('journal.retry.barrierRequired'),
-        )],
-        attachToChain: true,
-      });
-      return;
-    }
-  }
 
   const model = {
     actionLabel: uiText('ledger.action.retry-application'),
@@ -502,26 +481,6 @@ async function runRetryApplicationUnderFence(
     });
     return;
   }
-  if (scope === 'project') {
-    const barrier = await checkGlobalPendingBarrier({ cwd: ctx.cwd });
-    if (barrier.active) {
-      await reportRetryTerminal(ctx, {
-        scope,
-        receiptId,
-        stateRevision: chain.stateRevision,
-        validationSnapshot: rootValidationSnapshot,
-        summary: 'Blocked',
-        findings: [barrier.finding ?? retryFinding(
-          scope,
-          CODE.GLOBAL_PENDING_BARRIER,
-          RULE.GLOBAL_PENDING_BARRIER,
-          barrier.reason ?? uiText('journal.retry.barrierDuringConfirm'),
-        )],
-        attachToChain: true,
-      });
-      return;
-    }
-  }
 
   const postReloadGuardBlocked = Symbol('post-reload-project-guard-blocked');
   let postReloadGuardFinding: ValidationFinding | undefined;
@@ -545,18 +504,6 @@ async function runRetryApplicationUnderFence(
           uiText('journal.retry.trustRevokedReload'),
         );
         throw postReloadGuardBlocked;
-      }
-      if (scope === 'project') {
-        const barrier = await checkGlobalPendingBarrier({ cwd: ctx.cwd });
-        if (barrier.active) {
-          postReloadGuardFinding = barrier.finding ?? retryFinding(
-            scope,
-            CODE.GLOBAL_PENDING_BARRIER,
-            RULE.GLOBAL_PENDING_BARRIER,
-            barrier.reason ?? uiText('journal.retry.barrierDuringReload'),
-          );
-          throw postReloadGuardBlocked;
-        }
       }
       return true;
     }, {

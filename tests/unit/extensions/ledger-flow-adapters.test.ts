@@ -659,7 +659,7 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
     }));
   });
 
-  it('blocks Project Retry Application when the Global Pending Barrier activates during the Commit sheet', async () => {
+  it('completes Project Retry Application even when a Global recovery chain appears during the Commit sheet', async () => {
     const seeded = await seedRuntimeSnapshot('project');
     const pending = createReceipt({
       id: 'rcpt_55555555-5555-4555-8555-555555555552',
@@ -674,12 +674,12 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       stateChanged: false,
     });
     await appendReceipt('project', pending, { cwd, agentDir });
-    let barrierActivated = false;
+    let globalChainAppended = false;
     let reloads = 0;
     const harness = makeUiHarness({
       onStep: async (step) => {
-        if (step !== 'Commit' || barrierActivated) return;
-        barrierActivated = true;
+        if (step !== 'Commit' || globalChainAppended) return;
+        globalChainAppended = true;
         await appendReceipt('global', createReceipt({
           id: 'rcpt_66666666-6666-4666-8666-666666666661',
           kind: 'Runtime Application',
@@ -703,22 +703,18 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       ui: harness.ui,
     } as never, { scope: 'project', receiptId: pending.id });
 
-    expect(reloads).toBe(0);
+    expect(reloads).toBe(1);
     expect(harness.sheets).toEqual(['Intent', 'Validation', 'Consent', 'Plan', 'Commit', 'Receipt']);
     const journal = await readReceiptJournal('project', { cwd, agentDir });
-    expect(journal.activeChains.map((chain) => chain.rootReceiptId)).toContain(pending.id);
+    expect(journal.activeChains.map((chain) => chain.rootReceiptId)).not.toContain(pending.id);
     expect(journal.receipts.at(-1)).toEqual(expect.objectContaining({
-      summary: 'Blocked',
-      runtimeOutcome: 'none',
+      summary: 'Completed',
+      runtimeOutcome: 'applied',
       recoversReceiptId: pending.id,
-      findings: [expect.objectContaining({
-        code: 'GLOBAL_PENDING_BARRIER',
-        rule: 'BARRIER-01',
-      })],
     }));
   });
 
-  it('keeps the Project recovery chain active when a guard activates during host reload re-entry', async () => {
+  it('completes Project Retry Application when a Global recovery chain appears during host reload', async () => {
     const seeded = await seedRuntimeSnapshot('project');
     const pending = createReceipt({
       id: 'rcpt_55555555-5555-4555-8555-555555555553',
@@ -760,20 +756,11 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
 
     expect(reloads).toBe(1);
     const journal = await readReceiptJournal('project', { cwd, agentDir });
-    expect(journal.activeChains.map((chain) => chain.rootReceiptId)).toContain(pending.id);
-    const recoveryReceipts = journal.receipts.filter((receipt) => receipt.recoversReceiptId === pending.id);
-    expect(recoveryReceipts).toEqual([expect.objectContaining({
-      summary: 'Blocked',
-      runtimeOutcome: 'none',
-      recoversReceiptId: pending.id,
-      findings: [expect.objectContaining({
-        code: 'GLOBAL_PENDING_BARRIER',
-        rule: 'BARRIER-01',
-      })],
-    })]);
-    expect(recoveryReceipts).not.toContainEqual(expect.objectContaining({
+    expect(journal.activeChains.map((chain) => chain.rootReceiptId)).not.toContain(pending.id);
+    expect(journal.receipts.at(-1)).toEqual(expect.objectContaining({
       summary: 'Completed',
       runtimeOutcome: 'applied',
+      recoversReceiptId: pending.id,
     }));
   });
 

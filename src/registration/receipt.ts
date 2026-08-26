@@ -313,7 +313,7 @@ export function deriveRecoveryActions(
       if (findings.some((f) => f.code.startsWith('GIT_LOCATOR_') || f.code.startsWith('GIT_SELECTOR_'))) {
         return ['Rebind', 'Inspect'];
       }
-      if (findings.some((f) => f.code === CODE.ATTEMPT_IN_PROGRESS || f.code === CODE.GLOBAL_PENDING_BARRIER)) {
+      if (findings.some((f) => f.code === CODE.ATTEMPT_IN_PROGRESS)) {
         return ['Inspect'];
       }
       if (findings.some((f) => f.code === CODE.PROJECT_TRUST_DENIED)) {

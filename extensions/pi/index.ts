@@ -19,7 +19,6 @@ import type { ReadResult } from '../../src/bridge-state/types.js';
 import { discoverProjectedSkillPaths } from '../../src/projection/exposure.js';
 import { runStartupReconciliation } from '../../src/reconciliation/startup.js';
 import type { AttemptReceipt } from '../../src/registration/receipt.js';
-import { checkGlobalPendingBarrier } from '../../src/barrier/global-barrier.js';
 import { runLocalRegistrationFlow } from './registration.js';
 import { runGitRegistrationFlow } from './git-registration.js';
 import { runPluginInstallationFlow, runPluginStateFlow } from './installation.js';
@@ -300,21 +299,17 @@ export default function (pi: ExtensionAPI) {
         const project = readBridgeStateSync('project', { cwd });
         const g = formatStateSummary(global, 'Global Scope');
         const p = formatStateSummary(project, 'Project Scope');
-        const barrier = await checkGlobalPendingBarrier({ cwd });
-        const banner = barrier.active ? `\n⚠ Global Pending Barrier 活躍：${quoteTerminalText(barrier.reason ?? 'global recovery is required')}（專案變異已阻擋，僅檢查/Refresh 可用）` : '';
-        ctx.ui.notify(`${g}\n${p}${banner}\n(完整導向流請於 TUI 內執行 /codex-marketplace)` , barrier.active ? 'warning' : 'info');
+        ctx.ui.notify(`${g}\n${p}\n(完整導向流請於 TUI 內執行 /codex-marketplace)`, 'info');
         return;
       }
 
-      // Non-TUI fallback: notify with summary + barrier hint
+      // Non-TUI fallback: notify with summary
       if (ctx.mode !== 'tui' || !ctx.hasUI) {
         const global = readBridgeStateSync('global', { cwd });
         const project = readBridgeStateSync('project', { cwd });
         const g = formatStateSummary(global, 'Global Scope');
         const p = formatStateSummary(project, 'Project Scope');
-        const barrier = await checkGlobalPendingBarrier({ cwd });
-        const banner = barrier.active ? `\n⚠ Global Pending Barrier：${quoteTerminalText(barrier.reason ?? 'global recovery is required')}` : '';
-        ctx.ui.notify(`${g}\n${p}${banner}\n互動流程需 TUI 模式（/codex-marketplace 於 TUI 內）`, barrier.active ? 'warning' : 'info');
+        ctx.ui.notify(`${g}\n${p}\n互動流程需 TUI 模式（/codex-marketplace 於 TUI 內）`, 'info');
         return;
       }
 

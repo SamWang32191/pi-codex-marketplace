@@ -88,7 +88,7 @@ describe('Startup Reconciliation', () => {
     expect(gj.activeChains).toHaveLength(0);
   });
 
-  it('Global-first: blocks Project reconciliation when Global recovery cannot complete', async () => {
+  it('reconciles Project independently while Global recovery stays pending (Barrier retired)', async () => {
     // 1. Setup pending application in global journal
     const globalPending = createReceipt({
       id: GLOBAL_PENDING_RECEIPT,
@@ -129,9 +129,10 @@ describe('Startup Reconciliation', () => {
 
     expect(res.globalReconciled).toBe(true);
     expect(res.globalReceipt?.summary).toBe('Pending Application');
-    // Project is blocked by Global Pending Barrier
+    // Global Pending Barrier retired: Project reconciliation proceeds on its own.
     expect(res.projectReconciled).toBe(true);
-    expect(res.projectReceipt?.summary).toBe('Blocked');
-    expect(res.projectReceipt?.findings[0].code).toBe('GLOBAL_PENDING_BARRIER');
+    expect(res.projectReceipt?.summary).toBe('Completed');
+    expect(res.projectReceipt?.runtimeOutcome).toBe('applied');
+    expect(res.projectReceipt?.findings ?? []).toHaveLength(0);
   });
 });
