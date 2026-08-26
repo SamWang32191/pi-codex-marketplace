@@ -11,7 +11,9 @@
  * will strip it entirely.
  */
 
-export const CURRENT_SCHEMA_VERSION = 1;
+import type { ValidationFinding } from '../registration/findings.js';
+
+export const CURRENT_SCHEMA_VERSION = 2;
 
 /** Opaque monotonic identifier. Stored as decimal string, incremented on each successful commit. */
 export type StateRevision = string;
@@ -60,7 +62,7 @@ export interface Registration {
 
 export interface Installation {
   /** Canonical Installation ID = Plugin ID itself (stable across version/path changes).
-   *  Legacy documents may still carry the retired 'global/<pluginId>' form; both resolve. */
+   *  Legacy documents may still carry the retired 'global/<pluginId>' form; normalized in v2. */
   id: string;
   /** Canonical Plugin ID = Marketplace ID + manifest name */
   pluginId: string;
@@ -79,7 +81,7 @@ export interface Installation {
 }
 
 export interface ScopeOverride {
-  /** Retired (issue #59) — kept only so pre-retirement project documents still parse. */
+  /** Retired (issue #59 / #63) — legacy type kept for v1 migration parsing. */
   kind: 'registration' | 'installation';
   /** Canonical Registration ID or Installation ID being suppressed */
   targetId: string;
@@ -92,8 +94,6 @@ export interface BridgeState {
   stateRevision: StateRevision;
   registrations: Registration[];
   installations: Installation[];
-  /** Retired (issue #59) — always empty in practice; legacy entries are ignored at read time. */
-  scopeOverrides: ScopeOverride[];
 }
 
 export type ReadStatus = 'ok' | 'corrupted' | 'incompatible' | 'missing';
@@ -108,6 +108,8 @@ export interface ReadResult {
   raw?: unknown;
   /** Whether state was reconstructed as empty due to missing file */
   isEmptyInit?: boolean;
+  /** Migration diagnostics / findings if any */
+  findings?: ValidationFinding[];
 }
 
 export interface WriteResult {
@@ -138,7 +140,6 @@ export function createEmptyState(): BridgeState {
     stateRevision: '0',
     registrations: [],
     installations: [],
-    scopeOverrides: [],
   };
 }
 
@@ -150,8 +151,7 @@ export function isBridgeState(value: unknown): value is BridgeState {
     typeof o.schemaVersion === 'number' &&
     typeof o.stateRevision === 'string' &&
     Array.isArray(o.registrations) &&
-    Array.isArray(o.installations) &&
-    Array.isArray(o.scopeOverrides)
+    Array.isArray(o.installations)
   );
 }
 

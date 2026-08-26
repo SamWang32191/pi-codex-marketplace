@@ -16,7 +16,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { createEmptyState, type BridgeState } from '../../src/bridge-state/types.js';
+import { createEmptyState, CURRENT_SCHEMA_VERSION, type BridgeState } from '../../src/bridge-state/types.js';
 import { writeBridgeState, readBridgeState } from '../../src/bridge-state/store.js';
 import { acquireAttemptFence } from '../../src/registration/fence.js';
 import { formatThreeOrthogonalReport } from '../../src/registration/receipt.js';
@@ -54,7 +54,7 @@ describe('E2E TUI highest seam — lifecycle / collision / cache (Issue #24)', (
   it('Bridge State is a single Global document empty on scaffold', async () => {
     const global = await readBridgeState({ agentDir: env.agentDir });
     expect(global.status).toBe('missing');
-    expect(global.state!.schemaVersion).toBe(1);
+    expect(global.state!.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
   });
 
   it('Findings are sorted class→phase→target→pointer→rule with stable rule codes (prototype decision)', async () => {

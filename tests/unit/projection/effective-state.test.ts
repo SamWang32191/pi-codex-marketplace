@@ -95,7 +95,7 @@ describe('Effective State — retired scope dimensions (Global-only)', () => {
         { kind: 'registration', targetId: REG },
         { kind: 'installation', targetId: 'reg-b/keep' },
       ],
-    });
+    } as any);
     const effective = computeEffectiveState(legacy);
     expect(effective.registrations).toEqual([]);
     // Overrides carry no records themselves; nothing is suppressed or excluded.
@@ -108,7 +108,7 @@ describe('Effective State — retired scope dimensions (Global-only)', () => {
         registrations: populated.registrations,
         installations: populated.installations,
         scopeOverrides: [{ kind: 'registration', targetId: REG_2 }],
-      }),
+      } as any),
     );
     expect(withLegacy).toEqual(plain);
   });

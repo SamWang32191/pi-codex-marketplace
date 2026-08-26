@@ -7,6 +7,7 @@ import { runStartupReconciliation } from '../../../src/reconciliation/startup.js
 import { appendReceipt, readReceiptJournal } from '../../../src/journal/journal.js';
 import { createReceipt } from '../../../src/registration/receipt.js';
 import { getGlobalStatePath } from '../../../src/bridge-state/paths.js';
+import { CURRENT_SCHEMA_VERSION } from '../../../src/bridge-state/types.js';
 
 const PENDING_RECEIPT = 'rcpt_50000000-0000-4000-8000-000000000001';
 
@@ -55,11 +56,10 @@ describe('Startup Reconciliation — Global-only', () => {
     writeFileSync(
       statePath,
       JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: CURRENT_SCHEMA_VERSION,
         stateRevision: '1',
         registrations: [{ id: 'reg1', alias: 'acme' }],
         installations: [],
-        scopeOverrides: [],
       }),
       'utf-8',
     );
@@ -114,11 +114,10 @@ describe('Startup Reconciliation — Global-only', () => {
     writeFileSync(
       getGlobalStatePath(agentDir),
       JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: CURRENT_SCHEMA_VERSION,
         stateRevision: '1',
         registrations: [{ id: 'reg1', alias: 'acme' }],
         installations: [{ id: 'acme/plugin', pluginId: 'acme/plugin', installationState: 'enabled' }],
-        scopeOverrides: [],
       }),
       'utf-8',
     );

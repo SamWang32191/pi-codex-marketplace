@@ -12,7 +12,7 @@ import {
   writeBridgeState,
 } from '../../src/bridge-state/store.js';
 import { getGlobalStatePath, getAgentDir } from '../../src/bridge-state/paths.js';
-import { CURRENT_SCHEMA_VERSION, createEmptyState } from '../../src/bridge-state/types.js';
+import { CURRENT_SCHEMA_VERSION, createEmptyState, type BridgeState } from '../../src/bridge-state/types.js';
 
 const EXITING_LOCK_OWNER = String.raw`
   const { closeSync, fsyncSync, openSync, writeFileSync } = require('node:fs');
@@ -166,13 +166,12 @@ describe('Bridge State store — single Global document, atomicity, corruption',
     expect(final.state!.stateRevision).toBe('5');
   });
 
-  it('persists only authoritative fields (no Effective State / catalogs)', async () => {
+  it('persists only authoritative fields (no Effective State / catalogs / scopeOverrides in v2)', async () => {
     await commitBridgeState(() => ({
         schemaVersion: CURRENT_SCHEMA_VERSION,
         stateRevision: '0', // will be bumped
         registrations: [{ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', alias: 'test' }],
         installations: [{ id: 'test/plugin', pluginId: 'test/plugin', installationState: 'enabled' }],
-        scopeOverrides: [],
       }),
       { agentDir: env.agentDir },
     );
@@ -182,8 +181,8 @@ describe('Bridge State store — single Global document, atomicity, corruption',
     expect(raw.stateRevision).toBe('1');
     expect(raw.registrations).toHaveLength(1);
     expect(raw.installations).toHaveLength(1);
-    // Retired field stays an empty array until the schema v2 migration strips it (#63)
-    expect(raw.scopeOverrides).toEqual([]);
+    // Scope Overrides stripped in schema v2 (#63)
+    expect(raw.scopeOverrides).toBeUndefined();
     // No Effective State fields
     expect(raw.effectiveState).toBeUndefined();
     expect(raw.catalog).toBeUndefined();
@@ -288,17 +287,77 @@ describe('Bridge State store — single Global document, atomicity, corruption',
   });
 
   it('writeBridgeState directly respects atomicity and version', async () => {
-    const state = {
+    const state: BridgeState = {
       schemaVersion: CURRENT_SCHEMA_VERSION,
       stateRevision: '1',
       registrations: [],
       installations: [],
-      scopeOverrides: [],
     };
     const w = await writeBridgeState(state, { agentDir: env.agentDir });
     expect(w.success).toBe(true);
     const r = await readBridgeState({ agentDir: env.agentDir });
     expect(r.state!.stateRevision).toBe('1');
+  });
+
+  it('automatically WAL-migrates v1 file with empty scopeOverrides to v2 on read', async () => {
+    const gPath = getGlobalStatePath(env.agentDir);
+    mkdirSync(join(env.agentDir, 'codex-marketplace'), { recursive: true });
+    writeFileSync(
+      gPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        stateRevision: '10',
+        registrations: [{ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', alias: 'market-a' }],
+        installations: [{ id: 'global/plugin-x', pluginId: 'plugin-x', installationState: 'enabled' }],
+        scopeOverrides: [],
+      }),
+      'utf-8',
+    );
+
+    const res = await readBridgeState({ agentDir: env.agentDir });
+    expect(res.status).toBe('ok');
+    expect(res.state?.schemaVersion).toBe(2);
+    expect(res.state?.stateRevision).toBe('10');
+    expect(res.state?.registrations).toHaveLength(1);
+    expect(res.state?.installations[0].id).toBe('plugin-x');
+    expect((res.state as any)?.scopeOverrides).toBeUndefined();
+    expect(res.findings).toEqual([]);
+
+    // File on disk must now be schemaVersion 2 without WAL remaining
+    const onDisk = JSON.parse(readFileSync(gPath, 'utf-8'));
+    expect(onDisk.schemaVersion).toBe(2);
+    expect(onDisk.scopeOverrides).toBeUndefined();
+    expect(existsSync(`${gPath}.wal`)).toBe(false);
+  });
+
+  it('automatically WAL-migrates v1 file with non-empty scopeOverrides to v2 and surfaces diagnostic finding', async () => {
+    const gPath = getGlobalStatePath(env.agentDir);
+    mkdirSync(join(env.agentDir, 'codex-marketplace'), { recursive: true });
+    writeFileSync(
+      gPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        stateRevision: '20',
+        registrations: [{ id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', alias: 'market-b' }],
+        installations: [],
+        scopeOverrides: [{ kind: 'registration', targetId: 'reg-legacy' }],
+      }),
+      'utf-8',
+    );
+
+    const res = await readBridgeState({ agentDir: env.agentDir });
+    expect(res.status).toBe('ok');
+    expect(res.state?.schemaVersion).toBe(2);
+    expect(res.state?.stateRevision).toBe('20');
+    expect((res.state as any)?.scopeOverrides).toBeUndefined();
+    expect(res.findings).toHaveLength(1);
+    expect(res.findings![0].rule).toBe('MIGRATE-01');
+    expect(res.findings![0].classification).toBe('warning');
+
+    const onDisk = JSON.parse(readFileSync(gPath, 'utf-8'));
+    expect(onDisk.schemaVersion).toBe(2);
+    expect(onDisk.scopeOverrides).toBeUndefined();
+    expect(existsSync(`${gPath}.wal`)).toBe(false);
   });
 
   it('Stale State Revision rejection releases the lock — subsequent commit with correct revision succeeds and no *.lock remains (issue #24 fix)', async () => {

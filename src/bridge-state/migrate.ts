@@ -14,17 +14,40 @@
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from 'node:fs';
 import { dirname } from 'node:path';
 
+import { scopeOverridesStrippedFinding, type ValidationFinding } from '../registration/findings.js';
 import { atomicWriteFile } from './atomic.js';
 import { getWalPath } from './paths.js';
 import { parseJson } from './schema.js';
 import { CURRENT_SCHEMA_VERSION, type BridgeState, createEmptyState } from './types.js';
 
 /** Known forward migrations: fromVersion -> migrator. Only migrations listed here are supported. */
-type Migrator = (state: BridgeState) => BridgeState;
+type MigratorResult = { state: BridgeState; findings?: ValidationFinding[] } | BridgeState;
+type Migrator = (state: any) => MigratorResult;
 
 const MIGRATIONS: Record<number, Migrator> = {
-  // Future: 1 -> 2 example
-  // 1: (state) => ({ ...state, schemaVersion: 2, registrations: state.registrations.map(...) })
+  1: (state: any) => {
+    const findings: ValidationFinding[] = [];
+    const hadOverrides = Array.isArray(state.scopeOverrides) && state.scopeOverrides.length > 0;
+    if (hadOverrides) {
+      findings.push(scopeOverridesStrippedFinding(state.scopeOverrides.length));
+    }
+    const cloned = structuredClone(state);
+    delete cloned.scopeOverrides;
+    cloned.schemaVersion = 2;
+    // Normalize Installation IDs: strip retired 'global/' scope prefix if present
+    if (Array.isArray(cloned.installations)) {
+      cloned.installations = cloned.installations.map((inst: any) => {
+        if (typeof inst === 'object' && inst !== null && typeof inst.id === 'string' && inst.id.startsWith('global/')) {
+          return {
+            ...inst,
+            id: inst.pluginId ?? inst.id.slice('global/'.length),
+          };
+        }
+        return inst;
+      });
+    }
+    return { state: cloned, findings };
+  },
 };
 
 export interface MigrationResult {
@@ -36,6 +59,7 @@ export interface MigrationResult {
   toVersion?: number;
   error?: string;
   code?: 'INCOMPATIBLE_NEWER' | 'UNKNOWN_OLD_VERSION' | 'MIGRATION_FAILED' | 'CORRUPTED' | 'DOWNGRADE_BLOCKED';
+  findings?: ValidationFinding[];
 }
 
 /**
@@ -50,7 +74,7 @@ export function migrateForward(state: BridgeState): MigrationResult {
   const from = state.schemaVersion;
 
   if (from === CURRENT_SCHEMA_VERSION) {
-    return { ok: true, state, migrated: false, fromVersion: from, toVersion: CURRENT_SCHEMA_VERSION };
+    return { ok: true, state, migrated: false, fromVersion: from, toVersion: CURRENT_SCHEMA_VERSION, findings: [] };
   }
 
   if (!Number.isInteger(from) || from < 1) {
@@ -70,8 +94,9 @@ export function migrateForward(state: BridgeState): MigrationResult {
   }
 
   // from < CURRENT: need forward chain
-  let cur: BridgeState = structuredClone(state);
+  let cur: any = structuredClone(state);
   let version = from;
+  const allFindings: ValidationFinding[] = [];
   while (version < CURRENT_SCHEMA_VERSION) {
     const migrator = MIGRATIONS[version];
     if (!migrator) {
@@ -82,7 +107,15 @@ export function migrateForward(state: BridgeState): MigrationResult {
       };
     }
     try {
-      cur = migrator(cur);
+      const res = migrator(cur);
+      if (typeof res === 'object' && res !== null && 'state' in res) {
+        cur = res.state;
+        if (res.findings && res.findings.length > 0) {
+          allFindings.push(...res.findings);
+        }
+      } else {
+        cur = res;
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       return {
@@ -102,7 +135,7 @@ export function migrateForward(state: BridgeState): MigrationResult {
     version = cur.schemaVersion;
   }
 
-  return { ok: true, state: cur, migrated: true, fromVersion: from, toVersion: CURRENT_SCHEMA_VERSION };
+  return { ok: true, state: cur as BridgeState, migrated: true, fromVersion: from, toVersion: CURRENT_SCHEMA_VERSION, findings: allFindings };
 }
 
 /**

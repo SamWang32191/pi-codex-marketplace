@@ -7,6 +7,7 @@ import { runStartupReconciliation } from '../../src/reconciliation/startup.js';
 import { appendReceipt, readReceiptJournal } from '../../src/journal/journal.js';
 import { createReceipt } from '../../src/registration/receipt.js';
 import { getGlobalStatePath } from '../../src/bridge-state/paths.js';
+import { CURRENT_SCHEMA_VERSION } from '../../src/bridge-state/types.js';
 
 const GLOBAL_PENDING_RECEIPT = 'rcpt_40000000-0000-4000-8000-000000000001';
 
@@ -41,11 +42,10 @@ describe('Integration — Startup Reconciliation (Global-only)', () => {
     writeFileSync(
       globalStatePath,
       JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: CURRENT_SCHEMA_VERSION,
         stateRevision: '2',
         registrations: [{ id: 'reg1', alias: 'market-1' }],
         installations: [{ id: 'weather', pluginId: 'weather', installationState: 'enabled' }],
-        scopeOverrides: [],
       }),
       'utf-8',
     );
@@ -81,11 +81,10 @@ describe('Integration — Startup Reconciliation (Global-only)', () => {
     writeFileSync(
       globalStatePath,
       JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: CURRENT_SCHEMA_VERSION,
         stateRevision: '1',
         registrations: [],
         installations: [{ id: 'tools', pluginId: 'tools', installationState: 'enabled' }],
-        scopeOverrides: [],
       }),
       'utf-8',
     );

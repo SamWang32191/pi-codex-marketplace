@@ -287,6 +287,8 @@ export async function repairBridgeState(
 
         const stateRevision = stateRead.state!.stateRevision;
         const journalFindings = journal.isDegraded ? journal.findings : [];
+        const stateFindings = stateRead.findings ?? [];
+        const allFindings = [...journalFindings, ...stateFindings];
         const receipt = createReceipt({
           kind: 'State Repair',
           operation: 'Repair State',
@@ -295,8 +297,8 @@ export async function repairBridgeState(
           observedStateRevision: stateRevision,
           durableOutcome: 'unchanged',
           runtimeOutcome: 'none',
-          summary: journalFindings.length > 0 ? 'Completed with diagnostics' : 'Completed',
-          findings: journalFindings,
+          summary: allFindings.length > 0 ? 'Completed with diagnostics' : 'Completed',
+          findings: allFindings,
           recoversReceiptId: indetChain?.rootReceiptId,
         });
         const committed = await commitJournalRepair(

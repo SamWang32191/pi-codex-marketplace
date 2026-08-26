@@ -86,6 +86,7 @@ export const RULE = {
   RECEIPT_CORRUPT: 'JOURNAL-02',
   STATE_CORRUPT: 'PERSIST-01',
   STATE_SCHEMA_UNKNOWN: 'SCHEMA-01',
+  SCOPE_OVERRIDES_STRIPPED: 'MIGRATE-01',
   RECONCILIATION_REQUIRED: 'RECON-01',
 } as const;
 
@@ -139,6 +140,7 @@ export const CODE = {
   RECEIPT_CORRUPT: 'RECEIPT_CORRUPT',
   STATE_CORRUPT: 'STATE_CORRUPT',
   STATE_SCHEMA_UNKNOWN: 'STATE_SCHEMA_UNKNOWN',
+  SCOPE_OVERRIDES_STRIPPED: 'SCOPE_OVERRIDES_STRIPPED',
   RECONCILIATION_REQUIRED: 'RECONCILIATION_REQUIRED',
 } as const;
 
@@ -178,3 +180,15 @@ export function notice(p: Omit<ValidationFinding, 'classification'>): Validation
 export function hasBlocking(findings: ValidationFinding[]): boolean {
   return findings.some((f) => f.classification === 'blocking');
 }
+
+export function scopeOverridesStrippedFinding(count: number): ValidationFinding {
+  return warning({
+    code: CODE.SCOPE_OVERRIDES_STRIPPED,
+    phase: 'persistence',
+    target: 'registration',
+    pointer: '/scopeOverrides',
+    rule: RULE.SCOPE_OVERRIDES_STRIPPED,
+    outcome: `Stripped ${count} legacy scopeOverride(s) during schema v1 → v2 migration (Project Scope retired)`,
+  });
+}
+

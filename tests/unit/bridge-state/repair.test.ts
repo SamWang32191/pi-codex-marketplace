@@ -669,4 +669,37 @@ describe('Repair State', () => {
       expect.objectContaining({ code: 'RECEIPT_PERSISTENCE_FAILED' }),
     ]));
   });
+
+  it('surfaces v1→v2 migration finding in Repair State receipt when non-empty scopeOverrides are stripped', async () => {
+    const statePath = getGlobalStatePath(agentDir);
+    mkdirSync(join(agentDir, 'codex-marketplace'), { recursive: true });
+    writeFileSync(
+      statePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        stateRevision: '5',
+        registrations: [{ id: 'reg-a', alias: 'marketplace-a' }],
+        installations: [],
+        scopeOverrides: [{ kind: 'registration', targetId: 'reg-b' }],
+      }),
+      'utf-8',
+    );
+
+    const res = await repairBridgeState({ agentDir });
+    expect(res.success).toBe(true);
+    expect(res.receipt.summary).toBe('Completed with diagnostics');
+    expect(res.receipt.findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: 'SCOPE_OVERRIDES_STRIPPED',
+          rule: 'MIGRATE-01',
+          classification: 'warning',
+        }),
+      ]),
+    );
+
+    const onDisk = JSON.parse(readFileSync(statePath, 'utf-8'));
+    expect(onDisk.schemaVersion).toBe(2);
+    expect(onDisk.scopeOverrides).toBeUndefined();
+  });
 });
