@@ -15,6 +15,7 @@
  */
 
 import type { AttemptSummary, RecoveryAction } from '../../src/registration/receipt.js';
+import type { MarketplaceFormat } from '../../src/bridge-state/types.js';
 import type { ValidationFinding } from '../../src/registration/findings.js';
 import type { TransactionStep } from './transaction-sheet.js';
 
@@ -52,6 +53,8 @@ const zhTW = {
 
   // --- closed-value glosses (canonical always rendered first) ---------------
 
+  'format.gloss.codex': 'Codex 格式',
+  'format.gloss.claude': 'Claude 格式',
   'summary.gloss.Completed': '完成',
   'summary.gloss.Completed with diagnostics': '完成但有診斷',
   'summary.gloss.Declined': '已婉拒',
@@ -114,6 +117,7 @@ const zhTW = {
   'sheet.field.kind': '種類',
   'sheet.field.operation': '操作',
   'sheet.field.trigger': '觸發',
+  'sheet.field.marketplaceFormat': 'Marketplace Format',
   'sheet.attemptSummary': 'Attempt Summary',
   'sheet.recoveryActions': 'Recovery Actions（復原動作）',
   'sheet.keys': 'Enter：繼續｜Esc/q/Ctrl-C：取消',
@@ -225,6 +229,7 @@ const zhTW = {
   'reg.detail.registrationId': 'Registration ID {id}',
   'reg.detail.source': '來源 {source}',
   'reg.detail.marketplace': 'Marketplace {name}',
+  'reg.detail.format': 'Marketplace Format {format}',
   'reg.detail.entries': 'Entries {total}（可定位 {locatable} / 無法定位 {unavailable}）',
   'reg.detail.profile': 'Compatibility Profile {profile}',
   'reg.detail.ruleset': 'Validation Ruleset {ruleset}',
@@ -263,6 +268,7 @@ const zhTW = {
   'reg.commit.persist': '寫入 Registration ID {id}',
   'reg.commit.authority': '於 {scope} 以 State Revision {revision} 寫入授權文件',
   'reg.outcome.notify': 'Attempt Summary：{summary} · Receipt {receiptId}',
+  'reg.outcome.notify.formatSuffix': 'Marketplace Format {format}',
 
   // --- installation.ts ---------------------------------------------------------
   'inst.select.registered': '選擇已註冊 Marketplace',
@@ -390,6 +396,7 @@ const zhTW = {
   'journal.view.recent.empty': '（Journal 為空）',
   'journal.view.receipt.summary': '摘要：{summary}｜持久：{durable}｜運行時：{runtime}',
   'journal.view.receipt.revision': 'State Revision：{expected} → {observed}',
+  'journal.view.receipt.format': 'Marketplace Format：{format}',
   'journal.view.receipt.recovers': '復原對象：{receiptId}',
   'journal.view.receipt.findings': 'Findings：{findings}',
   'journal.notFound': 'Receipt Journal 找不到精確 Receipt ID {receiptId}。',
@@ -558,6 +565,11 @@ export function recoveryActionText(action: RecoveryAction): string {
 export function recoveryActionGloss(action: RecoveryAction): string {
   const glossId = RECOVERY_ACTION_GLOSS[action];
   return glossId ? uiText(glossId) : '';
+}
+
+/** Marketplace Format closed value presented canonical-first with its zh_TW gloss. */
+export function marketplaceFormatText(format: MarketplaceFormat): string {
+  return closedValue(format, uiText(format === 'claude' ? 'format.gloss.claude' : 'format.gloss.codex'));
 }
 
 const STEP_GLOSS: Record<TransactionStep, MessageId> = {

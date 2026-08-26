@@ -8,6 +8,7 @@
 
 import { randomUUID } from 'node:crypto';
 
+import type { MarketplaceFormat } from '../bridge-state/types.js';
 import { CODE, hasBlocking, sortFindings, type ValidationFinding } from './findings.js';
 import { redactSource } from './source-key.js';
 
@@ -64,6 +65,8 @@ export interface AttemptReceipt {
   observedStateRevision?: string;
   /** Bound Validation Snapshot fingerprint. */
   validationSnapshot?: string;
+  /** Marketplace Format validated by this attempt when detection had already resolved it. */
+  marketplaceFormat?: MarketplaceFormat;
   /** Array of snapshot fingerprints involved. */
   snapshotFingerprints?: string[];
   /** Three-orthogonal axis 1: Durable persistence outcome. */
@@ -162,6 +165,10 @@ function isOptionalReceiptId(value: unknown): value is string | undefined {
   return value === undefined || isReceiptId(value);
 }
 
+function isOptionalMarketplaceFormat(value: unknown): value is MarketplaceFormat | undefined {
+  return value === undefined || value === 'codex' || value === 'claude';
+}
+
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string');
 }
@@ -199,6 +206,7 @@ export function isAttemptReceipt(value: unknown): value is AttemptReceipt {
     isOptionalString(value.targetStateRevision) &&
     isOptionalString(value.observedStateRevision) &&
     isOptionalString(value.validationSnapshot) &&
+    isOptionalMarketplaceFormat(value.marketplaceFormat) &&
     (value.snapshotFingerprints === undefined || isStringArray(value.snapshotFingerprints)) &&
     typeof value.durableOutcome === 'string' &&
     DURABLE_OUTCOMES.has(value.durableOutcome as DurableOutcome) &&
@@ -230,6 +238,8 @@ export interface ReceiptOptions {
   targetStateRevision?: string;
   observedStateRevision?: string;
   validationSnapshot?: string;
+  /** Marketplace Format validated by this attempt when detection had already resolved it. */
+  marketplaceFormat?: MarketplaceFormat;
   snapshotFingerprints?: string[];
   durableOutcome?: DurableOutcome;
   runtimeOutcome?: RuntimeOutcome;
@@ -415,6 +425,7 @@ export function createReceipt(opts: ReceiptOptions): AttemptReceipt {
     targetStateRevision: opts.targetStateRevision,
     observedStateRevision: opts.observedStateRevision,
     validationSnapshot: opts.validationSnapshot,
+    marketplaceFormat: opts.marketplaceFormat,
     snapshotFingerprints: opts.snapshotFingerprints,
     durableOutcome: durable,
     findings: sortedFindings,

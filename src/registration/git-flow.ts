@@ -12,10 +12,11 @@ import { readFileSync, statSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { commitBridgeState, readBridgeState } from '../bridge-state/store.js';
-import type { Registration } from '../bridge-state/types.js';
+import type { MarketplaceFormat, Registration } from '../bridge-state/types.js';
 import { BUDGET } from './budget.js';
 import { CODE, RULE, blocking, hasBlocking, sortFindings, type ValidationFinding } from './findings.js';
-import { parseCatalog, type Catalog } from './catalog.js';
+import type { Catalog } from './catalog.js';
+import { catalogContractFor, detectMarketplaceFormat } from './format.js';
 import { resolveContained } from './contained.js';
 import { acquireAttemptFence, type AttemptFenceHandle } from './fence.js';
 import { createReceipt, type AttemptReceipt } from './receipt.js';
@@ -27,7 +28,7 @@ import { normalizeGitLocator, type CanonicalGitLocator } from './git-locator.js'
 import { normalizeGitSelector, parseGitSelectorString, type GitSelectorInput, type NormalizedGitSelector } from './git-selector.js';
 import { acquireGitSource, cleanupAcquisition, type GitExecutor, type AcquisitionTrustOptions } from './git-acquisition.js';
 import { SourceCache } from '../cache/source-cache.js';
-import { MARKETPLACE_CATALOG_RELPATH } from './flow.js';
+import { CODEX_MARKETPLACE_CATALOG_RELPATH as MARKETPLACE_CATALOG_RELPATH } from './format.js';
 
 export interface GitRegistrationFlowOptions {
   agentDir?: string;
@@ -51,6 +52,8 @@ export interface GitRegistrationPreflight {
   selector: NormalizedGitSelector;
   resolvedRevision: string;
   marketplaceName: string;
+  /** Marketplace Format detected from the acquired root content (codex prioritized); fixed onto the Registration. */
+  format: MarketplaceFormat;
   catalog: Catalog;
   snapshot: ValidationSnapshot;
   findings: ValidationFinding[];
@@ -88,12 +91,14 @@ async function blockedResult(
   handle: AttemptFenceHandle | null,
   opts: GitRegistrationFlowOptions = {},
   existing?: Registration,
+  marketplaceFormat?: MarketplaceFormat,
 ): Promise<{ ok: false; outcome: GitRegistrationOutcome }> {
   if (handle) handle.release();
   const receipt = createReceipt({
     operation: OPERATION,
     trigger: triggerFor(locatorInput, selectorInput),
     expectedStateRevision: expectedRevision,
+    marketplaceFormat,
     summary: 'Blocked',
     findings,
   });
@@ -216,13 +221,11 @@ export async function preflightGitRegistration(
     (sourceKey as SourceKey).canonicalUrl = locator.canonicalUrl;
     (sourceKey as SourceKey).selector = selCanonical;
 
-    // Catalog / containment / budget
+    // Catalog / containment / budget — format detected from the acquired root content
+    // (codex prioritized over claude); neither catalog present ⇒ unchanged CATALOG_MISSING.
     const findings: ValidationFinding[] = [];
-    const catalogPath = join(acquiredPath, MARKETPLACE_CATALOG_RELPATH);
-    let catalogBytes = 0;
-    try {
-      catalogBytes = statSync(catalogPath).size;
-    } catch {
+    const detectedFormat = detectMarketplaceFormat(acquiredPath);
+    if (!detectedFormat) {
       const finding = blocking({
         code: CODE.CATALOG_MISSING,
         phase: 'validation',
@@ -234,12 +237,29 @@ export async function preflightGitRegistration(
       cleanupAcquisition(acquiredPath);
       return blockedResult(locatorInput, selCanonical, expectedRevision, [finding], handle, opts);
     }
+    const contract = catalogContractFor(detectedFormat);
+    const catalogPath = join(acquiredPath, ...contract.relPath.split('/'));
+    let catalogBytes = 0;
+    try {
+      catalogBytes = statSync(catalogPath).size;
+    } catch {
+      const finding = blocking({
+        code: CODE.CATALOG_MISSING,
+        phase: 'validation',
+        target: 'catalog',
+        pointer: contract.relPath,
+        rule: RULE.CATALOG_MISSING,
+        outcome: `Marketplace Catalog not found at ${contract.relPath}; legacy marketplace shapes do not participate in Bridge ingestion`,
+      });
+      cleanupAcquisition(acquiredPath);
+      return blockedResult(locatorInput, selCanonical, expectedRevision, [finding], handle, opts);
+    }
     if (catalogBytes > BUDGET.maxCatalogBytes) {
       const finding = blocking({
         code: CODE.BUDGET_EXCEEDED,
         phase: 'validation',
         target: 'catalog',
-        pointer: MARKETPLACE_CATALOG_RELPATH,
+        pointer: contract.relPath,
         rule: RULE.BUDGET_EXCEEDED,
         outcome: `Validation Budget exceeded: catalog ${catalogBytes} bytes > ${BUDGET.maxCatalogBytes}`,
       });
@@ -256,21 +276,22 @@ export async function preflightGitRegistration(
         code: CODE.CATALOG_MALFORMED,
         phase: 'validation',
         target: 'catalog',
-        pointer: MARKETPLACE_CATALOG_RELPATH,
+        pointer: contract.relPath,
         rule: RULE.CATALOG_MALFORMED,
         outcome: `unable to parse marketplace.json: ${msg}`,
       });
       cleanupAcquisition(acquiredPath);
-      return blockedResult(locatorInput, selCanonical, expectedRevision, [finding], handle, opts);
+      return blockedResult(locatorInput, selCanonical, expectedRevision, [finding], handle, opts, undefined, detectedFormat);
     }
 
-    const catalogResult = parseCatalog(parsed);
+    const catalogResult = contract.parse(parsed);
     findings.push(...catalogResult.findings);
     if (!catalogResult.ok) {
       cleanupAcquisition(acquiredPath);
-      return blockedResult(locatorInput, selCanonical, expectedRevision, sortFindings(findings), handle, opts);
+      return blockedResult(locatorInput, selCanonical, expectedRevision, sortFindings(findings), handle, opts, undefined, detectedFormat);
     }
     const catalog = catalogResult.catalog!;
+    const format: MarketplaceFormat = detectedFormat;
 
     if (catalog.name.length > BUDGET.maxNameLength) {
       findings.push(
@@ -363,6 +384,7 @@ export async function preflightGitRegistration(
       selector,
       resolvedRevision,
       marketplaceName: catalog.name,
+      format,
       catalog,
       snapshot: snapshotResult.snapshot!,
       findings: sorted,
@@ -406,6 +428,7 @@ export async function confirmGitRegistration(
       trigger: triggerFor(preflight.locator.canonicalUrl, preflight.selector.canonical),
       expectedStateRevision: preflight.stateRevision,
       validationSnapshot: preflight.snapshot.fingerprint,
+      marketplaceFormat: preflight.format,
       summary: 'Blocked',
       findings: [
         blocking({
@@ -434,6 +457,7 @@ export async function confirmGitRegistration(
       trigger: triggerFor(preflight.locator.canonicalUrl, preflight.selector.canonical),
       expectedStateRevision: preflight.stateRevision,
       validationSnapshot: preflight.snapshot.fingerprint,
+      marketplaceFormat: preflight.format,
       summary: 'Declined',
       findings: preflight.findings,
       stateChanged: false,
@@ -450,6 +474,7 @@ export async function confirmGitRegistration(
       trigger: triggerFor(preflight.locator.canonicalUrl, preflight.selector.canonical),
       expectedStateRevision: preflight.stateRevision,
       validationSnapshot: preflight.snapshot.fingerprint,
+      marketplaceFormat: preflight.format,
       summary: 'Persistence Indeterminate',
       findings: [
         blocking({
@@ -474,6 +499,7 @@ export async function confirmGitRegistration(
       expectedStateRevision: preflight.stateRevision,
       targetStateRevision: currentRevision,
       validationSnapshot: preflight.snapshot.fingerprint,
+      marketplaceFormat: preflight.format,
       summary: 'Rejected as Stale',
       findings: [
         blocking({
@@ -499,6 +525,7 @@ export async function confirmGitRegistration(
       trigger: triggerFor(preflight.locator.canonicalUrl, preflight.selector.canonical),
       expectedStateRevision: preflight.stateRevision,
       validationSnapshot: preflight.snapshot.fingerprint,
+      marketplaceFormat: preflight.format,
       summary: 'Blocked',
       findings: [dup.finding!],
     });
@@ -511,6 +538,7 @@ export async function confirmGitRegistration(
     id: preflight.registrationId,
     alias: preflight.alias,
     marketplaceName: preflight.marketplaceName,
+    format: preflight.format,
     sourceKind: 'git',
     source: preflight.locator.canonicalUrl,
     sourceKey: preflight.sourceKey,
@@ -535,6 +563,7 @@ export async function confirmGitRegistration(
       expectedStateRevision: preflight.stateRevision,
       targetStateRevision: '?',
       validationSnapshot: preflight.snapshot.fingerprint,
+      marketplaceFormat: preflight.format,
       summary,
       findings: [
         blocking({
@@ -562,6 +591,7 @@ export async function confirmGitRegistration(
     targetStateRevision: targetRevision,
     observedStateRevision: targetRevision,
     validationSnapshot: preflight.snapshot.fingerprint,
+    marketplaceFormat: preflight.format,
     summary: hasDiagnostics ? 'Completed with diagnostics' : 'Completed',
     findings: preflight.findings,
     stateChanged: true,
@@ -589,6 +619,7 @@ export function disclosureSummaryGit(preflight: GitRegistrationPreflight): strin
     `Git Selector: ${preflight.selector.kind} → ${preflight.selector.canonical}`,
     `Resolved Revision: ${preflight.resolvedRevision}`,
     `Marketplace: ${preflight.marketplaceName}`,
+    `Marketplace Format: ${preflight.format}`,
     `State Revision: ${preflight.stateRevision}`,
     `Validation Snapshot: ${preflight.snapshot.fingerprint.slice(0, 16)}…`,
     `Entries: ${entries.length} (${available} locatable / ${unavailable} unavailable)`,

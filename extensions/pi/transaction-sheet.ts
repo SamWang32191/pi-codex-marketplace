@@ -13,6 +13,7 @@ import {
   attemptSummaryGloss,
   closedValue,
   findingOutcomeText,
+  marketplaceFormatText,
   recoveryActionGloss,
   transactionStepLabel,
   uiText,
@@ -98,6 +99,9 @@ function receiptAxes(receipt: AttemptReceipt, theme: TransactionSheetTheme): [st
     field(theme, uiText('sheet.field.kind'), receipt.kind),
     field(theme, uiText('sheet.field.operation'), receipt.operation),
     field(theme, uiText('sheet.field.trigger'), receipt.trigger),
+    ...(receipt.marketplaceFormat === undefined
+      ? []
+      : [field(theme, uiText('sheet.field.marketplaceFormat'), marketplaceFormatText(receipt.marketplaceFormat))]),
   ];
   return [durable, findings, runtime];
 }

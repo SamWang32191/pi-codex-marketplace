@@ -18,7 +18,7 @@ import { acquireAttemptFence } from '../../src/registration/fence.js';
 import { blocking, CODE, notice, RULE, type ValidationFinding } from '../../src/registration/findings.js';
 import { createReceipt, type AttemptReceipt } from '../../src/registration/receipt.js';
 import { fullValidationDisclosureLines, reportOutcome } from './registration.js';
-import { attemptSummaryText, uiText } from './ui-strings.js';
+import { attemptSummaryText, marketplaceFormatText, uiText } from './ui-strings.js';
 import { quoteTerminalText } from './terminal-presentation.js';
 import { openTransactionSheet, type TransactionSheetModel } from './transaction-sheet.js';
 
@@ -478,6 +478,9 @@ export async function runReceiptJournalView(
         expected: quote(rc.expectedStateRevision),
         observed: quote(rc.observedStateRevision ?? rc.targetStateRevision ?? '?'),
       }));
+      if (rc.marketplaceFormat) {
+        lines.push('  ' + uiText('journal.view.receipt.format', { format: marketplaceFormatText(rc.marketplaceFormat) }));
+      }
       if (rc.recoversReceiptId) {
         lines.push('  ' + uiText('journal.view.receipt.recovers', { receiptId: quote(rc.recoversReceiptId) }));
       }

@@ -17,7 +17,7 @@ import {
 } from '../../src/registration/flow.js';
 import { sortFindings, type ValidationFinding } from '../../src/registration/findings.js';
 import type { AttemptReceipt } from '../../src/registration/receipt.js';
-import { attemptSummaryText, findingOutcomeText, uiText, verdictText } from './ui-strings.js';
+import { attemptSummaryText, findingOutcomeText, marketplaceFormatText, uiText, verdictText } from './ui-strings.js';
 import { quoteTerminalText } from './terminal-presentation.js';
 import { openTransactionSheet, type TransactionSheetModel } from './transaction-sheet.js';
 
@@ -101,6 +101,7 @@ export async function runLocalRegistrationFlow(
     uiText('reg.detail.registrationId', { id: quoteTerminalText(pf.registrationId) }),
     uiText('reg.detail.source', { source: quoteTerminalText(pf.canonicalPath) }),
     uiText('reg.detail.marketplace', { name: quoteTerminalText(pf.marketplaceName) }),
+    uiText('reg.detail.format', { format: marketplaceFormatText(pf.format) }),
     uiText('reg.detail.entries', {
       total: pf.catalog.entries.length,
       locatable: pf.catalog.entries.filter((entry) => entry.available).length,
@@ -210,8 +211,12 @@ export async function reportOutcome(
     validationSnapshot: rc.validationSnapshot,
     receipt: rc,
   });
+  const notifyMessage = rc.marketplaceFormat
+    ? `${uiText('reg.outcome.notify', { summary: attemptSummaryText(rc.summary), receiptId: quoteTerminalText(rc.id) })} · ${
+        uiText('reg.outcome.notify.formatSuffix', { format: marketplaceFormatText(rc.marketplaceFormat) })}`
+    : uiText('reg.outcome.notify', { summary: attemptSummaryText(rc.summary), receiptId: quoteTerminalText(rc.id) });
   ctx.ui.notify(
-    uiText('reg.outcome.notify', { summary: attemptSummaryText(rc.summary), receiptId: quoteTerminalText(rc.id) }),
+    notifyMessage,
     notifyType,
   );
 }

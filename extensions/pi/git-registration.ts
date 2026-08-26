@@ -14,9 +14,10 @@ import type { ExtensionCommandContext, ExtensionUIContext } from '@earendil-work
 import {
   preflightGitRegistration,
   confirmGitRegistration,
+  type GitRegistrationFlowOptions,
 } from '../../src/registration/git-flow.js';
 import type { GitSelectorInput } from '../../src/registration/git-selector.js';
-import { uiText } from './ui-strings.js';
+import { marketplaceFormatText, uiText } from './ui-strings.js';
 import {
   fullValidationDisclosureLines,
   reportOutcome,
@@ -36,8 +37,14 @@ async function transactionStep(
   return false;
 }
 
+/**
+ * One interactive git registration flow invocation.
+ * The optional flow options thread the Acquisition Trust Base seams (executor / trust / cache)
+ * for tests and embedders; production callers rely on the real Git executor.
+ */
 export async function runGitRegistrationFlow(
   ctx: ExtensionCommandContext,
+  flowOpts: Pick<GitRegistrationFlowOptions, 'executor' | 'trust' | 'cache'> = {},
 ): Promise<void> {
   const ui: ExtensionUIContext = ctx.ui;
 
@@ -99,7 +106,7 @@ export async function runGitRegistrationFlow(
     ],
   })) return;
 
-  const opts = {};
+  const opts: GitRegistrationFlowOptions = { ...flowOpts };
   const res = await preflightGitRegistration(locator, selectorInput, opts);
   if (!res.ok) {
     await reportTerminalPreflightOutcome(ctx, res.outcome);
@@ -121,6 +128,7 @@ export async function runGitRegistrationFlow(
     }),
     uiText('reg.git.detail.resolvedRevision', { revision: quoteTerminalText(pf.resolvedRevision) }),
     uiText('reg.detail.marketplace', { name: quoteTerminalText(pf.marketplaceName) }),
+    uiText('reg.detail.format', { format: marketplaceFormatText(pf.format) }),
     uiText('reg.detail.entries', {
       total: pf.catalog.entries.length,
       locatable: pf.catalog.entries.filter((entry) => entry.available).length,

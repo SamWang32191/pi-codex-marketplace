@@ -11,7 +11,7 @@
 
 import { readBridgeState } from '../bridge-state/store.js';
 import type { BridgeState } from '../bridge-state/types.js';
-import type { Registration } from '../bridge-state/types.js';
+import type { MarketplaceFormat, Registration } from '../bridge-state/types.js';
 import type { MarketplaceInspection } from '../installation/inspection.js';
 import { inspectMarketplaceEntries } from '../installation/inspection.js';
 import type { Catalog } from '../registration/catalog.js';
@@ -29,6 +29,7 @@ import {
   type GitExecutor,
 } from '../registration/git-acquisition.js';
 import { SourceCache } from '../cache/source-cache.js';
+import { detectMarketplaceFormat } from '../registration/format.js';
 import { normalizeGitLocator } from '../registration/git-locator.js';
 import {
   normalizeGitSelector,
@@ -66,6 +67,8 @@ export interface UpdateCandidate {
   /** Newly validated snapshot with full tree + binds (base-tree fingerprint, as registered). */
   snapshot: ValidationSnapshot;
   marketplaceName: string;
+  /** Marketplace Format detected on the candidate source state; applied only by the explicit Apply Update / Rebind commit. */
+  format?: MarketplaceFormat;
   catalog: Catalog;
   inspection: MarketplaceInspection;
   sourceKey: SourceKey;
@@ -176,7 +179,10 @@ function refreshLocalRegistration(
   }
 
   if (!registration.validationSnapshot || snap.snapshot.fingerprint !== registration.validationSnapshot) {
-    const inspection = inspectMarketplaceEntries(registration, { ignoreRecordedDrift: true });
+    // The candidate's own format is detected fresh from the live tree — a flipped root can only
+    // reach the Registration through this Update Candidate plus an explicit Apply Update.
+    const liveFormat = detectMarketplaceFormat(registration.source);
+    const inspection = inspectMarketplaceEntries(registration, { ignoreRecordedDrift: true, format: liveFormat ?? undefined });
     const name = marketplaceNameOf(registration.id, inspection.marketplaceId) || registration.marketplaceName || '';
     const candidate: UpdateCandidate = {
       registrationId: registration.id,
@@ -185,6 +191,7 @@ function refreshLocalRegistration(
       recordedResolvedRevision: registration.resolvedRevision,
       snapshot: snap.snapshot,
       marketplaceName: name,
+      format: liveFormat ?? undefined,
       catalog: { name, entries: inspection.entries.map((item) => item.entry) },
       inspection,
       sourceKey: registration.sourceKey,
@@ -341,10 +348,12 @@ async function refreshGitRegistration(
     if (!snap.ok || !snap.snapshot) {
       return blocked(registration.id, revision, snap.findings, registration.validationSnapshot);
     }
+    const liveFormat = detectMarketplaceFormat(root);
     const inspection = inspectMarketplaceEntries(registration, {
       root,
       baseSnapshot: snap.snapshot,
       ignoreRecordedDrift: true,
+      format: liveFormat ?? undefined,
     });
     const name = marketplaceNameOf(registration.id, inspection.marketplaceId) || registration.marketplaceName || '';
     const candidate: UpdateCandidate = {
@@ -354,6 +363,7 @@ async function refreshGitRegistration(
       recordedResolvedRevision: registration.resolvedRevision,
       snapshot: snap.snapshot,
       marketplaceName: name,
+      format: liveFormat ?? undefined,
       catalog: { name, entries: inspection.entries.map((item) => item.entry) },
       inspection,
       sourceKey: newSourceKey,

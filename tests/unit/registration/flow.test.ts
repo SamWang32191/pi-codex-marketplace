@@ -337,3 +337,113 @@ describe('Local Marketplace Registration flow', () => {
     expect(missing?.pointer).toBe(MARKETPLACE_CATALOG_RELPATH);
   });
 });
+describe('Marketplace Format detection wiring — local registration', () => {
+  let env: Env;
+  let root: string;
+
+  beforeEach(() => {
+    env = makeEnv();
+    root = realpathSync(mkdtempSync(join(tmpdir(), 'claude-root-')));
+  });
+  afterEach(() => {
+    try {
+      rmSync(env.tmpRoot, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    } catch {}
+  });
+
+  function makeClaudeMarketplace(marketRoot: string, name = 'matt-marketplace'): void {
+    mkdirSync(join(marketRoot, '.claude-plugin'), { recursive: true });
+    const pluginRoot = join(marketRoot, 'plugins', 'mattpocock-skills');
+    mkdirSync(join(pluginRoot, '.claude-plugin'), { recursive: true });
+    mkdirSync(join(pluginRoot, 'skills', 'engineering', 'code-review'), { recursive: true });
+    writeFileSync(
+      join(pluginRoot, 'skills', 'engineering', 'code-review', 'SKILL.md'),
+      '---\nname: code-review\ndescription: Review code changes\ndisable-model-invocation: true\n---\n\nReview code.\n',
+    );
+    mkdirSync(join(pluginRoot, 'skills', 'diagnostics', 'diagnosing-bugs'), { recursive: true });
+    writeFileSync(
+      join(pluginRoot, 'skills', 'diagnostics', 'diagnosing-bugs', 'SKILL.md'),
+      '---\nname: diagnosing-bugs\ndescription: Diagnose hard bugs\n---\n\nDiagnose.\n',
+    );
+    writeFileSync(
+      join(pluginRoot, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'mattpocock-skills', skills: ['./skills/engineering/code-review', './skills/diagnostics/diagnosing-bugs'] }),
+    );
+    writeFileSync(
+      join(marketRoot, '.claude-plugin', 'marketplace.json'),
+      JSON.stringify({
+        name,
+        owner: { name: 'Matt Pocock' },
+        plugins: [{ name: 'mattpocock-skills', source: './plugins/mattpocock-skills', description: 'skill collection' }],
+      }),
+    );
+  }
+
+  it('registers a claude-only repo and fixes format=claude onto the Registration', async () => {
+    makeClaudeMarketplace(root);
+    const res = await preflightLocalRegistration(root, opts(env));
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.preflight.format).toBe('claude');
+    expect(disclosureSummary(res.preflight)).toContain('Marketplace Format: claude');
+
+    const outcome = await confirmLocalRegistration(res.preflight, true, opts(env));
+    expect(outcome.status).toBe('completed');
+    if (outcome.status !== 'completed') return;
+    expect(outcome.registration.format).toBe('claude');
+    expect(outcome.receipt.marketplaceFormat).toBe('claude');
+    // inert entry metadata (description) is disclosed as a Validation Warning
+    expect(outcome.receipt.summary).toBe('Completed with diagnostics');
+
+    const state = await readBridgeState({ agentDir: env.agentDir });
+    expect(state.state!.registrations[0].format).toBe('claude');
+  });
+
+  it('adopts codex without an extra question when both catalogs coexist', async () => {
+    makeClaudeMarketplace(root);
+    mkdirSync(join(root, '.agents', 'plugins'), { recursive: true });
+    mkdirSync(join(root, 'plugins', 'release-helper'), { recursive: true });
+    writeFileSync(join(root, 'plugins', 'release-helper', 'plugin.json'), JSON.stringify({ name: 'release-helper' }));
+    writeFileSync(join(root, 'plugins', 'release-helper', 'SKILL.md'), '# release-helper');
+    writeFileSync(
+      join(root, '.agents', 'plugins', 'marketplace.json'),
+      JSON.stringify({ name: 'acme-marketplace', plugins: [{ name: 'release-helper', path: './plugins/release-helper' }] }),
+    );
+
+    const res = await preflightLocalRegistration(root, opts(env));
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.preflight.format).toBe('codex');
+    expect(disclosureSummary(res.preflight)).toContain('Marketplace Format: codex');
+    cancelLocalRegistration(res.preflight);
+  });
+
+  it('keeps CATALOG_MISSING unchanged when neither catalog exists', async () => {
+    mkdirSync(join(root, 'unrelated'), { recursive: true });
+    const res = await preflightLocalRegistration(root, opts(env));
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.outcome.status).toBe('blocked');
+    if (res.outcome.status !== 'blocked') return;
+    expect(res.outcome.findings[0].code).toBe('CATALOG_MISSING');
+  });
+
+  it('parses claude catalogs under their fail-closed field policy when format=claude', async () => {
+    makeClaudeMarketplace(root);
+    writeFileSync(
+      join(root, '.claude-plugin', 'marketplace.json'),
+      JSON.stringify({
+        name: 'matt-marketplace',
+        owner: { name: 'Matt Pocock' },
+        plugins: [{ name: 'mattpocock-skills', source: './skills', rogueField: true }],
+      }),
+    );
+    const res = await preflightLocalRegistration(root, opts(env));
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.outcome.status).toBe('blocked');
+    if (res.outcome.status !== 'blocked') return;
+    expect(res.outcome.findings.some((f) => f.code === 'CATALOG_UNKNOWN_FIELD')).toBe(true);
+  });
+});

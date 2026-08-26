@@ -14,7 +14,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { commitBridgeState, readBridgeState } from '../bridge-state/store.js';
-import type { Registration } from '../bridge-state/types.js';
+import type { MarketplaceFormat, Registration } from '../bridge-state/types.js';
 import { BUDGET } from './budget.js';
 import {
   CODE,
@@ -25,6 +25,7 @@ import {
   type ValidationFinding,
 } from './findings.js';
 import { parseCatalog, type Catalog } from './catalog.js';
+import { catalogContractFor, detectMarketplaceFormat } from './format.js';
 import { resolveContained } from './contained.js';
 import { acquireAttemptFence, type AttemptFenceHandle } from './fence.js';
 import { createReceipt, type AttemptReceipt } from './receipt.js';
@@ -38,7 +39,13 @@ import {
 import { buildLocalSnapshot, type ValidationSnapshot } from './snapshot.js';
 import type { SourceKey } from './source-key.js';
 
-export const MARKETPLACE_CATALOG_RELPATH = '.agents/plugins/marketplace.json';
+/**
+ * Canonical codex Marketplace Catalog location within a Marketplace Root.
+ * Kept as the historical export name; the claude counterpart lives in
+ * `catalogContractFor('claude').relPath` (see ./format.ts).
+ */
+export const MARKETPLACE_CATALOG_RELPATH = CODEX_RELPATH;
+import { CODEX_MARKETPLACE_CATALOG_RELPATH as CODEX_RELPATH } from './format.js';
 
 export interface RegistrationFlowOptions {
   agentDir?: string;
@@ -54,6 +61,8 @@ export interface LocalRegistrationPreflight {
   sourceKey: SourceKey;
   canonicalPath: string;
   marketplaceName: string;
+  /** Marketplace Format detected from the root content (codex prioritized); fixed onto the Registration. */
+  format: MarketplaceFormat;
   catalog: Catalog;
   snapshot: ValidationSnapshot;
   findings: ValidationFinding[];
@@ -95,12 +104,14 @@ async function blockedResult(
   handle: AttemptFenceHandle | null,
   opts: RegistrationFlowOptions = {},
   existing?: Registration,
+  marketplaceFormat?: MarketplaceFormat,
 ): Promise<{ ok: false; outcome: RegistrationOutcome }> {
   if (handle) handle.release();
   const receipt = createReceipt({
     operation: OPERATION,
     trigger: triggerFor(rootPath),
     expectedStateRevision: expectedRevision,
+    marketplaceFormat,
     summary: 'Blocked',
     findings,
   });
@@ -173,13 +184,12 @@ export async function preflightLocalRegistration(
     const sourceKey = sourceKeyRes.sourceKey;
     const canonicalPath = sourceKey.canonicalPath!;
 
-    // Marketplace Catalog — canonical `.agents/plugins/marketplace.json`
     const findings: ValidationFinding[] = [];
-    const catalogPath = join(canonicalPath, MARKETPLACE_CATALOG_RELPATH);
-    let catalogBytes = 0;
-    try {
-      catalogBytes = statSync(catalogPath).size;
-    } catch {
+
+    // Marketplace Format — decisive scan of the root content (codex prioritized over claude).
+    // Neither canonical catalog present ⇒ the unchanged CATALOG_MISSING Blocking Finding.
+    const detectedFormat = detectMarketplaceFormat(canonicalPath);
+    if (!detectedFormat) {
       const finding = blocking({
         code: CODE.CATALOG_MISSING,
         phase: 'validation',
@@ -190,12 +200,28 @@ export async function preflightLocalRegistration(
       });
       return blockedResult(rootPath, expectedRevision, [finding], handle, opts);
     }
+    const contract = catalogContractFor(detectedFormat);
+    const catalogPath = join(canonicalPath, ...contract.relPath.split('/'));
+    let catalogBytes = 0;
+    try {
+      catalogBytes = statSync(catalogPath).size;
+    } catch {
+      const finding = blocking({
+        code: CODE.CATALOG_MISSING,
+        phase: 'validation',
+        target: 'catalog',
+        pointer: contract.relPath,
+        rule: RULE.CATALOG_MISSING,
+        outcome: `Marketplace Catalog not found at ${contract.relPath}; legacy marketplace shapes do not participate in Bridge ingestion`,
+      });
+      return blockedResult(rootPath, expectedRevision, [finding], handle, opts);
+    }
     if (catalogBytes > BUDGET.maxCatalogBytes) {
       const finding = blocking({
         code: CODE.BUDGET_EXCEEDED,
         phase: 'validation',
         target: 'catalog',
-        pointer: MARKETPLACE_CATALOG_RELPATH,
+        pointer: contract.relPath,
         rule: RULE.BUDGET_EXCEEDED,
         outcome: `Validation Budget exceeded: catalog ${catalogBytes} bytes > ${BUDGET.maxCatalogBytes}`,
       });
@@ -211,19 +237,20 @@ export async function preflightLocalRegistration(
         code: CODE.CATALOG_MALFORMED,
         phase: 'validation',
         target: 'catalog',
-        pointer: MARKETPLACE_CATALOG_RELPATH,
+        pointer: contract.relPath,
         rule: RULE.CATALOG_MALFORMED,
         outcome: `unable to parse marketplace.json: ${msg}`,
       });
-      return blockedResult(rootPath, expectedRevision, [finding], handle, opts);
+      return blockedResult(rootPath, expectedRevision, [finding], handle, opts, undefined, detectedFormat);
     }
 
-    const catalogResult = parseCatalog(parsed);
+    const catalogResult = contract.parse(parsed);
     findings.push(...catalogResult.findings);
     if (!catalogResult.ok) {
-      return blockedResult(rootPath, expectedRevision, sortFindings(findings), handle, opts);
+      return blockedResult(rootPath, expectedRevision, sortFindings(findings), handle, opts, undefined, detectedFormat);
     }
     const catalog = catalogResult.catalog!;
+    const format: MarketplaceFormat = detectedFormat;
 
     if (catalog.name.length > BUDGET.maxNameLength) {
       findings.push(
@@ -301,6 +328,7 @@ export async function preflightLocalRegistration(
       sourceKey,
       canonicalPath,
       marketplaceName: catalog.name,
+      format,
       catalog,
       snapshot: snapshotResult.snapshot!,
       findings: sorted,
@@ -344,6 +372,7 @@ export async function confirmLocalRegistration(
       trigger: triggerFor(preflight.canonicalPath),
       expectedStateRevision: preflight.stateRevision,
       validationSnapshot: preflight.snapshot.fingerprint,
+      marketplaceFormat: preflight.format,
       summary: 'Blocked',
       findings: [
         blocking({
@@ -369,6 +398,7 @@ export async function confirmLocalRegistration(
       trigger: triggerFor(preflight.canonicalPath),
       expectedStateRevision: preflight.stateRevision,
       validationSnapshot: preflight.snapshot.fingerprint,
+      marketplaceFormat: preflight.format,
       summary: 'Declined',
       findings: preflight.findings,
       stateChanged: false,
@@ -386,6 +416,7 @@ export async function confirmLocalRegistration(
       trigger: triggerFor(preflight.canonicalPath),
       expectedStateRevision: preflight.stateRevision,
       validationSnapshot: preflight.snapshot.fingerprint,
+      marketplaceFormat: preflight.format,
       summary: 'Persistence Indeterminate',
       findings: [
         blocking({
@@ -410,6 +441,7 @@ export async function confirmLocalRegistration(
       expectedStateRevision: preflight.stateRevision,
       targetStateRevision: currentRevision,
       validationSnapshot: preflight.snapshot.fingerprint,
+      marketplaceFormat: preflight.format,
       summary: 'Rejected as Stale',
       findings: [
         blocking({
@@ -436,6 +468,7 @@ export async function confirmLocalRegistration(
       trigger: triggerFor(preflight.canonicalPath),
       expectedStateRevision: preflight.stateRevision,
       validationSnapshot: preflight.snapshot.fingerprint,
+      marketplaceFormat: preflight.format,
       summary: 'Blocked',
       findings: [dup.finding!],
     });
@@ -452,6 +485,7 @@ export async function confirmLocalRegistration(
       trigger: triggerFor(preflight.canonicalPath),
       expectedStateRevision: preflight.stateRevision,
       validationSnapshot: preflight.snapshot.fingerprint,
+      marketplaceFormat: preflight.format,
       summary: 'Rejected as Stale',
       findings: [
         blocking({
@@ -475,6 +509,7 @@ export async function confirmLocalRegistration(
     id: preflight.registrationId,
     alias: preflight.alias,
     marketplaceName: preflight.marketplaceName,
+    format: preflight.format,
     sourceKind: 'local',
     source: preflight.canonicalPath,
     sourceKey: preflight.sourceKey,
@@ -496,6 +531,7 @@ export async function confirmLocalRegistration(
       expectedStateRevision: preflight.stateRevision,
       targetStateRevision: '?',
       validationSnapshot: preflight.snapshot.fingerprint,
+      marketplaceFormat: preflight.format,
       summary,
       findings: [
         blocking({
@@ -523,6 +559,7 @@ export async function confirmLocalRegistration(
     targetStateRevision: targetRevision,
     observedStateRevision: targetRevision,
     validationSnapshot: preflight.snapshot.fingerprint,
+    marketplaceFormat: preflight.format,
     summary: hasDiagnostics ? 'Completed with diagnostics' : 'Completed',
     findings: preflight.findings,
     stateChanged: true,
@@ -551,6 +588,7 @@ export function disclosureSummary(preflight: LocalRegistrationPreflight): string
   const lines = [
     `Source: ${preflight.canonicalPath}`,
     `Marketplace: ${preflight.marketplaceName}`,
+    `Marketplace Format: ${preflight.format}`,
     `State Revision: ${preflight.stateRevision}`,
     `Validation Snapshot: ${preflight.snapshot.fingerprint.slice(0, 16)}…`,
     `Entries: ${entries.length} (${available} locatable / ${unavailable} unavailable)`,
