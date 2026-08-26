@@ -5,7 +5,8 @@ All notable changes to `pi-codex-marketplace` are documented here. Format follow
 ## [Unreleased]
 
 ### Changed
-- **Global-only 前置：Scope Override 功能端到端退休** (#59)：`/codex-marketplace` TUI 移除「Scope 與繼承」分區、建立／移除 Scope Override 動作與 inherited／suppresses 列標記；刪除 overrides 核心模組（`src/projection/overrides.ts`）與 extension flow adapter（`extensions/pi/scope-overrides.ts`），Effective State 檢視搬移至 observe-only 的 `extensions/pi/effective-state-view.ts`。繼承自 Global 的 Registration / Installation 一律參與 Effective State，無任何抑制路徑；`BridgeState.scopeOverrides` 型別欄位保留但恆為空（schema v2 遷移才剝除）。暫態語意：既有 persisted overrides 立即停止生效（不再被採計）。雙文件持久化、Attempt Fence、Receipt Journal、Global Pending Barrier 行為不變。
+- **Global-only 前置：Global Pending Barrier 端到端退休** (#60)：刪除 barrier 模組（`src/barrier/global-barrier.ts`）與全部呼叫點——Attempt Fence 取得前不再檢查 Global Pending 狀態（互斥 `FENCE-01` 與 stale 檢查 `STALE-01/02` 不變）、startup reconciliation 與 journal repair 不再經過 barrier 判斷、Retry Application 移除確認前／確認期間／宿主重載三個 barrier 關卡；TUI Bridge Ledger 移除 Barrier 徽章與原因列，Project 變異在 Global 有活躍復原鏈時保持可用（僅 Project Trust 照舊門檻）；`BARRIER-01` finding code／rule／ui-strings 文案全數清除。Pending Application 的復原語意由既有 active recovery chain（Retry Application 等 Recovery Action）承擔。暫態語意：本票落地後、核心單一化票完成前，global pending 期間不再阻擋 project 寫入（ADR 0002）。
+- **Global-only 前置：Scope Override 功能端到端退休** (#59)：`/codex-marketplace` TUI 移除「Scope 與繼承」分區、建立／移除 Scope Override 動作與 inherited／suppresses 列標記；刪除 overrides 核心模組（`src/projection/overrides.ts`）與 extension flow adapter（`extensions/pi/scope-overrides.ts`），Effective State 檢視搬移至 observe-only 的 `extensions/pi/effective-state-view.ts`。繼承自 Global 的 Registration / Installation 一律參與 Effective State，無任何抑制路徑；`BridgeState.scopeOverrides` 型別欄位保留但恆為空（schema v2 遷移才剝除）。暫態語意：既有 persisted overrides 立即停止生效（不再被採計）。雙文件持久化、Attempt Fence、Receipt Journal 行為不變。
 
 ## [0.1.10] - 2026-08-25
 
