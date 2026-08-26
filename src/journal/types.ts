@@ -3,7 +3,6 @@
  * See CONTEXT.md: Receipt Journal, Attempt Receipt, Receipt Resolution.
  */
 
-import type { Scope } from '../bridge-state/types.js';
 import type { ValidationFinding } from '../registration/findings.js';
 import type { AttemptReceipt } from '../registration/receipt.js';
 
@@ -19,7 +18,6 @@ export type ActiveCondition =
 export interface ActiveRecoveryChain {
   /** Root receipt that entered the active condition. */
   rootReceiptId: string;
-  scope: Scope;
   condition: ActiveCondition;
   stateRevision: string;
   /** All receipts in this chain (root + follow-up attempts). */

@@ -16,7 +16,6 @@ function makeEnv() {
   return {
     root,
     agentDir: join(root, 'agent'),
-    projectDir: join(root, 'project'),
     marketplace: join(root, 'marketplace'),
   };
 }
@@ -49,12 +48,12 @@ function makeMarketplace(root: string) {
 
 interface Fixture {
   registrationId: string;
-  opts: { agentDir: string; cwd: string };
+  opts: { agentDir: string };
 }
 
 async function seedEnabledAndDisabled(env: ReturnType<typeof makeEnv>): Promise<Fixture> {
-  const opts = { agentDir: env.agentDir, cwd: env.projectDir };
-  const preflight = await preflightLocalRegistration('global', env.marketplace, opts);
+  const opts = { agentDir: env.agentDir };
+  const preflight = await preflightLocalRegistration(env.marketplace, opts);
   expect(preflight.ok).toBe(true);
   if (!preflight.ok) throw new Error('preflight failed');
   const confirmed = await confirmLocalRegistration(preflight.preflight, true, opts);
@@ -64,7 +63,7 @@ async function seedEnabledAndDisabled(env: ReturnType<typeof makeEnv>): Promise<
 
   // Entry 0 installed disabled, entry 1 installed and enabled (with its own Activation Confirmation).
   for (const [pointer, target] of [['/plugins/0', 'disabled'] as const, ['/plugins/1', 'enabled'] as const]) {
-    const pf = await preflightPluginInstallation('global', registrationId, pointer, opts);
+    const pf = await preflightPluginInstallation(registrationId, pointer, opts);
     expect(pf.ok).toBe(true);
     if (!pf.ok) throw new Error('install preflight failed');
     const done = await confirmPluginInstallation(pf.preflight, target, true, opts);
@@ -96,10 +95,10 @@ describe('Apply Update — one atomic Lifecycle Operation over the whole Update 
   afterEach(() => rmSync(env.root, { recursive: true, force: true }));
 
   async function planFromRefresh() {
-    const refreshed = await refreshRegistration('global', fixture.registrationId, fixture.opts);
+    const refreshed = await refreshRegistration(fixture.registrationId, fixture.opts);
     expect(refreshed.status).toBe('update-candidate');
     if (refreshed.status !== 'update-candidate') throw new Error('expected candidate');
-    const state = await readBridgeState('global', fixture.opts);
+    const state = await readBridgeState(fixture.opts);
     const installations = state.state!.installations;
     const plan = buildUpdatePlan(refreshed.candidate, installations, state.state!.stateRevision, {
       registrationConfirmed: true,
@@ -112,7 +111,7 @@ describe('Apply Update — one atomic Lifecycle Operation over the whole Update 
   }
 
   it('replaces the Registration snapshot and every disclosed consequence in a single revision bump', async () => {
-    const before = await readBridgeState('global', fixture.opts);
+    const before = await readBridgeState(fixture.opts);
     const recorded = before.state!.registrations[0].validationSnapshot;
     const plan = await planFromRefresh();
 
@@ -123,7 +122,7 @@ describe('Apply Update — one atomic Lifecycle Operation over the whole Update 
     expect(outcome.receipt.operation).toBe('Apply Update');
     expect(BigInt(outcome.newRevision)).toBe(BigInt(before.state!.stateRevision) + 1n);
 
-    const after = await readBridgeState('global', fixture.opts);
+    const after = await readBridgeState(fixture.opts);
     const reg = after.state!.registrations.find((r) => r.id === fixture.registrationId)!;
     expect(reg.validationSnapshot).not.toBe(recorded);
     expect(plan.entries).toHaveLength(2);
@@ -145,9 +144,9 @@ describe('Apply Update — one atomic Lifecycle Operation over the whole Update 
     const plan = await planFromRefresh();
 
     // Any unrelated same-scope mutation invalidates the bound State Revision.
-    const stateBefore = await readBridgeState('global', fixture.opts);
+    const stateBefore = await readBridgeState(fixture.opts);
     const victim = stateBefore.state!.installations.find((i) => i.pluginId.endsWith('/deploy-helper'))!;
-    await disablePluginInstallation('global', victim.id, fixture.opts);
+    await disablePluginInstallation(victim.id, fixture.opts);
 
     const outcome = await applyUpdate(plan, fixture.opts);
     expect(outcome.status).toBe('rejected-as-stale');
@@ -156,7 +155,7 @@ describe('Apply Update — one atomic Lifecycle Operation over the whole Update 
     expect(outcome.receipt.stateChanged).toBe(false);
 
     // Nothing mixed in: the recorded snapshot is untouched.
-    const after = await readBridgeState('global', fixture.opts);
+    const after = await readBridgeState(fixture.opts);
     expect(after.state!.registrations[0].validationSnapshot).toBe(stateBefore.state!.registrations[0].validationSnapshot);
     expect(after.state!.installations.some((i) => i.pluginId.endsWith('/release-helper'))).toBe(true);
   });
@@ -174,7 +173,7 @@ describe('Apply Update — one atomic Lifecycle Operation over the whole Update 
     const outcome = await applyUpdate(plan, fixture.opts);
     expect(outcome.status).toBe('rejected-as-stale');
 
-    const after = await readBridgeState('global', fixture.opts);
+    const after = await readBridgeState(fixture.opts);
     expect(after.state!.stateRevision).toBe(plan.stateRevision);
   });
 
@@ -182,7 +181,7 @@ describe('Apply Update — one atomic Lifecycle Operation over the whole Update 
     const plan = await planFromRefresh();
     // Remove the registration directly (simulating another actor's committed removal).
     await import('../../src/bridge-state/store.js').then(async ({ commitBridgeState }) => {
-      await commitBridgeState('global', (current) => ({
+      await commitBridgeState((current) => ({
         ...current,
         registrations: current.registrations.filter((r) => r.id !== fixture.registrationId),
         installations: [],

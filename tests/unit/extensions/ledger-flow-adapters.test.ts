@@ -95,13 +95,11 @@ function updateCandidate(registrationId: string, pluginId: string, stateRevision
   const marketplaceId = `${registrationId}/acme-marketplace`;
   const sourceKey = { kind: 'local' as const, key: 'local:/market', canonicalPath: '/market' };
   return {
-    scope: 'global',
     registrationId,
     stateRevision,
     recordedFingerprint: 'a'.repeat(64),
     snapshot: {
       fingerprint: 'b'.repeat(64),
-      scope: 'global',
       entries: [],
       sourceKey,
       profile: 'profile-v1',
@@ -141,9 +139,7 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
     process.env.PI_AGENT_DIR = agentDir;
   });
 
-  async function seedRuntimeSnapshot(
-    scope: 'global' | 'project' = 'global',
-  ): Promise<{ stateRevision: string; validationSnapshot: string; skillPath: string }> {
+  async function seedRuntimeSnapshot(): Promise<{ stateRevision: string; validationSnapshot: string; skillPath: string }> {
     const marketplace = join(root, 'runtime-marketplace');
     const pluginRoot = join(marketplace, 'plugins', 'runtime-helper');
     const skillPath = join(pluginRoot, 'skills', 'runtime-skill', 'SKILL.md');
@@ -163,7 +159,7 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       '---\nname: runtime-skill\ndescription: Runtime skill\n---\n\nRuntime body.\n',
     );
     const registrationId = '33333333-3333-4333-8333-333333333333';
-    await commitBridgeState(scope, (state) => ({
+    await commitBridgeState((state) => ({
       ...state,
       registrations: [{
         id: registrationId,
@@ -171,19 +167,18 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
         sourceKind: 'local',
         source: marketplace,
       }],
-    }), { cwd, agentDir });
+    }), { agentDir });
     const preflight = await preflightPluginInstallation(
-      scope,
       registrationId,
       '/plugins/0',
-      { cwd, agentDir, projectTrusted: true },
+      { agentDir },
     );
     if (!preflight.ok) throw new Error('runtime snapshot fixture preflight failed');
     const validationSnapshot = preflight.preflight.snapshot.fingerprint;
     const installed = await confirmPluginInstallation(
       preflight.preflight,
       'disabled',
-      { cwd, agentDir, projectTrusted: true },
+      { agentDir },
     );
     if (installed.status !== 'completed') throw new Error('runtime snapshot fixture install failed');
     return { stateRevision: installed.newRevision, validationSnapshot, skillPath };
@@ -196,13 +191,13 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
   });
 
   it('uses an explicit Registration target and a Commit-sheet cancel releases the fence without committing', async () => {
-    await commitBridgeState('global', (state) => ({
+    await commitBridgeState((state) => ({
       ...state,
       registrations: [
         { id: FIRST_REGISTRATION_ID, alias: 'same-label' },
         { id: SECOND_REGISTRATION_ID, alias: 'same-label' },
       ],
-    }), { cwd, agentDir });
+    }), { agentDir });
     const harness = makeUiHarness({ cancelAt: 'Commit' });
     const ctx = {
       cwd,
@@ -213,14 +208,13 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
     };
 
     await runRemovalFlow(ctx as never, {
-      scope: 'global',
       targetKind: 'registration',
       targetId: SECOND_REGISTRATION_ID,
     });
 
     expect(harness.selects).toEqual([]);
     expect(harness.sheets).toEqual(['Intent', 'Validation', 'Consent', 'Plan', 'Commit', 'Receipt']);
-    const state = await readBridgeState('global', { cwd, agentDir });
+    const state = await readBridgeState({ agentDir });
     expect(state.state?.registrations.map((item) => item.id)).toEqual([
       FIRST_REGISTRATION_ID,
       SECOND_REGISTRATION_ID,
@@ -231,7 +225,7 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
   it('shows Update Plan steps in order while Registration and Activation confirmations stay separate', async () => {
     const pluginId = `${FIRST_REGISTRATION_ID}/acme-marketplace/release-helper`;
     const installationId = `global/${pluginId}`;
-    const committed = await commitBridgeState('global', (state) => ({
+    const committed = await commitBridgeState((state) => ({
       ...state,
       registrations: [{ id: FIRST_REGISTRATION_ID, alias: 'acme-marketplace' }],
       installations: [{
@@ -241,7 +235,7 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
         installationState: 'enabled',
         manifestName: 'release-helper',
       }],
-    }), { cwd, agentDir });
+    }), { agentDir });
     const harness = makeUiHarness({
       cancelAt: 'Commit',
       select: (_prompt, values) => values[0],
@@ -256,7 +250,6 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
 
     await runUpdatePlanChecklist(
       ctx as never,
-      'global',
       updateCandidate(FIRST_REGISTRATION_ID, pluginId, committed.newRevision!),
       committed.newRevision!,
       'apply-update',
@@ -270,9 +263,9 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
     expect(harness.selects).toEqual([
       expect.stringContaining('Installation "release-helper"'),
     ]);
-    const state = await readBridgeState('global', { cwd, agentDir });
+    const state = await readBridgeState({ agentDir });
     expect(state.state?.stateRevision).toBe(committed.newRevision);
-    const journal = await readReceiptJournal('global', { cwd, agentDir });
+    const journal = await readReceiptJournal({ agentDir });
     expect(journal.receipts.at(-1)).toEqual(expect.objectContaining({
       operation: 'Apply Update',
       summary: 'Declined',
@@ -281,10 +274,10 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
   });
 
   it('records and presents a Declined Receipt when Registration Confirmation stays at Default No', async () => {
-    const committed = await commitBridgeState('global', (state) => ({
+    const committed = await commitBridgeState((state) => ({
       ...state,
       registrations: [{ id: FIRST_REGISTRATION_ID, alias: 'acme-marketplace' }],
-    }), { cwd, agentDir });
+    }), { agentDir });
     const harness = makeUiHarness({ confirm: false });
     const ctx = {
       cwd,
@@ -296,14 +289,13 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
 
     await runUpdatePlanChecklist(
       ctx as never,
-      'global',
       updateCandidate(FIRST_REGISTRATION_ID, `${FIRST_REGISTRATION_ID}/acme-marketplace/release-helper`, committed.newRevision!),
       committed.newRevision!,
       'apply-update',
     );
 
     expect(harness.sheets).toEqual(['Intent', 'Validation', 'Consent', 'Receipt']);
-    const journal = await readReceiptJournal('global', { cwd, agentDir });
+    const journal = await readReceiptJournal({ agentDir });
     expect(journal.receipts).toHaveLength(1);
     expect(journal.receipts[0]).toEqual(expect.objectContaining({
       operation: 'Apply Update',
@@ -318,7 +310,6 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
     const first = createReceipt({
       id: 'rcpt_33333333-3333-4333-8333-333333333331',
       operation: 'First Receipt',
-      scope: 'global',
       trigger: 'first',
       expectedStateRevision: '1',
       summary: 'Completed',
@@ -326,13 +317,12 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
     const selected = createReceipt({
       id: 'rcpt_33333333-3333-4333-8333-333333333332',
       operation: 'Selected Receipt',
-      scope: 'global',
       trigger: 'selected',
       expectedStateRevision: '2',
       summary: 'Completed',
     });
-    await appendReceipt('global', first, { cwd, agentDir });
-    await appendReceipt('global', selected, { cwd, agentDir });
+    await appendReceipt(first, { agentDir });
+    await appendReceipt(selected, { agentDir });
     const harness = makeUiHarness({ width: 180 });
     const ctx = {
       cwd,
@@ -343,7 +333,6 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
     };
 
     await runReceiptJournalView(ctx as never, {
-      scope: 'global',
       receiptId: selected.id,
     });
 
@@ -365,14 +354,13 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       ui: harness.ui,
     };
 
-    await runRepairStateFlow(ctx as never, { scope: 'project' });
+    await runRepairStateFlow(ctx as never);
 
     expect(harness.selects).toEqual([]);
     expect(harness.sheets).toEqual(['Intent', 'Validation', 'Consent', 'Plan', 'Commit', 'Receipt']);
-    const journal = await readReceiptJournal('project', { cwd, agentDir });
+    const journal = await readReceiptJournal({ agentDir });
     expect(journal.receipts.at(-1)).toEqual(expect.objectContaining({
       operation: 'Repair State',
-      scope: 'project',
       summary: 'Completed',
     }));
   });
@@ -381,7 +369,7 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
     const harness = makeUiHarness({
       onStep: async (step) => {
         if (step === 'Commit') {
-          await commitBridgeState('project', (state) => ({ ...state }), { cwd, agentDir });
+          await commitBridgeState((state) => ({ ...state }), { agentDir });
         }
       },
     });
@@ -393,10 +381,10 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       ui: harness.ui,
     };
 
-    await runRepairStateFlow(ctx as never, { scope: 'project' });
+    await runRepairStateFlow(ctx as never);
 
-    expect((await readBridgeState('project', { cwd, agentDir })).state?.stateRevision).toBe('1');
-    expect((await readReceiptJournal('project', { cwd, agentDir })).receipts.at(-1)).toEqual(
+    expect((await readBridgeState({ agentDir })).state?.stateRevision).toBe('1');
+    expect((await readReceiptJournal({ agentDir })).receipts.at(-1)).toEqual(
       expect.objectContaining({
         operation: 'Repair State',
         expectedStateRevision: '0',
@@ -410,14 +398,13 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
     const concurrent = createReceipt({
       id: 'rcpt_33333333-3333-4333-8333-333333333339',
       operation: 'Concurrent Inspection',
-      scope: 'project',
       trigger: 'concurrent inspection',
       expectedStateRevision: '0',
       summary: 'Completed',
     });
     const harness = makeUiHarness({
       onStep: async (step) => {
-        if (step === 'Commit') await appendReceipt('project', concurrent, { cwd, agentDir });
+        if (step === 'Commit') await appendReceipt(concurrent, { agentDir });
       },
     });
     const ctx = {
@@ -428,9 +415,9 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       ui: harness.ui,
     };
 
-    await runRepairStateFlow(ctx as never, { scope: 'project' });
+    await runRepairStateFlow(ctx as never);
 
-    const journal = await readReceiptJournal('project', { cwd, agentDir });
+    const journal = await readReceiptJournal({ agentDir });
     expect(journal.receipts.map((receipt) => receipt.id)).toContain(concurrent.id);
     expect(journal.receipts.at(-1)).toEqual(expect.objectContaining({
       operation: 'Repair State',
@@ -448,19 +435,19 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       ui: harness.ui,
     };
 
-    await runRepairStateFlow(ctx as never, { scope: 'global' });
+    await runRepairStateFlow(ctx as never);
 
     expect(harness.sheets).toEqual(['Intent', 'Validation', 'Consent', 'Receipt']);
     expect(harness.renders.find((rendered) => rendered.includes(`▸ 2 ${transactionStepLabel('Validation')}（${uiText('step.activeSuffix')}）`))).toMatch(
       new RegExp(`${uiText('verdict.label')}：${verdictText('Passed')}.*${uiText('findings.count.label')}：${uiText('findings.count.line', { blocking: 0, warning: 0, notice: 0 })}`, 's'),
     );
-    expect((await readReceiptJournal('global', { cwd, agentDir })).receipts.at(-1)).toEqual(
+    expect((await readReceiptJournal({ agentDir })).receipts.at(-1)).toEqual(
       expect.objectContaining({ kind: 'State Repair', operation: 'Repair State', summary: 'Declined' }),
     );
   });
 
   it('reports Receipt persistence failure when a declined State Repair Receipt cannot be appended', async () => {
-    const journalPath = getReceiptsJournalPath('global', { cwd, agentDir });
+    const journalPath = getReceiptsJournalPath(agentDir);
     const lockPath = `${journalPath}.lock`;
     const lockFd = acquireLockSync(lockPath);
     const harness = makeUiHarness({ confirm: false });
@@ -474,7 +461,7 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
     vi.useFakeTimers();
 
     try {
-      const flow = runRepairStateFlow(ctx as never, { scope: 'global' });
+      const flow = runRepairStateFlow(ctx as never);
       await vi.advanceTimersByTimeAsync(5_100);
       await flow;
 
@@ -483,7 +470,7 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       expect(receiptSheet).toMatch(/Attempt Summary:\s*"Persistence Failed"/s);
       expect(receiptSheet).toMatch(/RECEIPT_PERSISTENCE_FAILED.*JOURNAL-01/s);
       expect(receiptSheet).toContain('Repair State');
-      expect((await readReceiptJournal('global', { cwd, agentDir })).receipts).toEqual([]);
+      expect((await readReceiptJournal({ agentDir })).receipts).toEqual([]);
     } finally {
       vi.useRealTimers();
       releaseLock(lockFd, lockPath);
@@ -492,7 +479,7 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
 
   it('preserves Retry terminal findings while reporting its Receipt persistence failure', async () => {
     const missingReceiptId = 'rcpt_44444444-4444-4444-8444-444444444449';
-    const journalPath = getReceiptsJournalPath('global', { cwd, agentDir });
+    const journalPath = getReceiptsJournalPath(agentDir);
     const lockPath = `${journalPath}.lock`;
     const lockFd = acquireLockSync(lockPath);
     const harness = makeUiHarness();
@@ -508,7 +495,6 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
 
     try {
       const flow = runRetryApplicationFlow(ctx as never, {
-        scope: 'global',
         receiptId: missingReceiptId,
       });
       await vi.advanceTimersByTimeAsync(5_100);
@@ -520,7 +506,7 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       expect(receiptSheet).toMatch(/REJECTED_AS_STALE.*STALE-01/s);
       expect(receiptSheet).toMatch(/RECEIPT_PERSISTENCE_FAILED.*JOURNAL-01/s);
       expect(receiptSheet).toContain(missingReceiptId);
-      expect((await readReceiptJournal('global', { cwd, agentDir })).receipts).toEqual([]);
+      expect((await readReceiptJournal({ agentDir })).receipts).toEqual([]);
     } finally {
       vi.useRealTimers();
       releaseLock(lockFd, lockPath);
@@ -533,7 +519,6 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       id: 'rcpt_44444444-4444-4444-8444-444444444441',
       kind: 'Runtime Application',
       operation: 'Runtime Application',
-      scope: 'global',
       trigger: 'initial runtime application',
       expectedStateRevision: seeded.stateRevision,
       validationSnapshot: seeded.validationSnapshot,
@@ -541,7 +526,7 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       summary: 'Pending Application',
       stateChanged: false,
     });
-    await appendReceipt('global', pending, { cwd, agentDir });
+    await appendReceipt(pending, { agentDir });
     const harness = makeUiHarness();
     let reloads = 0;
     const ctx = {
@@ -554,13 +539,12 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
     };
 
     await runRetryApplicationFlow(ctx as never, {
-      scope: 'global',
       receiptId: pending.id,
     });
 
     expect(reloads).toBe(1);
     expect(harness.sheets).toEqual(['Intent', 'Validation', 'Consent', 'Plan', 'Commit', 'Receipt']);
-    const journal = await readReceiptJournal('global', { cwd, agentDir });
+    const journal = await readReceiptJournal({ agentDir });
     expect(journal.activeChains).toEqual([]);
     expect(journal.receipts.at(-1)).toEqual(expect.objectContaining({
       operation: 'Runtime Application',
@@ -576,7 +560,6 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       id: 'rcpt_44444444-4444-4444-8444-444444444442',
       kind: 'Runtime Application',
       operation: 'Runtime Application',
-      scope: 'global',
       trigger: 'initial runtime application',
       expectedStateRevision: seeded.stateRevision,
       validationSnapshot: seeded.validationSnapshot,
@@ -584,13 +567,12 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       summary: 'Pending Application',
       stateChanged: false,
     });
-    await appendReceipt('global', pending, { cwd, agentDir });
+    await appendReceipt(pending, { agentDir });
     let competingAttemptBlocked = false;
     const harness = makeUiHarness({
       onStep: async (step) => {
         if (step !== 'Intent') return;
-        const competing = await acquireAttemptFence('global', {
-          cwd,
+        const competing = await acquireAttemptFence({
           agentDir,
           fenceTimeoutMs: 5,
         });
@@ -606,66 +588,18 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       isProjectTrusted: () => true,
       reload: async () => {},
       ui: harness.ui,
-    } as never, { scope: 'global', receiptId: pending.id });
+    } as never, { receiptId: pending.id });
 
     expect(competingAttemptBlocked).toBe(true);
     expect(existsSync(getFencePath(getGlobalStatePath(agentDir)))).toBe(false);
   });
 
-  it('blocks Project Retry Application when Project Trust is revoked during the Commit sheet', async () => {
-    const seeded = await seedRuntimeSnapshot('project');
-    const pending = createReceipt({
-      id: 'rcpt_55555555-5555-4555-8555-555555555551',
-      kind: 'Runtime Application',
-      operation: 'Runtime Application',
-      scope: 'project',
-      trigger: 'initial runtime application',
-      expectedStateRevision: seeded.stateRevision,
-      validationSnapshot: seeded.validationSnapshot,
-      runtimeOutcome: 'pending-application',
-      summary: 'Pending Application',
-      stateChanged: false,
-    });
-    await appendReceipt('project', pending, { cwd, agentDir });
-    let projectTrusted = true;
-    let reloads = 0;
-    const harness = makeUiHarness({
-      onStep: (step) => {
-        if (step === 'Commit') projectTrusted = false;
-      },
-    });
-
-    await runRetryApplicationFlow({
-      cwd,
-      mode: 'tui',
-      hasUI: true,
-      isProjectTrusted: () => projectTrusted,
-      reload: async () => { reloads += 1; },
-      ui: harness.ui,
-    } as never, { scope: 'project', receiptId: pending.id });
-
-    expect(reloads).toBe(0);
-    expect(harness.sheets).toEqual(['Intent', 'Validation', 'Consent', 'Plan', 'Commit', 'Receipt']);
-    const journal = await readReceiptJournal('project', { cwd, agentDir });
-    expect(journal.activeChains.map((chain) => chain.rootReceiptId)).toContain(pending.id);
-    expect(journal.receipts.at(-1)).toEqual(expect.objectContaining({
-      summary: 'Blocked',
-      runtimeOutcome: 'none',
-      recoversReceiptId: pending.id,
-      findings: [expect.objectContaining({
-        code: 'PROJECT_TRUST_DENIED',
-        rule: 'TRUST-01',
-      })],
-    }));
-  });
-
-  it('completes Project Retry Application even when a Global recovery chain appears during the Commit sheet', async () => {
-    const seeded = await seedRuntimeSnapshot('project');
+  it('completes Retry Application even when another recovery chain appears during the Commit sheet', async () => {
+    const seeded = await seedRuntimeSnapshot();
     const pending = createReceipt({
       id: 'rcpt_55555555-5555-4555-8555-555555555552',
       kind: 'Runtime Application',
       operation: 'Runtime Application',
-      scope: 'project',
       trigger: 'initial runtime application',
       expectedStateRevision: seeded.stateRevision,
       validationSnapshot: seeded.validationSnapshot,
@@ -673,24 +607,23 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       summary: 'Pending Application',
       stateChanged: false,
     });
-    await appendReceipt('project', pending, { cwd, agentDir });
+    await appendReceipt(pending, { agentDir });
     let globalChainAppended = false;
     let reloads = 0;
     const harness = makeUiHarness({
       onStep: async (step) => {
         if (step !== 'Commit' || globalChainAppended) return;
         globalChainAppended = true;
-        await appendReceipt('global', createReceipt({
+        await appendReceipt(createReceipt({
           id: 'rcpt_66666666-6666-4666-8666-666666666661',
           kind: 'Runtime Application',
           operation: 'Runtime Application',
-          scope: 'global',
           trigger: 'concurrent global runtime application',
           expectedStateRevision: '0',
           runtimeOutcome: 'pending-application',
           summary: 'Pending Application',
           stateChanged: false,
-        }), { cwd, agentDir });
+        }), { agentDir });
       },
     });
 
@@ -701,11 +634,11 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       isProjectTrusted: () => true,
       reload: async () => { reloads += 1; },
       ui: harness.ui,
-    } as never, { scope: 'project', receiptId: pending.id });
+    } as never, { receiptId: pending.id });
 
     expect(reloads).toBe(1);
     expect(harness.sheets).toEqual(['Intent', 'Validation', 'Consent', 'Plan', 'Commit', 'Receipt']);
-    const journal = await readReceiptJournal('project', { cwd, agentDir });
+    const journal = await readReceiptJournal({ agentDir });
     expect(journal.activeChains.map((chain) => chain.rootReceiptId)).not.toContain(pending.id);
     expect(journal.receipts.at(-1)).toEqual(expect.objectContaining({
       summary: 'Completed',
@@ -714,13 +647,12 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
     }));
   });
 
-  it('completes Project Retry Application when a Global recovery chain appears during host reload', async () => {
-    const seeded = await seedRuntimeSnapshot('project');
+  it('completes Retry Application when another recovery chain appears during host reload', async () => {
+    const seeded = await seedRuntimeSnapshot();
     const pending = createReceipt({
       id: 'rcpt_55555555-5555-4555-8555-555555555553',
       kind: 'Runtime Application',
       operation: 'Runtime Application',
-      scope: 'project',
       trigger: 'initial runtime application',
       expectedStateRevision: seeded.stateRevision,
       validationSnapshot: seeded.validationSnapshot,
@@ -728,7 +660,7 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       summary: 'Pending Application',
       stateChanged: false,
     });
-    await appendReceipt('project', pending, { cwd, agentDir });
+    await appendReceipt(pending, { agentDir });
     let reloads = 0;
     const harness = makeUiHarness();
 
@@ -739,23 +671,22 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       isProjectTrusted: () => true,
       reload: async () => {
         reloads += 1;
-        await appendReceipt('global', createReceipt({
+        await appendReceipt(createReceipt({
           id: 'rcpt_66666666-6666-4666-8666-666666666662',
           kind: 'Runtime Application',
           operation: 'Runtime Application',
-          scope: 'global',
           trigger: 'global recovery activated during project reload',
           expectedStateRevision: '0',
           runtimeOutcome: 'pending-application',
           summary: 'Pending Application',
           stateChanged: false,
-        }), { cwd, agentDir });
+        }), { agentDir });
       },
       ui: harness.ui,
-    } as never, { scope: 'project', receiptId: pending.id });
+    } as never, { receiptId: pending.id });
 
     expect(reloads).toBe(1);
-    const journal = await readReceiptJournal('project', { cwd, agentDir });
+    const journal = await readReceiptJournal({ agentDir });
     expect(journal.activeChains.map((chain) => chain.rootReceiptId)).not.toContain(pending.id);
     expect(journal.receipts.at(-1)).toEqual(expect.objectContaining({
       summary: 'Completed',
@@ -770,7 +701,6 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       id: 'rcpt_44444444-4444-4444-8444-444444444443',
       kind: 'Runtime Application',
       operation: 'Runtime Application',
-      scope: 'global',
       trigger: 'initial runtime application',
       expectedStateRevision: seeded.stateRevision,
       validationSnapshot: seeded.validationSnapshot,
@@ -778,7 +708,7 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       summary: 'Pending Application',
       stateChanged: false,
     });
-    await appendReceipt('global', pending, { cwd, agentDir });
+    await appendReceipt(pending, { agentDir });
     const harness = makeUiHarness();
 
     await expect(runRetryApplicationFlow({
@@ -788,9 +718,9 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       isProjectTrusted: () => true,
       reload: async () => { throw new Error('host reload failed'); },
       ui: harness.ui,
-    } as never, { scope: 'global', receiptId: pending.id })).resolves.toBeUndefined();
+    } as never, { receiptId: pending.id })).resolves.toBeUndefined();
 
-    const journal = await readReceiptJournal('global', { cwd, agentDir });
+    const journal = await readReceiptJournal({ agentDir });
     expect(journal.activeChains).toHaveLength(1);
     expect(journal.receipts.at(-1)).toEqual(expect.objectContaining({
       summary: 'Pending Application',
@@ -802,19 +732,18 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
   });
 
   it('fails Retry Application closed when the active root has no Validation Snapshot', async () => {
-    const committed = await commitBridgeState('global', (state) => state, { cwd, agentDir });
+    const committed = await commitBridgeState((state) => state, { agentDir });
     const pending = createReceipt({
       id: 'rcpt_44444444-4444-4444-8444-444444444444',
       kind: 'Runtime Application',
       operation: 'Runtime Application',
-      scope: 'global',
       trigger: 'initial runtime application',
       expectedStateRevision: committed.newRevision!,
       runtimeOutcome: 'pending-application',
       summary: 'Pending Application',
       stateChanged: false,
     });
-    await appendReceipt('global', pending, { cwd, agentDir });
+    await appendReceipt(pending, { agentDir });
     const harness = makeUiHarness();
     let reloads = 0;
 
@@ -825,11 +754,11 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       isProjectTrusted: () => true,
       reload: async () => { reloads += 1; },
       ui: harness.ui,
-    } as never, { scope: 'global', receiptId: pending.id });
+    } as never, { receiptId: pending.id });
 
     expect(reloads).toBe(0);
     expect(harness.sheets).toEqual(['Receipt']);
-    const journal = await readReceiptJournal('global', { cwd, agentDir });
+    const journal = await readReceiptJournal({ agentDir });
     expect(journal.activeChains).toHaveLength(1);
     expect(journal.receipts.at(-1)).toEqual(expect.objectContaining({
       summary: 'Rejected as Stale',
@@ -843,7 +772,6 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       id: 'rcpt_44444444-4444-4444-8444-444444444445',
       kind: 'Runtime Application',
       operation: 'Runtime Application',
-      scope: 'global',
       trigger: 'initial runtime application',
       expectedStateRevision: seeded.stateRevision,
       validationSnapshot: seeded.validationSnapshot,
@@ -851,7 +779,7 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       summary: 'Pending Application',
       stateChanged: false,
     });
-    await appendReceipt('global', pending, { cwd, agentDir });
+    await appendReceipt(pending, { agentDir });
     writeFileSync(
       seeded.skillPath,
       '---\nname: runtime-skill\ndescription: Runtime skill\n---\n\nDrifted body.\n',
@@ -866,11 +794,11 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       isProjectTrusted: () => true,
       reload: async () => { reloads += 1; },
       ui: harness.ui,
-    } as never, { scope: 'global', receiptId: pending.id });
+    } as never, { receiptId: pending.id });
 
     expect(reloads).toBe(0);
     expect(harness.sheets).toEqual(['Receipt']);
-    const journal = await readReceiptJournal('global', { cwd, agentDir });
+    const journal = await readReceiptJournal({ agentDir });
     expect(journal.activeChains).toHaveLength(1);
     expect(journal.receipts.at(-1)).toEqual(expect.objectContaining({
       summary: 'Rejected as Stale',
@@ -885,7 +813,6 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       id: 'rcpt_44444444-4444-4444-8444-444444444446',
       kind: 'Runtime Application',
       operation: 'Runtime Application',
-      scope: 'global',
       trigger: 'initial runtime application',
       expectedStateRevision: seeded.stateRevision,
       validationSnapshot: seeded.validationSnapshot,
@@ -893,7 +820,7 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       summary: 'Pending Application',
       stateChanged: false,
     });
-    await appendReceipt('global', pending, { cwd, agentDir });
+    await appendReceipt(pending, { agentDir });
     let drifted = false;
     const harness = makeUiHarness({
       onStep: (step) => {
@@ -914,11 +841,11 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       isProjectTrusted: () => true,
       reload: async () => { reloads += 1; },
       ui: harness.ui,
-    } as never, { scope: 'global', receiptId: pending.id });
+    } as never, { receiptId: pending.id });
 
     expect(reloads).toBe(0);
     expect(harness.sheets).toEqual(['Intent', 'Validation', 'Consent', 'Plan', 'Commit', 'Receipt']);
-    const journal = await readReceiptJournal('global', { cwd, agentDir });
+    const journal = await readReceiptJournal({ agentDir });
     expect(journal.activeChains).toHaveLength(1);
     expect(journal.receipts.at(-1)).toEqual(expect.objectContaining({
       summary: 'Rejected as Stale',
@@ -933,7 +860,6 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       id: 'rcpt_44444444-4444-4444-8444-444444444447',
       kind: 'Runtime Application',
       operation: 'Runtime Application',
-      scope: 'global',
       trigger: 'initial runtime application',
       expectedStateRevision: seeded.stateRevision,
       validationSnapshot: seeded.validationSnapshot,
@@ -941,13 +867,13 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       summary: 'Pending Application',
       stateChanged: false,
     });
-    await appendReceipt('global', pending, { cwd, agentDir });
+    await appendReceipt(pending, { agentDir });
     let committed = false;
     const harness = makeUiHarness({
       onStep: async (step) => {
         if (step !== 'Commit' || committed) return;
         committed = true;
-        await commitBridgeState('global', (state) => ({ ...state }), { cwd, agentDir });
+        await commitBridgeState((state) => ({ ...state }), { agentDir });
       },
     });
     let reloads = 0;
@@ -959,11 +885,11 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       isProjectTrusted: () => true,
       reload: async () => { reloads += 1; },
       ui: harness.ui,
-    } as never, { scope: 'global', receiptId: pending.id });
+    } as never, { receiptId: pending.id });
 
     expect(reloads).toBe(0);
     expect(harness.sheets).toEqual(['Intent', 'Validation', 'Consent', 'Plan', 'Commit', 'Receipt']);
-    const journal = await readReceiptJournal('global', { cwd, agentDir });
+    const journal = await readReceiptJournal({ agentDir });
     expect(journal.activeChains).toHaveLength(1);
     expect(journal.receipts.at(-1)).toEqual(expect.objectContaining({
       summary: 'Rejected as Stale',
@@ -978,7 +904,6 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
       id: 'rcpt_44444444-4444-4444-8444-444444444448',
       kind: 'Runtime Application',
       operation: 'Runtime Application',
-      scope: 'global',
       trigger: 'initial runtime application',
       expectedStateRevision: seeded.stateRevision,
       validationSnapshot: seeded.validationSnapshot,
@@ -990,13 +915,12 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
         classification: 'blocking',
         phase: 'post-commit',
         target: 'plugin',
-        scope: 'global',
         pointer: '/plugins/0',
         rule: 'RUNTIME-01',
         outcome: 'host cannot apply this plugin',
       }],
     });
-    await appendReceipt('global', pending, { cwd, agentDir });
+    await appendReceipt(pending, { agentDir });
     const harness = makeUiHarness({ expandValidation: true });
     let reloads = 0;
     const ctx = {
@@ -1009,7 +933,6 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
     };
 
     await runRetryApplicationFlow(ctx as never, {
-      scope: 'global',
       receiptId: pending.id,
     });
 
@@ -1017,9 +940,9 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
     expect(disclosure).toContain(`${uiText('verdict.label')}：${verdictText('Blocked')}`);
     expect(disclosure).toContain(uiText('findings.count.line', { blocking: 1, warning: 0, notice: 0 }));
     // Detail lines pass through quoteTerminalText, so embedded quotes surface as \".
-    expect(disclosure).toMatch(/分類 blocking.*Scope global.*階段 post-commit.*目標 plugin.*指標.*plugins\/0.*代碼.*WHOLE_PLUGIN_BLOCKED.*規則.*RUNTIME-01.*結果 \\\"host cannot apply this plugin\\\"/s);
+    expect(disclosure).toMatch(/分類 blocking.*階段 post-commit.*目標 plugin.*指標.*plugins\/0.*代碼.*WHOLE_PLUGIN_BLOCKED.*規則.*RUNTIME-01.*結果 \\\"host cannot apply this plugin\\\"/s);
     expect(reloads).toBe(0);
-    expect((await readReceiptJournal('global', { cwd, agentDir })).activeChains).toHaveLength(1);
+    expect((await readReceiptJournal({ agentDir })).activeChains).toHaveLength(1);
   });
 
   it('keeps explicit Marketplace Refresh read-only and presents its blocked Receipt without selectors', async () => {
@@ -1033,7 +956,6 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
     };
 
     await runRefreshFlow(ctx as never, {
-      scope: 'global',
       registrationId: SECOND_REGISTRATION_ID,
     });
 
@@ -1042,7 +964,7 @@ describe('Bridge Ledger lifecycle flow adapters', () => {
     expect(harness.renders.join('\n')).toContain('Marketplace Refresh');
     expect(harness.renders.join('\n')).toContain('Blocked');
     expect(harness.renders.join('\n')).toContain(`${uiText('verdict.label')}：${verdictText('Blocked')}`);
-    const state = await readBridgeState('global', { cwd, agentDir });
+    const state = await readBridgeState({ agentDir });
     expect(state.status).toBe('missing');
     expect(state.state?.stateRevision).toBe('0');
   });

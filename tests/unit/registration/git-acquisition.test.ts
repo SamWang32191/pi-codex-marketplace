@@ -107,11 +107,11 @@ describe('Git Source Acquisition — non-executing and Trust Base', () => {
   });
 
   it('acquires via clone --no-checkout with hardened config and resolves branch to full commit', async () => {
-    const loc = normalizeGitLocator('https://github.com/owner/repo', 'global').locator!;
-    const sel = normalizeGitSelector({ kind: 'branch', value: 'main' }, 'global').selector!;
+    const loc = normalizeGitLocator('https://github.com/owner/repo').locator!;
+    const sel = normalizeGitSelector({ kind: 'branch', value: 'main' }).selector!;
     const record: { args: string[][]; envs: (Record<string, string> | undefined)[] } = { args: [], envs: [] };
     const exec = makeMockExecutor(fixture, { lsRemoteSha: 'b'.repeat(40), record });
-    const res = await acquireGitSource({ scope: 'global', locator: loc, selector: sel, executor: exec });
+    const res = await acquireGitSource({ locator: loc, selector: sel, executor: exec });
     expect(res.ok).toBe(true);
     expect(res.resolvedRevision).toBe('b'.repeat(40));
     expect(res.acquiredPath).toBeDefined();
@@ -137,13 +137,13 @@ describe('Git Source Acquisition — non-executing and Trust Base', () => {
   });
 
   it('resolves commit selector directly without ls-remote for commit prefix', async () => {
-    const loc = normalizeGitLocator('https://github.com/owner/repo', 'global').locator!;
+    const loc = normalizeGitLocator('https://github.com/owner/repo').locator!;
     const sha = 'C'.repeat(40); // upper
-    const sel = normalizeGitSelector({ kind: 'commit', value: sha }, 'global').selector!;
+    const sel = normalizeGitSelector({ kind: 'commit', value: sha }).selector!;
     expect(sel.canonical).toBe(sha.toLowerCase());
     const record: { args: string[][]; envs: any } = { args: [], envs: [] };
     const exec = makeMockExecutor(fixture, { record });
-    const res = await acquireGitSource({ scope: 'global', locator: loc, selector: sel, executor: exec });
+    const res = await acquireGitSource({ locator: loc, selector: sel, executor: exec });
     expect(res.ok).toBe(true);
     expect(res.resolvedRevision).toBe(sha.toLowerCase());
     // ls-remote should NOT be called for commit? Our implementation returns directly for commit, so no ls-remote
@@ -153,39 +153,39 @@ describe('Git Source Acquisition — non-executing and Trust Base', () => {
   });
 
   it('rejects on unknown host key (Blocking)', async () => {
-    const loc = normalizeGitLocator('ssh://git@github.com/owner/repo', 'global').locator!;
-    const sel = normalizeGitSelector({ kind: 'branch', value: 'main' }, 'global').selector!;
+    const loc = normalizeGitLocator('ssh://git@github.com/owner/repo').locator!;
+    const sel = normalizeGitSelector({ kind: 'branch', value: 'main' }).selector!;
     const exec = makeMockExecutor(fixture, { hostKeyError: 'unknown' });
-    const res = await acquireGitSource({ scope: 'global', locator: loc, selector: sel, executor: exec });
+    const res = await acquireGitSource({ locator: loc, selector: sel, executor: exec });
     expect(res.ok).toBe(false);
     expect(res.findings[0].code).toBe('GIT_TRUST_HOST_KEY_UNKNOWN');
     expect(res.findings[0].rule).toBe('GIT-31');
   });
 
   it('rejects on changed host key (Blocking)', async () => {
-    const loc = normalizeGitLocator('ssh://git@github.com/owner/repo', 'global').locator!;
-    const sel = normalizeGitSelector({ kind: 'branch', value: 'main' }, 'global').selector!;
+    const loc = normalizeGitLocator('ssh://git@github.com/owner/repo').locator!;
+    const sel = normalizeGitSelector({ kind: 'branch', value: 'main' }).selector!;
     const exec = makeMockExecutor(fixture, { hostKeyError: 'changed' });
-    const res = await acquireGitSource({ scope: 'global', locator: loc, selector: sel, executor: exec });
+    const res = await acquireGitSource({ locator: loc, selector: sel, executor: exec });
     expect(res.ok).toBe(false);
     expect(res.findings[0].code).toBe('GIT_TRUST_HOST_KEY_CHANGED');
   });
 
   it('rejects on redirect changing canonical locator (Blocking)', async () => {
-    const loc = normalizeGitLocator('https://github.com/owner/repo', 'global').locator!;
-    const sel = normalizeGitSelector({ kind: 'branch', value: 'main' }, 'global').selector!;
+    const loc = normalizeGitLocator('https://github.com/owner/repo').locator!;
+    const sel = normalizeGitSelector({ kind: 'branch', value: 'main' }).selector!;
     const exec = makeMockExecutor(fixture, { redirectError: true });
-    const res = await acquireGitSource({ scope: 'global', locator: loc, selector: sel, executor: exec });
+    const res = await acquireGitSource({ locator: loc, selector: sel, executor: exec });
     expect(res.ok).toBe(false);
     expect(res.findings[0].code).toBe('GIT_TRUST_REDIRECT');
   });
 
   it('ensures GIT_SSH_COMMAND contains StrictHostKeyChecking for ssh transport', async () => {
-    const loc = normalizeGitLocator('ssh://git@github.com/owner/repo', 'global').locator!;
-    const sel = normalizeGitSelector({ kind: 'branch', value: 'main' }, 'global').selector!;
+    const loc = normalizeGitLocator('ssh://git@github.com/owner/repo').locator!;
+    const sel = normalizeGitSelector({ kind: 'branch', value: 'main' }).selector!;
     const record: { args: string[][]; envs: (Record<string, string> | undefined)[] } = { args: [], envs: [] };
     const exec = makeMockExecutor(fixture, { record });
-    const res = await acquireGitSource({ scope: 'global', locator: loc, selector: sel, executor: exec });
+    const res = await acquireGitSource({ locator: loc, selector: sel, executor: exec });
     expect(res.ok).toBe(true);
     const envWithSsh = record.envs.find((e) => e?.GIT_SSH_COMMAND);
     expect(envWithSsh).toBeDefined();
@@ -196,11 +196,11 @@ describe('Git Source Acquisition — non-executing and Trust Base', () => {
   });
 
   it('does not include --recurse-submodules and includes --filter=blob:none', async () => {
-    const loc = normalizeGitLocator('https://github.com/owner/repo', 'global').locator!;
-    const sel = normalizeGitSelector({ kind: 'branch', value: 'main' }, 'global').selector!;
+    const loc = normalizeGitLocator('https://github.com/owner/repo').locator!;
+    const sel = normalizeGitSelector({ kind: 'branch', value: 'main' }).selector!;
     const record: { args: string[][]; envs: any } = { args: [], envs: [] };
     const exec = makeMockExecutor(fixture, { record });
-    const res = await acquireGitSource({ scope: 'global', locator: loc, selector: sel, executor: exec });
+    const res = await acquireGitSource({ locator: loc, selector: sel, executor: exec });
     expect(res.ok).toBe(true);
     const cloneCall = record.args.find((a) => a.includes('clone'))!.join(' ');
     expect(cloneCall).not.toContain('--recurse-submodules');

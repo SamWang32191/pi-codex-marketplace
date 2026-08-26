@@ -16,7 +16,6 @@
 
 import type { AttemptSummary, RecoveryAction } from '../../src/registration/receipt.js';
 import type { ValidationFinding } from '../../src/registration/findings.js';
-import type { Scope } from '../../src/bridge-state/types.js';
 import type { TransactionStep } from './transaction-sheet.js';
 
 /** Supported presentation locales. Only zh_TW ships today; the seam stays explicit. */
@@ -96,7 +95,7 @@ const zhTW = {
 
   // --- finding rendering -----------------------------------------------------
   'finding.line':
-    'finding 分類 {classification}｜Scope {scope}｜階段 {phase}｜目標 {target}｜指標 {pointer}｜代碼 {code}｜規則 {rule}｜結果 {outcome}',
+    'finding 分類 {classification}｜階段 {phase}｜目標 {target}｜指標 {pointer}｜代碼 {code}｜規則 {rule}｜結果 {outcome}',
 
   // --- transaction-sheet.ts --------------------------------------------------
   'sheet.title': 'Transaction Sheet 交易單',
@@ -220,8 +219,8 @@ const zhTW = {
   'ledger.status.pane.actions': '動作',
   'ledger.status.pane.sections': '分區',
   'ledger.keys.help': '按鍵：?/Esc 關閉說明｜q/Ctrl-C 離開｜Esc/q 取消情境',
-  'ledger.keys.drilldown': '按鍵：Esc/q 取消｜Enter 進入分區｜j/k 移動｜g/p 切換 Scope｜? 說明',
-  'ledger.keys.wide': '按鍵：Esc/q 取消｜Enter 執行｜j/k 或方向鍵移動｜i 詳情｜g/p 切換 Scope｜? 說明',
+  'ledger.keys.drilldown': '按鍵：Esc/q 取消｜Enter 進入分區｜j/k 移動｜i 詳情｜? 說明',
+  'ledger.keys.wide': '按鍵：Esc/q 取消｜Enter 執行｜j/k 或方向鍵移動｜i 詳情｜? 說明',
   'ledger.help.move': 'Up/Down 或 j/k：移動選取',
   'ledger.help.sections': 'Left/Right：切換分區（寬版面）或進入下層',
   'ledger.help.enter': 'Enter：開啟分區或執行可用的結構化動作',
@@ -309,7 +308,7 @@ const zhTW = {
   'inst.disclosure.source': '來源 {source}',
   'inst.disclosure.marketplaceEntry': 'Marketplace Entry：{entryId}',
   'inst.disclosure.classification': '分類：Compatible',
-  'inst.disclosure.precedence': '投影優先序：Pi → Project Scope → Global Scope',
+  'inst.disclosure.precedence': '投影優先序：Pi → Global',
   'inst.disclosure.skills': 'Skills：{count}',
   'inst.disclosure.skill': '{name} · {policy} · resources：{resources}',
   'inst.disclosure.findings': 'Findings：{findings}',
@@ -542,14 +541,6 @@ export function uiText(id: MessageId, params?: Record<string, string | number>):
 /** Canonical-first closed value rendering: `Canonical（中文釋義）`. */
 export function closedValue(canonical: string, gloss: string): string {
   return `${canonical}（${gloss}）`;
-}
-
-/** Localized scope-selection options bound to their structured Scope values. */
-export function scopeOptions(): Map<string, Scope> {
-  return new Map([
-    [uiText('common.scope.global'), 'global'],
-    [uiText('common.scope.project'), 'project'],
-  ]);
 }
 
 const ATTEMPT_SUMMARY_GLOSS: Record<AttemptSummary, MessageId> = {

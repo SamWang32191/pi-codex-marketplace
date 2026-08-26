@@ -1,8 +1,9 @@
 /**
  * Local Marketplace Registration — interactive TUI flow (Issue #17).
- * Prototype contract (tui-management-flow): explicit scope selection → Validation Disclosure →
- * Registration Confirmation (Validation Snapshot + State Revision bound, Default No) → atomic
- * commit → Attempt Summary + closed Recovery Action reporting.
+ * Contract: Validation Disclosure → Registration Confirmation (Validation Snapshot + State
+ * Revision bound, Default No) → atomic commit → Attempt Summary + closed Recovery Action reporting.
+ *
+ * Global-only (#61): the flow acts on the single Global document only.
  *
  * The flow logic itself lives in src/registration/flow.ts (the tested seam); this file renders it.
  * All user-visible strings come from the centralized ui-strings module (Issue #41).
@@ -14,11 +15,9 @@ import {
   preflightLocalRegistration,
   confirmLocalRegistration,
 } from '../../src/registration/flow.js';
-import type { Scope } from '../../src/bridge-state/types.js';
 import { sortFindings, type ValidationFinding } from '../../src/registration/findings.js';
 import type { AttemptReceipt } from '../../src/registration/receipt.js';
-import { attemptSummaryText, findingOutcomeText, uiText, verdictText,
-  scopeOptions } from './ui-strings.js';
+import { attemptSummaryText, findingOutcomeText, uiText, verdictText } from './ui-strings.js';
 import { quoteTerminalText } from './terminal-presentation.js';
 import { openTransactionSheet, type TransactionSheetModel } from './transaction-sheet.js';
 
@@ -26,7 +25,6 @@ export function formatFindings(findings: ValidationFinding[]): string[] {
   return sortFindings(findings).map((f) =>
     uiText('finding.line', {
       classification: f.classification,
-      scope: f.scope,
       phase: f.phase,
       target: f.target,
       pointer: quoteTerminalText(f.pointer || `(${uiText('common.none')})`),
@@ -73,20 +71,8 @@ async function transactionStep(
 /** One interactive registration flow invocation. */
 export async function runLocalRegistrationFlow(
   ctx: ExtensionCommandContext,
-  target: { scope?: Scope } = {},
 ): Promise<void> {
   const ui: ExtensionUIContext = ctx.ui;
-  let scope = target.scope;
-  if (!scope) {
-    const scopeLabels = scopeOptions();
-    const scopeChoice = await ui.select(uiText('reg.select.scope'), [...scopeLabels.keys()]);
-    if (!scopeChoice) {
-      ui.notify(uiText('reg.cancelled'), 'info');
-      return;
-    }
-    scope = scopeLabels.get(scopeChoice);
-    if (!scope) return;
-  }
 
   const rootPath = await ui.input(uiText('reg.input.localRoot'), '.');
   if (!rootPath) {
@@ -98,13 +84,13 @@ export async function runLocalRegistrationFlow(
   if (!await transactionStep(ctx, {
     step: 'Intent',
     actionLabel,
-    authority: scope,
+    authority: 'global',
     target: rootPath,
     details: [uiText('reg.detail.source', { source: quoteTerminalText(rootPath) })],
   })) return;
 
-  const opts = { cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() };
-  const res = await preflightLocalRegistration(scope, rootPath, opts);
+  const opts = {};
+  const res = await preflightLocalRegistration(rootPath, opts);
   if (!res.ok) {
     await reportTerminalPreflightOutcome(ctx, res.outcome);
     return;
@@ -136,7 +122,7 @@ export async function runLocalRegistrationFlow(
   ];
   const boundModel = {
     actionLabel,
-    authority: scope,
+    authority: 'global' as const,
     target: pf.registrationId,
     stateRevision: pf.stateRevision,
     validationSnapshot: pf.snapshot.fingerprint,
@@ -160,7 +146,7 @@ export async function runLocalRegistrationFlow(
     uiText('reg.local.consent.body', {
       registrationId: quoteTerminalText(pf.registrationId),
       source: quoteTerminalText(pf.canonicalPath),
-      scope,
+      scope: 'global',
       disclosure: validationDetails.join('\n'),
     }),
   );
@@ -176,7 +162,7 @@ export async function runLocalRegistrationFlow(
       step: 'Commit',
       details: [
         uiText('reg.commit.persist', { id: quoteTerminalText(pf.registrationId) }),
-        uiText('reg.commit.authority', { scope, revision: quoteTerminalText(pf.stateRevision) }),
+        uiText('reg.commit.authority', { scope: 'global', revision: quoteTerminalText(pf.stateRevision) }),
       ],
     }, cancel)) return;
   }
@@ -194,7 +180,7 @@ export async function reportTerminalPreflightOutcome(
   await openTransactionSheet(ctx, {
     step: 'Validation',
     actionLabel: receipt.operation,
-    authority: receipt.scope,
+    authority: 'global',
     target: receipt.trigger,
     stateRevision: receipt.expectedStateRevision,
     validationSnapshot: receipt.validationSnapshot,
@@ -218,7 +204,7 @@ export async function reportOutcome(
   await openTransactionSheet(ctx, {
     step: 'Receipt',
     actionLabel: rc.operation,
-    authority: rc.scope,
+    authority: 'global',
     target: rc.trigger,
     stateRevision: rc.observedStateRevision ?? rc.targetStateRevision ?? rc.expectedStateRevision,
     validationSnapshot: rc.validationSnapshot,

@@ -4,7 +4,7 @@
  *
  * local Source Key = canonical real path of the Marketplace Root.
  * git Source Key   = canonical (credential-free) remote URL + exact selector (implemented in #18).
- * Local and Git keys remain distinct; equal keys across scopes do not merge registrations.
+ * Local and Git keys remain distinct; a duplicate key detects a repeated registration.
  */
 
 import { realpathSync, statSync } from 'node:fs';

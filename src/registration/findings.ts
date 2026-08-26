@@ -6,8 +6,6 @@
  * class → phase → target → pointer → rule (prototype Decision).
  */
 
-import type { Scope } from '../bridge-state/types.js';
-
 export type FindingClass = 'blocking' | 'warning' | 'notice';
 
 export type FindingPhase =
@@ -33,7 +31,6 @@ export interface ValidationFinding {
   classification: FindingClass;
   phase: FindingPhase;
   target: FindingTarget;
-  scope: Scope;
   /** File or data pointer (e.g. "/plugins/2/path", a relative path, or "" when none). */
   pointer: string;
   /** Closed rule id, e.g. "CONT-01". */
@@ -47,7 +44,6 @@ export const RULE = {
   ATTEMPT_IN_PROGRESS: 'FENCE-01',
   REJECTED_AS_STALE: 'STALE-01',
   REJECTED_AS_STALE_SNAPSHOT: 'STALE-02',
-  PROJECT_TRUST_DENIED: 'TRUST-01',
   DUPLICATE_SOURCE_KEY: 'DUP-01',
   SOURCE_NOT_EXISTS: 'SRC-01',
   SOURCE_NOT_DIRECTORY: 'SRC-02',
@@ -96,7 +92,6 @@ export const RULE = {
 export const CODE = {
   ATTEMPT_IN_PROGRESS: 'ATTEMPT_IN_PROGRESS',
   REJECTED_AS_STALE: 'REJECTED_AS_STALE',
-  PROJECT_TRUST_DENIED: 'PROJECT_TRUST_DENIED',
   DUPLICATE_SOURCE_KEY: 'DUPLICATE_SOURCE_KEY',
   SOURCE_NOT_EXISTS: 'SOURCE_NOT_EXISTS',
   SOURCE_NOT_DIRECTORY: 'SOURCE_NOT_DIRECTORY',

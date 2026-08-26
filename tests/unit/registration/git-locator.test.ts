@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { normalizeGitLocator } from '../../../src/registration/git-locator.js';
 
-function loc(input: string, scope: 'global' | 'project' = 'global') {
-  return normalizeGitLocator(input, scope);
+function loc(input: string) {
+  return normalizeGitLocator(input);
 }
 
 describe('Canonical Git Locator normalization', () => {

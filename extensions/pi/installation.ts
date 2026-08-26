@@ -21,15 +21,14 @@ import {
 } from '../../src/installation/flow.js';
 import { inspectMarketplaceEntries } from '../../src/installation/inspection.js';
 import type { SourceCache } from '../../src/cache/source-cache.js';
-import type { Installation, Registration, Scope } from '../../src/bridge-state/types.js';
+import type { Installation, Registration } from '../../src/bridge-state/types.js';
 import {
   fullValidationDisclosureLines,
   reportOutcome,
   reportTerminalPreflightOutcome,
   validationDisclosureLines,
 } from './registration.js';
-import { findingOutcomeText, uiText,
-  scopeOptions } from './ui-strings.js';
+import { findingOutcomeText, uiText } from './ui-strings.js';
 import { quoteTerminalText } from './terminal-presentation.js';
 import { openTransactionSheet, type TransactionSheetModel } from './transaction-sheet.js';
 
@@ -57,7 +56,6 @@ async function transactionStep(
 export function localizedInstallationDisclosure(pf: PluginInstallationPreflight): string[] {
   const plugin = pf.plugin;
   const lines = [
-    uiText('inst.disclosure.scope', { scope: pf.scope }),
     uiText('inst.disclosure.plugin', {
       name: labelText(plugin.manifestName),
       id: labelText(plugin.id),
@@ -93,10 +91,9 @@ export function localizedInstallationDisclosure(pf: PluginInstallationPreflight)
 
 export async function entryChoices(
   registration: Registration,
-  scope: Scope,
-  opts: { cwd?: string; agentDir?: string; projectTrusted?: boolean; cache?: SourceCache } = {},
+  opts: { agentDir?: string; cache?: SourceCache } = {},
 ): Promise<EntryChoice[]> {
-  const inspection = inspectMarketplaceEntries(registration, scope, { agentDir: opts.agentDir, cache: opts.cache });
+  const inspection = inspectMarketplaceEntries(registration, { agentDir: opts.agentDir, cache: opts.cache });
   if (!inspection.marketplaceId) {
     return [{
       label: uiText('inst.choice.unavailable', {
@@ -123,7 +120,6 @@ export async function entryChoices(
 export async function runPluginInstallationFlow(
   ctx: ExtensionCommandContext,
   target: {
-    scope?: Scope;
     registrationId?: string;
     entryPointer?: string;
     marketplaceEntryId?: string;
@@ -133,15 +129,7 @@ export async function runPluginInstallationFlow(
   } = {},
 ): Promise<void> {
   const ui: ExtensionUIContext = ctx.ui;
-  let scope = target.scope;
-  if (!scope) {
-    const scopeLabels = scopeOptions();
-    const scopeChoice = await ui.select(uiText('inst.select.scope'), [...scopeLabels.keys()]);
-    if (!scopeChoice) return;
-    scope = scopeLabels.get(scopeChoice);
-    if (!scope) return;
-  }
-  const opts = { cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() };
+  const opts = {};
   const structuredIntent = target.marketplaceEntryId !== undefined;
   let registrationId: string;
   let entryPointer: string;
@@ -158,7 +146,7 @@ export async function runPluginInstallationFlow(
     intentStateRevision = target.expectedStateRevision;
     intentValidationSnapshot = target.expectedValidationSnapshot;
   } else {
-    const state = await readBridgeState(scope, opts);
+    const state = await readBridgeState(opts);
     if (state.status !== 'ok' && state.status !== 'missing') {
       return void ui.notify(
         uiText('common.bridgeState.unreadable', { error: labelText(state.error ?? 'Persistence Indeterminate') }),
@@ -180,7 +168,7 @@ export async function runPluginInstallationFlow(
       registration = registrations[labels.indexOf(selectedLabel)];
       if (!registration) return;
     }
-    const choices = await entryChoices(registration, scope, opts);
+    const choices = await entryChoices(registration, opts);
     let selected: EntryChoice | undefined;
     if (target.entryPointer) {
       selected = choices.find((item) => item.pointer === target.entryPointer);
@@ -218,7 +206,7 @@ export async function runPluginInstallationFlow(
   if (!await transactionStep(ctx, {
     step: 'Intent',
     actionLabel,
-    authority: scope,
+    authority: 'global',
     target: intentTarget,
     stateRevision: intentStateRevision,
     details: [
@@ -227,7 +215,7 @@ export async function runPluginInstallationFlow(
       uiText('inst.detail.targetState', { state: quoteTerminalText(targetState) }),
     ],
   })) return;
-  const preflight = await preflightPluginInstallation(scope, registrationId, entryPointer, {
+  const preflight = await preflightPluginInstallation(registrationId, entryPointer, {
     ...opts,
     expectedStateRevision: intentStateRevision,
     expectedMarketplaceEntryId: intentTarget,
@@ -237,7 +225,7 @@ export async function runPluginInstallationFlow(
   const pf = preflight.preflight;
   const boundModel = {
     actionLabel,
-    authority: scope,
+    authority: 'global' as const,
     target: pf.plugin.marketplaceEntryId,
     stateRevision: pf.stateRevision,
     validationSnapshot: pf.snapshot.fingerprint,
@@ -283,7 +271,7 @@ export async function runPluginInstallationFlow(
   if (!await transactionStep(ctx, {
     ...boundModel,
     step: 'Commit',
-    details: [uiText('inst.commit.authority', { scope, revision: quoteTerminalText(pf.stateRevision) })],
+    details: [uiText('inst.commit.authority', { scope: 'global', revision: quoteTerminalText(pf.stateRevision) })],
   }, cancel)) return;
   const outcome = targetState === 'enabled'
     ? await confirmPluginInstallation(pf, 'enabled', activationConfirmed, opts)
@@ -301,7 +289,7 @@ async function completePluginEnableFlow(
   const actionLabel = uiText('inst.actionLabel.enablement');
   const boundModel = {
     actionLabel,
-    authority: pf.scope,
+    authority: 'global' as const,
     target: installation.id,
     stateRevision: pf.stateRevision,
     validationSnapshot: pf.snapshot.fingerprint,
@@ -338,7 +326,7 @@ async function completePluginEnableFlow(
   if (!await transactionStep(ctx, {
     ...boundModel,
     step: 'Commit',
-    details: [uiText('inst.commit.authority', { scope: pf.scope, revision: quoteTerminalText(pf.stateRevision) })],
+    details: [uiText('inst.commit.authority', { scope: 'global', revision: quoteTerminalText(pf.stateRevision) })],
   }, cancel)) return;
   await reportOutcome(ctx, await confirmPluginEnable(pf, true, opts));
 }
@@ -348,10 +336,10 @@ async function completePluginDisableFlow(
   preflight: PluginDisablePreflight,
   opts: InstallationFlowOptions,
 ): Promise<void> {
-  const { scope, installation, stateRevision } = preflight;
+  const { installation, stateRevision } = preflight;
   const initialModel = {
     actionLabel: uiText('inst.actionLabel.disablement'),
-    authority: scope,
+    authority: 'global' as const,
     target: installation.id,
     stateRevision,
     validationSnapshot: installation.validationSnapshot,
@@ -380,7 +368,7 @@ async function completePluginDisableFlow(
   if (!await transactionStep(ctx, {
     ...initialModel,
     step: 'Commit',
-    details: [uiText('inst.commit.authority', { scope, revision: quoteTerminalText(stateRevision) })],
+    details: [uiText('inst.commit.authority', { scope: 'global', revision: quoteTerminalText(stateRevision) })],
   }, decline)) return;
   await reportOutcome(ctx, await confirmPluginDisable(preflight, opts));
 }
@@ -388,27 +376,18 @@ async function completePluginDisableFlow(
 export async function runPluginStateFlow(
   ctx: ExtensionCommandContext,
   target: {
-    scope?: Scope;
     installationId?: string;
     desiredState?: Installation['installationState'];
     expectedStateRevision?: string;
   } = {},
 ): Promise<void> {
   const ui: ExtensionUIContext = ctx.ui;
-  let scope = target.scope;
-  if (!scope) {
-    const scopeLabels = scopeOptions();
-    const scopeChoice = await ui.select(uiText('inst.select.installedScope'), [...scopeLabels.keys()]);
-    if (!scopeChoice) return;
-    scope = scopeLabels.get(scopeChoice);
-    if (!scope) return;
-  }
-  const opts = { cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() };
+  const opts = {};
   if (target.installationId && target.desiredState === 'disabled') {
     if (!await transactionStep(ctx, {
       step: 'Intent',
       actionLabel: uiText('inst.actionLabel.disablement'),
-      authority: scope,
+      authority: 'global',
       target: target.installationId,
       stateRevision: target.expectedStateRevision,
       details: [
@@ -416,7 +395,7 @@ export async function runPluginStateFlow(
         uiText('inst.detail.requestedState', { state: quoteTerminalText('disabled') }),
       ],
     })) return;
-    const preflight = await preflightPluginDisable(scope, target.installationId, {
+    const preflight = await preflightPluginDisable(target.installationId, {
       ...opts,
       expectedStateRevision: target.expectedStateRevision,
       expectedInstallationState: 'enabled',
@@ -433,7 +412,7 @@ export async function runPluginStateFlow(
     if (!await transactionStep(ctx, {
       step: 'Intent',
       actionLabel: uiText('inst.actionLabel.enablement'),
-      authority: scope,
+      authority: 'global',
       target: target.installationId,
       stateRevision: target.expectedStateRevision,
       details: [
@@ -441,7 +420,7 @@ export async function runPluginStateFlow(
         uiText('inst.detail.requestedState', { state: quoteTerminalText('enabled') }),
       ],
     })) return;
-    const preflight = await preflightPluginEnable(scope, target.installationId, {
+    const preflight = await preflightPluginEnable(target.installationId, {
       ...opts,
       expectedStateRevision: target.expectedStateRevision,
     });
@@ -449,7 +428,7 @@ export async function runPluginStateFlow(
     await completePluginEnableFlow(ctx, preflight.preflight, opts);
     return;
   }
-  const state = await readBridgeState(scope, opts);
+  const state = await readBridgeState(opts);
   if (state.status !== 'ok' && state.status !== 'missing') {
     return void ui.notify(
       uiText('common.bridgeState.unreadable', { error: labelText(state.error ?? 'Persistence Indeterminate') }),
@@ -460,7 +439,8 @@ export async function runPluginStateFlow(
   if (installations.length === 0) return void ui.notify(uiText('common.installation.none'), 'info');
   let installation: Installation | undefined;
   if (target.installationId) {
-    installation = installations.find((item) => item.id === target.installationId);
+    installation = installations.find((item) => item.id === target.installationId)
+      ?? installations.find((item) => item.pluginId === target.installationId);
     if (!installation) {
       return void ui.notify(uiText('inst.notFound.installation', { id: labelText(target.installationId) }), 'warning');
     }
@@ -479,7 +459,7 @@ export async function runPluginStateFlow(
     : uiText('inst.actionLabel.enablement');
   const initialModel = {
     actionLabel,
-    authority: scope,
+    authority: 'global' as const,
     target: installation.id,
     stateRevision: state.state?.stateRevision,
     validationSnapshot: installation.validationSnapshot,
@@ -493,7 +473,7 @@ export async function runPluginStateFlow(
     ],
   })) return;
   if (desiredState === 'disabled') {
-    const preflight = await preflightPluginDisable(scope, installation.id, {
+    const preflight = await preflightPluginDisable(installation.id, {
       ...opts,
       expectedStateRevision: target.expectedStateRevision ?? currentRevision,
       expectedInstallationState: 'enabled',
@@ -506,7 +486,7 @@ export async function runPluginStateFlow(
     );
     return;
   }
-  const preflight = await preflightPluginEnable(scope, installation.id, {
+  const preflight = await preflightPluginEnable(installation.id, {
     ...opts,
     expectedStateRevision: target.expectedStateRevision ?? currentRevision,
   });

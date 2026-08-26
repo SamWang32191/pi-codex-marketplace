@@ -1,13 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import type { Scope } from '../../../src/bridge-state/types.js';
 import type { UpdateCandidate } from '../../../src/lifecycle/refresh.js';
 import { candidateSummary, planChoicesFor } from '../../../extensions/pi/lifecycle.js';
 import { findingOutcomeText, uiText, verdictText } from '../../../extensions/pi/ui-strings.js';
 import { quoteTerminalText } from '../../../extensions/pi/terminal-presentation.js';
 import type { CompatiblePlugin } from '../../../src/compatibility/profile.js';
 
-const SCOPE: Scope = 'global';
 const REG_ID = '11111111-1111-4111-8111-111111111111';
 const MARKET_ID = `${REG_ID}/acme-marketplace`;
 
@@ -17,13 +15,11 @@ function plugin(name: string): CompatiblePlugin {
 
 function candidateWith(entries: { plugin?: CompatiblePlugin; unavailableReason?: string }[]): UpdateCandidate {
   return {
-    scope: SCOPE,
     registrationId: REG_ID,
     stateRevision: '7',
     recordedFingerprint: 'a'.repeat(64),
     snapshot: {
       fingerprint: 'b'.repeat(64),
-      scope: SCOPE,
       entries: [],
       sourceKey: { kind: 'local', key: 'k', canonicalPath: '/tmp/m' },
       profile: 'p',
@@ -70,12 +66,11 @@ describe('Update Plan Checklist TUI helpers', () => {
     }
   });
 
-  it('renders a candidate summary disclosing scope, both fingerprints, revision movement, and per-entry availability', () => {
+  it('renders a candidate summary disclosing both fingerprints, revision movement, and per-entry availability', () => {
     const candidate = candidateWith([{ plugin: plugin('kept') }, { unavailableReason: 'invalid manifest' }]);
     candidate.resolvedRevision = 'c'.repeat(40);
     candidate.recordedResolvedRevision = 'd'.repeat(40);
     const summary = candidateSummary(candidate);
-    expect(summary).toContain(uiText('life.candidate.scope', { scope: SCOPE }));
     expect(summary).toContain('b'.repeat(16));
     expect(summary).toContain('aaaa');
     expect(summary).toContain('cccc');
@@ -93,7 +88,6 @@ describe('Update Plan Checklist TUI helpers', () => {
         classification: 'notice',
         phase: 'post-commit',
         target: 'entry',
-        scope: 'global',
         pointer: '/z',
         rule: 'NOTICE-01',
         outcome: 'notice outcome',
@@ -103,7 +97,6 @@ describe('Update Plan Checklist TUI helpers', () => {
         classification: 'blocking',
         phase: 'validation',
         target: 'catalog',
-        scope: 'global',
         pointer: '/a',
         rule: 'BLOCK-01',
         outcome: 'blocking outcome',
@@ -113,7 +106,6 @@ describe('Update Plan Checklist TUI helpers', () => {
     const summary = candidateSummary(candidate);
     const expectedBlocking = uiText('finding.line', {
       classification: 'blocking',
-      scope: 'global',
       phase: 'validation',
       target: 'catalog',
       pointer: '"/a"',
@@ -123,7 +115,6 @@ describe('Update Plan Checklist TUI helpers', () => {
     });
     const expectedNotice = uiText('finding.line', {
       classification: 'notice',
-      scope: 'global',
       phase: 'post-commit',
       target: 'entry',
       pointer: '"/z"',

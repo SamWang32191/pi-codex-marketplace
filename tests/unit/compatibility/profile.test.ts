@@ -32,7 +32,6 @@ describe('Compatibility Profile v1', () => {
     const root = pluginRoot();
 
     const result = classifyPlugin(root, {
-      scope: 'global',
       marketplaceId: 'reg-1/acme-marketplace',
       marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
     });
@@ -54,7 +53,6 @@ describe('Compatibility Profile v1', () => {
     writeFileSync(join(root, 'skills', 'release-notes', 'SKILL.md'), '# no descriptor\n');
 
     const result = classifyPlugin(root, {
-      scope: 'global',
       marketplaceId: 'reg-1/acme-marketplace',
       marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
     });
@@ -77,7 +75,6 @@ describe('Compatibility Profile v1', () => {
     }));
 
     const result = classifyPlugin(root, {
-      scope: 'global',
       marketplaceId: 'reg-1/acme-marketplace',
       marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
     });
@@ -98,7 +95,6 @@ describe('Compatibility Profile v1', () => {
     );
 
     const result = classifyPlugin(root, {
-      scope: 'global',
       marketplaceId: 'reg-1/acme-marketplace',
       marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
     });
@@ -113,7 +109,7 @@ describe('Compatibility Profile v1', () => {
     writeFileSync(join(root, 'skills'), 'not a directory');
 
     const result = classifyPlugin(root, {
-      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+      marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
     });
 
     expect(result.classification).toBe('invalid');
@@ -127,7 +123,7 @@ describe('Compatibility Profile v1', () => {
     writeFileSync(join(root, 'skills', 'duplicate', 'SKILL.md'), '---\nname: release-notes\ndescription: Duplicate\n---\n\nDuplicate.\n');
 
     const result = classifyPlugin(root, {
-      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+      marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
     });
 
     expect(result.classification).toBe('invalid');
@@ -141,7 +137,7 @@ describe('Compatibility Profile v1', () => {
     writeFileSync(join(root, 'skills', 'release-notes', 'node_modules', 'ignored', 'package.js'), 'untrusted');
 
     const result = classifyPlugin(root, {
-      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+      marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
     });
 
     expect(result.classification).toBe('compatible');
@@ -157,7 +153,7 @@ describe('Compatibility Profile v1', () => {
     );
 
     const result = classifyPlugin(root, {
-      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+      marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
     });
 
     expect(result.classification).toBe('compatible');
@@ -174,7 +170,7 @@ describe('Compatibility Profile v1', () => {
     );
 
     const result = classifyPlugin(root, {
-      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+      marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
     });
 
     expect(result.classification).toBe('compatible');
@@ -194,7 +190,7 @@ describe('Compatibility Profile v1', () => {
     );
 
     const result = classifyPlugin(root, {
-      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+      marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
     });
 
     expect(result.classification).toBe('invalid');
@@ -216,7 +212,7 @@ describe('Compatibility Profile v1', () => {
     );
 
     const result = classifyPlugin(root, {
-      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+      marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
     });
 
     expect(result.classification).toBe('invalid');
@@ -238,7 +234,7 @@ describe('Compatibility Profile v1', () => {
     writeFileSync(join(root, 'skills', 'release-notes', 'agents', 'openai.yaml'), profile);
 
     const result = classifyPlugin(root, {
-      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+      marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
     });
 
     expect(result.classification).toBe('incompatible');
@@ -260,7 +256,7 @@ describe('Compatibility Profile v1', () => {
     );
 
     const result = classifyPlugin(root, {
-      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+      marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
     });
 
     expect(result.classification).toBe('incompatible');
@@ -283,7 +279,7 @@ describe('Compatibility Profile v1', () => {
     writeFileSync(join(root, 'skills', 'release-notes', 'agents', 'openai.yaml'), profile);
 
     const result = classifyPlugin(root, {
-      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+      marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
     });
 
     expect(result.classification).toBe('invalid');
@@ -307,7 +303,7 @@ describe('Compatibility Profile v1', () => {
     );
 
     const result = classifyPlugin(root, {
-      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+      marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
     });
 
     expect(result.classification).toBe('invalid');
@@ -327,7 +323,7 @@ describe('Compatibility Profile v1', () => {
     expect(BUDGET.maxAgentProfileBytes + 1).toBeLessThan(BUDGET.maxTotalBytes);
 
     const result = classifyPlugin(root, {
-      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+      marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
     });
 
     expect(result.classification).toBe('invalid');
@@ -354,7 +350,7 @@ describe('Compatibility Profile v1', () => {
     writeFileSync(join(profileDirectory, 'openai.yaml'), profile);
 
     const result = classifyPlugin(root, {
-      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+      marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
     });
 
     expect(result.classification).toBe('invalid');
@@ -376,7 +372,7 @@ describe('Compatibility Profile v1', () => {
     writeFileSync(join(profileDirectory, 'openai.yaml'), profile);
 
     const result = classifyPlugin(root, {
-      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+      marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
     });
 
     expect(result.classification).toBe('invalid');
@@ -397,7 +393,7 @@ describe('Compatibility Profile v1', () => {
     writeFileSync(join(profileDirectory, 'openai.yaml'), profile);
 
     const result = classifyPlugin(root, {
-      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+      marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
     });
 
     expect(result.classification).toBe('invalid');
@@ -413,7 +409,7 @@ describe('Compatibility Profile v1', () => {
     writeFileSync(join(profileDirectory, 'openai.yaml'), 'policy: *missing\n');
 
     const result = classifyPlugin(root, {
-      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+      marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
     });
 
     expect(result.classification).toBe('invalid');
@@ -433,7 +429,7 @@ describe('Compatibility Profile v1', () => {
     writeFileSync(join(profileDirectory, 'openai.yaml'), profile);
 
     const result = classifyPlugin(root, {
-      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+      marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
     });
 
     expect(result.findings).not.toEqual(expect.arrayContaining([
@@ -450,7 +446,7 @@ describe('Compatibility Profile v1', () => {
     );
 
     const result = classifyPlugin(root, {
-      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+      marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
     });
 
     expect(result.classification).toBe('compatible');
@@ -494,7 +490,7 @@ describe('Compatibility Profile v1', () => {
     mkdirSync(join(root, 'skills', 'release-notes', 'agents', 'openai.yaml'), { recursive: true });
 
     const result = classifyPlugin(root, {
-      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+      marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
     });
 
     expect(result.classification).toBe('invalid');
@@ -515,7 +511,7 @@ describe('Compatibility Profile v1', () => {
     symlinkSync('profile.yaml', join(agents, 'openai.yaml'));
 
     const result = classifyPlugin(root, {
-      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+      marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
     });
 
     expect(result.classification).toBe('compatible');
@@ -535,7 +531,7 @@ describe('Compatibility Profile v1', () => {
     symlinkSync('../../other-skill/profile.yaml', join(skills, 'release-notes', 'agents', 'openai.yaml'));
 
     const result = classifyPlugin(root, {
-      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+      marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
     });
 
     expect(result.classification).toBe('invalid');
@@ -560,7 +556,7 @@ describe('Compatibility Profile v1', () => {
     symlinkSync('../other-skill/agents', join(skills, 'release-notes', 'agents'));
 
     const result = classifyPlugin(root, {
-      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+      marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
     });
 
     expect(result.classification).toBe('invalid');
@@ -584,7 +580,7 @@ describe('Compatibility Profile v1', () => {
       symlinkSync(`../${excludedDirectory}/openai.yaml`, join(skill, 'agents', 'openai.yaml'));
 
       const result = classifyPlugin(root, {
-        scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+        marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
       });
 
       expect(result.classification).toBe('invalid');
@@ -605,7 +601,7 @@ describe('Compatibility Profile v1', () => {
     symlinkSync('missing.yaml', join(agents, 'openai.yaml'));
 
     const result = classifyPlugin(root, {
-      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+      marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
     });
 
     expect(result.classification).toBe('invalid');
@@ -624,7 +620,7 @@ describe('Compatibility Profile v1', () => {
     );
 
     const result = classifyPlugin(root, {
-      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+      marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
     });
 
     // Non-blocking: Registration survives with the advisory warning while the projected
@@ -638,7 +634,6 @@ describe('Compatibility Profile v1', () => {
         classification: 'warning',
         target: 'skill',
         phase: 'validation',
-        scope: 'global',
         pointer: 'skills/release-notes/agents/openai.yaml#/policy/allow_implicit_invocation',
       }),
     ]);
@@ -658,7 +653,7 @@ describe('Compatibility Profile v1', () => {
     );
 
     const result = classifyPlugin(root, {
-      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+      marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
     });
 
     expect(result.classification).toBe('compatible');
@@ -673,7 +668,7 @@ describe('Compatibility Profile v1', () => {
     writeFileSync(join(agents, 'openai.yaml'), 'policy:\n  allow_implicit_invocation: true\n');
 
     const implicit = classifyPlugin(root, {
-      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+      marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
     });
 
     expect(implicit.classification).toBe('compatible');
@@ -681,7 +676,7 @@ describe('Compatibility Profile v1', () => {
 
     writeFileSync(join(agents, 'openai.yaml'), 'interface:\n  display_name: Release notes\n');
     const absentPolicy = classifyPlugin(root, {
-      scope: 'global', marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
+      marketplaceId: 'reg-1/acme-marketplace', marketplaceEntryId: 'reg-1/acme-marketplace/plugins/0',
     });
 
     expect(absentPolicy.classification).toBe('compatible');

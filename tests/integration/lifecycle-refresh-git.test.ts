@@ -18,7 +18,6 @@ function makeEnv() {
   return {
     root,
     agentDir: join(root, 'agent'),
-    projectDir: join(root, 'project'),
     fixture: join(root, 'fixture'),
   };
 }
@@ -72,8 +71,8 @@ describe('Marketplace Refresh — Git Resolved Revision binding', () => {
   afterEach(() => rmSync(env.root, { recursive: true, force: true }));
 
   async function register(selector: GitSelectorInput, sha: string) {
-    const opts = { agentDir: env.agentDir, cwd: env.projectDir, executor: makeMockExecutor(env.fixture, sha) };
-    const preflight = await preflightGitRegistration('global', 'https://github.com/acme/plugins.git', selector, opts);
+    const opts = { agentDir: env.agentDir, executor: makeMockExecutor(env.fixture, sha) };
+    const preflight = await preflightGitRegistration('https://github.com/acme/plugins.git', selector, opts);
     expect(preflight.ok).toBe(true);
     if (!preflight.ok) throw new Error(`preflight failed: ${'findings' in preflight.outcome ? preflight.outcome.findings.map((f) => f.outcome).join('; ') : preflight.outcome.receipt.summary}`);
     const confirmed = await confirmGitRegistration(preflight.preflight, true, opts);
@@ -86,23 +85,23 @@ describe('Marketplace Refresh — Git Resolved Revision binding', () => {
     makeFixture(env.fixture);
     const { registrationId, opts } = await register({ kind: 'branch', value: 'main' }, SHA_A);
 
-    const outcome = await refreshRegistration('global', registrationId, opts);
+    const outcome = await refreshRegistration(registrationId, opts);
 
     expect(outcome.status).toBe('no-change');
     if (outcome.status !== 'no-change') return;
     expect(outcome.receipt.stateChanged).toBe(false);
-    const state = await readBridgeState('global', opts);
+    const state = await readBridgeState(opts);
     expect(state.state!.registrations[0].resolvedRevision).toBe(SHA_A);
   });
 
   it('produces an Update Candidate when the branch resolves to a new Resolved Revision', async () => {
     makeFixture(env.fixture);
     const { registrationId, opts } = await register({ kind: 'branch', value: 'main' }, SHA_A);
-    const before = await readBridgeState('global', opts);
+    const before = await readBridgeState(opts);
 
     // Upstream advances and its tree changes.
     makeFixture(env.fixture, { extra: true });
-    const outcome = await refreshRegistration('global', registrationId, { ...opts, executor: makeMockExecutor(env.fixture, SHA_B) });
+    const outcome = await refreshRegistration(registrationId, { ...opts, executor: makeMockExecutor(env.fixture, SHA_B) });
 
     expect(outcome.status).toBe('update-candidate');
     if (outcome.status !== 'update-candidate') return;
@@ -111,7 +110,7 @@ describe('Marketplace Refresh — Git Resolved Revision binding', () => {
     expect(outcome.candidate.snapshot.resolvedRevision).toBe(SHA_B);
     expect(outcome.candidate.snapshot.fingerprint).not.toBe(before.state!.registrations[0].validationSnapshot);
     // Non-mutating.
-    const after = await readBridgeState('global', opts);
+    const after = await readBridgeState(opts);
     expect(after.state!.stateRevision).toBe(before.state!.stateRevision);
     expect(after.state!.registrations[0].resolvedRevision).toBe(SHA_A);
   });
@@ -122,10 +121,10 @@ describe('Marketplace Refresh — Git Resolved Revision binding', () => {
 
     // The branch tip moves to SHA_B and the tree changes — but the selector pins SHA_A.
     makeFixture(env.fixture, { extra: true });
-    const outcome = await refreshRegistration('global', registrationId, { ...opts, executor: makeMockExecutor(env.fixture, SHA_B) });
+    const outcome = await refreshRegistration(registrationId, { ...opts, executor: makeMockExecutor(env.fixture, SHA_B) });
 
     expect(outcome.status).toBe('no-change');
-    const state = await readBridgeState('global', opts);
+    const state = await readBridgeState(opts);
     expect(state.state!.registrations[0].resolvedRevision).toBe(SHA_A);
   });
 });

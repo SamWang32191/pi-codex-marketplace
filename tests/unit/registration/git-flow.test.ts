@@ -13,11 +13,11 @@ import { readBridgeState } from '../../../src/bridge-state/store.js';
 import { commitBridgeState } from '../../../src/bridge-state/store.js';
 import type { GitExecutor } from '../../../src/registration/git-acquisition.js';
 
-type Env = { agentDir: string; projectDir: string; tmpRoot: string };
+type Env = { agentDir: string; tmpRoot: string };
 
 function makeEnv(): Env {
   const tmpRoot = mkdtempSync(join(tmpdir(), 'git-flow-'));
-  return { agentDir: join(tmpRoot, 'agent'), projectDir: join(tmpRoot, 'project'), tmpRoot };
+  return { agentDir: join(tmpRoot, 'agent'), tmpRoot };
 }
 
 function makeMarketplace(root: string, name = 'acme-marketplace', plugins: Record<string, string> = { 'release-helper': './plugins/release-helper' }) {
@@ -71,7 +71,7 @@ function makeMockExecutor(fixtureRoot: string, opts: { sha?: string; hostKeyErro
 }
 
 function gitOpts(env: Env, executor: GitExecutor, extra: Record<string, unknown> = {}) {
-  return { agentDir: env.agentDir, cwd: env.projectDir, fenceTimeoutMs: 300, executor, ...extra };
+  return { agentDir: env.agentDir, fenceTimeoutMs: 300, executor, ...extra };
 }
 
 describe('Git Marketplace Registration flow', () => {
@@ -93,7 +93,7 @@ describe('Git Marketplace Registration flow', () => {
 
   it('preflight produces Validation Disclosure with canonical locator, selector canonical, and resolved revision', async () => {
     const exec = makeMockExecutor(fixture, { sha: 'b'.repeat(40) });
-    const res = await preflightGitRegistration('global', locator, selectorBranch, gitOpts(env, exec, { preallocatedId: '11111111-1111-4111-8111-111111111111' }));
+    const res = await preflightGitRegistration(locator, selectorBranch, gitOpts(env, exec, { preallocatedId: '11111111-1111-4111-8111-111111111111' }));
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     const pf = res.preflight;
@@ -116,7 +116,7 @@ describe('Git Marketplace Registration flow', () => {
 
   it('accepts scp-like locator and normalizes to ssh canonical', async () => {
     const exec = makeMockExecutor(fixture);
-    const res = await preflightGitRegistration('global', 'git@github.com:owner/repo.git', selectorBranch, gitOpts(env, exec));
+    const res = await preflightGitRegistration('git@github.com:owner/repo.git', selectorBranch, gitOpts(env, exec));
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.preflight.locator.canonicalUrl).toBe('ssh://git@github.com/owner/repo.git');
@@ -126,7 +126,7 @@ describe('Git Marketplace Registration flow', () => {
 
   it('normalizes tag and commit selectors correctly', async () => {
     const execTag = makeMockExecutor(fixture, { sha: 'c'.repeat(40) });
-    const tagRes = await preflightGitRegistration('global', locator, { kind: 'tag', value: 'v1.0.0' }, gitOpts(env, execTag));
+    const tagRes = await preflightGitRegistration(locator, { kind: 'tag', value: 'v1.0.0' }, gitOpts(env, execTag));
     expect(tagRes.ok).toBe(true);
     if (tagRes.ok) {
       expect(tagRes.preflight.selector.canonical).toBe('refs/tags/v1.0.0');
@@ -135,7 +135,7 @@ describe('Git Marketplace Registration flow', () => {
 
     const execCommit = makeMockExecutor(fixture, { sha: 'd'.repeat(40) });
     const commitSha = 'ABCDEF1234567890ABCDEF1234567890ABCDEF12';
-    const commitRes = await preflightGitRegistration('global', locator, { kind: 'commit', value: commitSha }, gitOpts(env, execCommit));
+    const commitRes = await preflightGitRegistration(locator, { kind: 'commit', value: commitSha }, gitOpts(env, execCommit));
     expect(commitRes.ok).toBe(true);
     if (commitRes.ok) {
       expect(commitRes.preflight.selector.canonical).toBe(commitSha.toLowerCase());
@@ -146,7 +146,7 @@ describe('Git Marketplace Registration flow', () => {
 
   it('rejects invalid locator (plaintext http) with GIT_LOCATOR_PLAINTEXT', async () => {
     const exec = makeMockExecutor(fixture);
-    const res = await preflightGitRegistration('global', 'http://github.com/owner/repo', selectorBranch, gitOpts(env, exec));
+    const res = await preflightGitRegistration('http://github.com/owner/repo', selectorBranch, gitOpts(env, exec));
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.outcome.status).toBe('blocked');
@@ -156,7 +156,7 @@ describe('Git Marketplace Registration flow', () => {
 
   it('rejects invalid locator with embedded credentials', async () => {
     const exec = makeMockExecutor(fixture);
-    const res = await preflightGitRegistration('global', 'https://user:pass@github.com/owner/repo', selectorBranch, gitOpts(env, exec));
+    const res = await preflightGitRegistration('https://user:pass@github.com/owner/repo', selectorBranch, gitOpts(env, exec));
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.outcome.status).toBe('blocked');
@@ -166,7 +166,7 @@ describe('Git Marketplace Registration flow', () => {
 
   it('rejects locator with query/fragment', async () => {
     const exec = makeMockExecutor(fixture);
-    const res = await preflightGitRegistration('global', 'https://github.com/owner/repo?foo=bar', selectorBranch, gitOpts(env, exec));
+    const res = await preflightGitRegistration('https://github.com/owner/repo?foo=bar', selectorBranch, gitOpts(env, exec));
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.outcome.status).toBe('blocked');
@@ -176,7 +176,7 @@ describe('Git Marketplace Registration flow', () => {
 
   it('rejects invalid selector (abbreviated commit)', async () => {
     const exec = makeMockExecutor(fixture);
-    const res = await preflightGitRegistration('global', locator, { kind: 'commit', value: 'abc123' }, gitOpts(env, exec));
+    const res = await preflightGitRegistration(locator, { kind: 'commit', value: 'abc123' }, gitOpts(env, exec));
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.outcome.status).toBe('blocked');
@@ -186,7 +186,7 @@ describe('Git Marketplace Registration flow', () => {
 
   it('rejects selector with HEAD', async () => {
     const exec = makeMockExecutor(fixture);
-    const res = await preflightGitRegistration('global', locator, { kind: 'branch', value: 'HEAD' }, gitOpts(env, exec));
+    const res = await preflightGitRegistration(locator, { kind: 'branch', value: 'HEAD' }, gitOpts(env, exec));
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.outcome.status).toBe('blocked');
@@ -196,7 +196,7 @@ describe('Git Marketplace Registration flow', () => {
 
   it('rejects selector with whitespace', async () => {
     const exec = makeMockExecutor(fixture);
-    const res = await preflightGitRegistration('global', locator, { kind: 'branch', value: 'main ' }, gitOpts(env, exec));
+    const res = await preflightGitRegistration(locator, { kind: 'branch', value: 'main ' }, gitOpts(env, exec));
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.outcome.status).toBe('blocked');
@@ -206,7 +206,7 @@ describe('Git Marketplace Registration flow', () => {
 
   it('blocks Acquisition Trust Base violation: unknown host key', async () => {
     const exec = makeMockExecutor(fixture, { hostKeyError: 'unknown' });
-    const res = await preflightGitRegistration('global', 'ssh://git@github.com/owner/repo', selectorBranch, gitOpts(env, exec));
+    const res = await preflightGitRegistration('ssh://git@github.com/owner/repo', selectorBranch, gitOpts(env, exec));
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.outcome.status).toBe('blocked');
@@ -216,7 +216,7 @@ describe('Git Marketplace Registration flow', () => {
 
   it('blocks Acquisition Trust Base violation: redirect changing locator', async () => {
     const exec = makeMockExecutor(fixture, { redirectError: true });
-    const res = await preflightGitRegistration('global', locator, selectorBranch, gitOpts(env, exec));
+    const res = await preflightGitRegistration(locator, selectorBranch, gitOpts(env, exec));
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.outcome.status).toBe('blocked');
@@ -226,7 +226,7 @@ describe('Git Marketplace Registration flow', () => {
 
   it('confirmation yes commits atomically, bumps State Revision, and returns Completed receipt with git fields', async () => {
     const exec = makeMockExecutor(fixture, { sha: 'e'.repeat(40) });
-    const res = await preflightGitRegistration('global', locator, selectorBranch, gitOpts(env, exec));
+    const res = await preflightGitRegistration(locator, selectorBranch, gitOpts(env, exec));
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     const outcome = await confirmGitRegistration(res.preflight, true, gitOpts(env, exec));
@@ -241,7 +241,7 @@ describe('Git Marketplace Registration flow', () => {
     expect(outcome.receipt.summary).toBe('Completed');
     expect(outcome.receipt.observedStateRevision).toBe('1');
 
-    const state = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
+    const state = await readBridgeState({ agentDir: env.agentDir });
     expect(state.status).toBe('ok');
     expect(state.state!.registrations[0].sourceKind).toBe('git');
     expect(state.state!.registrations[0].canonicalLocator).toBe('https://github.com/owner/repo');
@@ -249,26 +249,26 @@ describe('Git Marketplace Registration flow', () => {
 
   it('confirmation no declines without mutating state', async () => {
     const exec = makeMockExecutor(fixture);
-    const res = await preflightGitRegistration('global', locator, selectorBranch, gitOpts(env, exec));
+    const res = await preflightGitRegistration(locator, selectorBranch, gitOpts(env, exec));
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     const outcome = await confirmGitRegistration(res.preflight, false, gitOpts(env, exec));
     expect(outcome.status).toBe('declined');
     if (outcome.status !== 'declined') return;
     expect(outcome.receipt.summary).toBe('Declined');
-    const state = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
+    const state = await readBridgeState({ agentDir: env.agentDir });
     expect(state.state!.registrations).toHaveLength(0);
   });
 
   it('detects duplicate git Source Key (same canonicalUrl + exact selector) and directs to existing', async () => {
     const exec1 = makeMockExecutor(fixture, { sha: 'a'.repeat(40) });
-    const first = await preflightGitRegistration('global', locator, selectorBranch, gitOpts(env, exec1, { preallocatedId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }));
+    const first = await preflightGitRegistration(locator, selectorBranch, gitOpts(env, exec1, { preallocatedId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }));
     expect(first.ok).toBe(true);
     if (!first.ok) return;
     expect((await confirmGitRegistration(first.preflight, true, gitOpts(env, exec1))).status).toBe('completed');
 
     const exec2 = makeMockExecutor(fixture, { sha: 'a'.repeat(40) });
-    const second = await preflightGitRegistration('global', locator, selectorBranch, gitOpts(env, exec2, { preallocatedId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }));
+    const second = await preflightGitRegistration(locator, selectorBranch, gitOpts(env, exec2, { preallocatedId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }));
     expect(second.ok).toBe(false);
     if (second.ok) return;
     expect(second.outcome.status).toBe('blocked');
@@ -279,17 +279,17 @@ describe('Git Marketplace Registration flow', () => {
 
   it('allows same git locator with different selector (different Source Key)', async () => {
     const exec1 = makeMockExecutor(fixture, { sha: 'a'.repeat(40) });
-    const first = await preflightGitRegistration('global', locator, { kind: 'branch', value: 'main' }, gitOpts(env, exec1));
+    const first = await preflightGitRegistration(locator, { kind: 'branch', value: 'main' }, gitOpts(env, exec1));
     expect(first.ok).toBe(true);
     if (!first.ok) return;
     expect((await confirmGitRegistration(first.preflight, true, gitOpts(env, exec1))).status).toBe('completed');
 
     const exec2 = makeMockExecutor(fixture, { sha: 'b'.repeat(40) });
-    const second = await preflightGitRegistration('global', locator, { kind: 'branch', value: 'dev' }, gitOpts(env, exec2));
+    const second = await preflightGitRegistration(locator, { kind: 'branch', value: 'dev' }, gitOpts(env, exec2));
     expect(second.ok).toBe(true);
     if (!second.ok) return;
     expect((await confirmGitRegistration(second.preflight, true, gitOpts(env, exec2))).status).toBe('completed');
-    const state = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
+    const state = await readBridgeState({ agentDir: env.agentDir });
     expect(state.state!.registrations).toHaveLength(2);
   });
 
@@ -299,21 +299,21 @@ describe('Git Marketplace Registration flow', () => {
     try {
       makeMarketplace(localRoot, 'demo-marketplace');
       const { preflightLocalRegistration, confirmLocalRegistration } = await import('../../../src/registration/flow.js');
-      const localRes = await preflightLocalRegistration('global', localRoot, { agentDir: env.agentDir, cwd: env.projectDir, fenceTimeoutMs: 300 });
+      const localRes = await preflightLocalRegistration(localRoot, { agentDir: env.agentDir, fenceTimeoutMs: 300 });
       expect(localRes.ok).toBe(true);
       if (localRes.ok) {
-        const out = await confirmLocalRegistration(localRes.preflight, true, { agentDir: env.agentDir, cwd: env.projectDir });
+        const out = await confirmLocalRegistration(localRes.preflight, true, { agentDir: env.agentDir });
         expect(out.status).toBe('completed');
       }
 
       // Git with same path content but git source key should not be considered duplicate
       const exec = makeMockExecutor(fixture);
-      const gitRes = await preflightGitRegistration('global', locator, selectorBranch, gitOpts(env, exec));
+      const gitRes = await preflightGitRegistration(locator, selectorBranch, gitOpts(env, exec));
       expect(gitRes.ok).toBe(true);
       if (gitRes.ok) {
         expect((await confirmGitRegistration(gitRes.preflight, true, gitOpts(env, exec))).status).toBe('completed');
       }
-      const state = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
+      const state = await readBridgeState({ agentDir: env.agentDir });
       expect(state.state!.registrations).toHaveLength(2);
       const kinds = state.state!.registrations.map((r) => r.sourceKind).sort();
       expect(kinds).toEqual(['git', 'local']);
@@ -322,42 +322,24 @@ describe('Git Marketplace Registration flow', () => {
     }
   });
 
-  it('equal git Source Keys across scopes do not merge', async () => {
-    const execG = makeMockExecutor(fixture, { sha: 'a'.repeat(40) });
-    const g = await preflightGitRegistration('global', locator, selectorBranch, gitOpts(env, execG));
-    expect(g.ok).toBe(true);
-    if (!g.ok) return;
-    expect((await confirmGitRegistration(g.preflight, true, gitOpts(env, execG))).status).toBe('completed');
-
-    const execP = makeMockExecutor(fixture, { sha: 'a'.repeat(40) });
-    const p = await preflightGitRegistration('project', locator, selectorBranch, gitOpts(env, execP, { projectTrusted: true }));
-    expect(p.ok).toBe(true);
-    if (!p.ok) return;
-    expect((await confirmGitRegistration(p.preflight, true, gitOpts(env, execP, { projectTrusted: true }))).status).toBe('completed');
-
-    const gs = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
-    const ps = await readBridgeState('project', { agentDir: env.agentDir, cwd: env.projectDir });
-    expect(gs.state!.registrations).toHaveLength(1);
-    expect(ps.state!.registrations).toHaveLength(1);
-  });
-
+  
   it('rejects confirmation as Stale when State Revision changed', async () => {
     const exec = makeMockExecutor(fixture);
-    const res = await preflightGitRegistration('global', locator, selectorBranch, gitOpts(env, exec));
+    const res = await preflightGitRegistration(locator, selectorBranch, gitOpts(env, exec));
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    await commitBridgeState('global', (c) => ({ ...c, registrations: [...c.registrations, { id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', alias: 'other' }] }), { agentDir: env.agentDir, cwd: env.projectDir });
+    await commitBridgeState((c) => ({ ...c, registrations: [...c.registrations, { id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', alias: 'other' }] }), { agentDir: env.agentDir });
     const outcome = await confirmGitRegistration(res.preflight, true, gitOpts(env, exec));
     expect(outcome.status).toBe('rejected-as-stale');
   });
 
   it('blocks a concurrent same-scope attempt with ATTEMPT_IN_PROGRESS', async () => {
     const exec1 = makeMockExecutor(fixture);
-    const a = await preflightGitRegistration('global', locator, selectorBranch, gitOpts(env, exec1));
+    const a = await preflightGitRegistration(locator, selectorBranch, gitOpts(env, exec1));
     expect(a.ok).toBe(true);
     if (!a.ok) return;
     const exec2 = makeMockExecutor(fixture);
-    const b = await preflightGitRegistration('global', locator, selectorBranch, gitOpts(env, exec2, { fenceTimeoutMs: 100 }));
+    const b = await preflightGitRegistration(locator, selectorBranch, gitOpts(env, exec2, { fenceTimeoutMs: 100 }));
     expect(b.ok).toBe(false);
     if (b.ok) return;
     expect(b.outcome.status).toBe('blocked');
@@ -365,26 +347,17 @@ describe('Git Marketplace Registration flow', () => {
     expect(b.outcome.findings[0].code).toBe('ATTEMPT_IN_PROGRESS');
     cancelGitRegistration(a.preflight);
     const exec3 = makeMockExecutor(fixture);
-    const c = await preflightGitRegistration('global', locator, selectorBranch, gitOpts(env, exec3));
+    const c = await preflightGitRegistration(locator, selectorBranch, gitOpts(env, exec3));
     expect(c.ok).toBe(true);
     if (c.ok) cancelGitRegistration(c.preflight);
   });
 
-  it('blocks Project Scope without Project Trust', async () => {
-    const exec = makeMockExecutor(fixture);
-    const res = await preflightGitRegistration('project', locator, selectorBranch, gitOpts(env, exec, { projectTrusted: false }));
-    expect(res.ok).toBe(false);
-    if (res.ok) return;
-    expect(res.outcome.status).toBe('blocked');
-    if (res.outcome.status !== 'blocked') return;
-    expect(res.outcome.findings[0].code).toBe('PROJECT_TRUST_DENIED');
-  });
-
+  
   it('fails when catalog missing after acquisition', async () => {
     const emptyFixture = mkdtempSync(join(tmpdir(), 'empty-git-'));
     try {
       const exec = makeMockExecutor(emptyFixture);
-      const res = await preflightGitRegistration('global', locator, selectorBranch, gitOpts(env, exec));
+      const res = await preflightGitRegistration(locator, selectorBranch, gitOpts(env, exec));
       expect(res.ok).toBe(false);
       if (res.ok) return;
       expect(res.outcome.status).toBe('blocked');

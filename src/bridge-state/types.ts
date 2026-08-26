@@ -2,7 +2,7 @@
  * Bridge State — Authoritative durable desired state.
  * See CONTEXT.md: Bridge State, State Revision, Registration ID, Installation ID
  *
- * Persistence is split into two scope-local documents (global + project).
+ * Persistence is a single Global document (~/.pi/agent/codex-marketplace/state.json).
  * Only authoritative fields are persisted; Effective State, catalogs, compatibility
  * results, diagnostics are recomputed at read time.
  *
@@ -13,14 +13,14 @@
 
 export const CURRENT_SCHEMA_VERSION = 1;
 
-/** Opaque monotonic identifier per scope. Stored as decimal string, incremented on each successful commit. */
+/** Opaque monotonic identifier. Stored as decimal string, incremented on each successful commit. */
 export type StateRevision = string;
 
 /** Minimal shape for scaffold — later tickets extend with Source Key, Validation Snapshot, etc. */
 export interface Registration {
   /** Immutable lowercase UUIDv4, allocated before preflight */
   id: string;
-  /** Scope-local alias, derived from marketplace name */
+  /** Human-readable alias, derived from marketplace name */
   alias?: string;
   /** Declared marketplace name (kebab-case) */
   marketplaceName?: string;
@@ -59,7 +59,8 @@ export interface Registration {
 }
 
 export interface Installation {
-  /** Canonical Installation ID = scope + Plugin ID (stable across version/path changes) */
+  /** Canonical Installation ID = Plugin ID itself (stable across version/path changes).
+   *  Legacy documents may still carry the retired 'global/<pluginId>' form; both resolve. */
   id: string;
   /** Canonical Plugin ID = Marketplace ID + manifest name */
   pluginId: string;
@@ -89,15 +90,11 @@ export interface BridgeState {
   schemaVersion: number;
   /** Opaque monotonic per-scope revision */
   stateRevision: StateRevision;
-  /** Scope-local registrations */
   registrations: Registration[];
-  /** Scope-local installations (with Installation State) */
   installations: Installation[];
   /** Retired (issue #59) — always empty in practice; legacy entries are ignored at read time. */
   scopeOverrides: ScopeOverride[];
 }
-
-export type Scope = 'global' | 'project';
 
 export type ReadStatus = 'ok' | 'corrupted' | 'incompatible' | 'missing';
 
@@ -134,7 +131,7 @@ export type StoreErrorCode =
   | 'PERSISTENCE_INDETERMINATE'
   | 'PERSISTENCE_FAILED';
 
-/** Create an empty state for a scope at revision "0" */
+/** Create an empty state at revision "0" */
 export function createEmptyState(): BridgeState {
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,

@@ -32,8 +32,8 @@ describe('Validation Snapshot', () => {
   });
 
   it('produces a deterministic fingerprint over ordered entries + binds', () => {
-    const a = buildLocalSnapshot(root, sourceKey, 'global');
-    const b = buildLocalSnapshot(root, sourceKey, 'global');
+    const a = buildLocalSnapshot(root, sourceKey);
+    const b = buildLocalSnapshot(root, sourceKey);
     expect(a.ok).toBe(true);
     expect(b.ok).toBe(true);
     expect(a.snapshot!.fingerprint).toBe(b.snapshot!.fingerprint);
@@ -41,7 +41,7 @@ describe('Validation Snapshot', () => {
   });
 
   it('binds Source Key, Profile, Ruleset, Budget into the snapshot', () => {
-    const s = buildLocalSnapshot(root, sourceKey, 'global').snapshot!;
+    const s = buildLocalSnapshot(root, sourceKey).snapshot!;
     expect(s.sourceKey.kind).toBe('local');
     expect(s.sourceKey.key).toBe(`local:${root}`);
     expect(s.profile).toBe(COMPATIBILITY_PROFILE);
@@ -50,14 +50,14 @@ describe('Validation Snapshot', () => {
   });
 
   it('fingerprint changes when content changes (source drift would be detected)', () => {
-    const before = buildLocalSnapshot(root, sourceKey, 'global').snapshot!.fingerprint;
+    const before = buildLocalSnapshot(root, sourceKey).snapshot!.fingerprint;
     writeFileSync(join(root, 'plugins', 'p1', 'SKILL.md'), '# changed');
-    const after = buildLocalSnapshot(root, sourceKey, 'global').snapshot!.fingerprint;
+    const after = buildLocalSnapshot(root, sourceKey).snapshot!.fingerprint;
     expect(after).not.toBe(before);
   });
 
   it('records ordered paths, types, modes, symlink targets, content hashes', () => {
-    const s = buildLocalSnapshot(root, sourceKey, 'global').snapshot!;
+    const s = buildLocalSnapshot(root, sourceKey).snapshot!;
     const relPaths = s.entries.map((e) => e.relPath);
     expect(relPaths).toContain('.agents/plugins/marketplace.json');
     expect(relPaths).toContain('plugins/p1/plugin.json');
@@ -72,7 +72,7 @@ describe('Validation Snapshot', () => {
 
   it('records symlink targets without following them (no loops)', () => {
     symlinkSync('./plugins', join(root, 'pluglink'));
-    const s = buildLocalSnapshot(root, sourceKey, 'global').snapshot!;
+    const s = buildLocalSnapshot(root, sourceKey).snapshot!;
     const link = s.entries.find((e) => e.relPath === 'pluglink')!;
     expect(link.type).toBe('symlink');
     expect(link.symlinkTarget).toBe('./plugins');
@@ -86,7 +86,7 @@ describe('Validation Snapshot', () => {
     truncateSync(target, BUDGET.maxTotalBytes + 1);
     symlinkSync('../profile.yaml', join(skill, 'agents', 'openai.yaml'));
 
-    const result = buildLocalSnapshot(root, sourceKey, 'global');
+    const result = buildLocalSnapshot(root, sourceKey);
 
     expect(result.ok).toBe(false);
     expect(result.findings).toEqual(expect.arrayContaining([
@@ -98,7 +98,7 @@ describe('Validation Snapshot', () => {
     const outside = mkdtempSync(join(tmpdir(), 'outside-snapshot-'));
     try {
       symlinkSync(outside, join(root, 'outside-link'));
-      const res = buildLocalSnapshot(root, sourceKey, 'global');
+      const res = buildLocalSnapshot(root, sourceKey);
       expect(res.ok).toBe(false);
       expect(res.findings.some((f) => f.code === 'CONTAINED_SYMLINK_VIOLATION')).toBe(true);
     } finally {
@@ -110,7 +110,7 @@ describe('Validation Snapshot', () => {
 
   it('flags broken symlinks inside the tree as Blocking (no resolvable canonical target)', () => {
     symlinkSync('./does-not-exist', join(root, 'broken-link'));
-    const res = buildLocalSnapshot(root, sourceKey, 'global');
+    const res = buildLocalSnapshot(root, sourceKey);
     expect(res.ok).toBe(false);
     const symlinkFindings = res.findings.filter((f) => f.code === 'CONTAINED_SYMLINK_VIOLATION');
     expect(symlinkFindings.length).toBeGreaterThan(0);
@@ -119,7 +119,7 @@ describe('Validation Snapshot', () => {
 
   it('flags looping symlinks inside the tree as Blocking', () => {
     symlinkSync('loop-a', join(root, 'loop-a'));
-    const res = buildLocalSnapshot(root, sourceKey, 'global');
+    const res = buildLocalSnapshot(root, sourceKey);
     expect(res.ok).toBe(false);
     expect(res.findings.some((f) => f.code === 'CONTAINED_SYMLINK_VIOLATION')).toBe(true);
   });

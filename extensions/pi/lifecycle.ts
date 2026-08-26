@@ -11,7 +11,7 @@
 import type { ExtensionCommandContext, ExtensionUIContext } from '@earendil-works/pi-coding-agent';
 
 import { readBridgeState } from '../../src/bridge-state/store.js';
-import type { Installation, Scope } from '../../src/bridge-state/types.js';
+import type { Installation } from '../../src/bridge-state/types.js';
 import { appendReceipt } from '../../src/journal/journal.js';
 import {
   applyUpdate,
@@ -34,8 +34,7 @@ import {
   reportOutcome,
   validationDisclosureLines,
 } from './registration.js';
-import { attemptSummaryText, uiText,
-  scopeOptions } from './ui-strings.js';
+import { attemptSummaryText, uiText } from './ui-strings.js';
 import { quoteTerminalText } from './terminal-presentation.js';
 import { openTransactionSheet, type TransactionSheetModel } from './transaction-sheet.js';
 
@@ -76,7 +75,6 @@ export function candidateSummary(candidate: UpdateCandidate): string {
     ].map((finding) => [
       [
         finding.classification,
-        finding.scope,
         finding.phase,
         finding.target,
         finding.pointer,
@@ -88,7 +86,6 @@ export function candidateSummary(candidate: UpdateCandidate): string {
     ]),
   ).values()];
   const lines = [
-    uiText('life.candidate.scope', { scope: candidate.scope }),
     uiText('life.candidate.registration', { id: `${candidate.registrationId.slice(0, 8)}…` }),
     uiText('reg.detail.marketplace', { name: quote(candidate.marketplaceName || `(${uiText('common.none')})`) }),
     uiText('life.candidate.newSnapshot', { snapshot: candidate.snapshot.fingerprint.slice(0, 16) }),
@@ -117,7 +114,7 @@ export async function attemptReport(
   ctx: ExtensionCommandContext,
   outcome: { receipt: AttemptReceipt },
 ): Promise<void> {
-  const journal = await appendReceipt(outcome.receipt.scope, outcome.receipt, { cwd: ctx.cwd });
+  const journal = await appendReceipt(outcome.receipt);
   await reportOutcome(ctx, outcome);
   if (!journal.success) {
     ctx.ui.notify(uiText('journal.appendFailed', { error: quote(journal.error ?? uiText('common.unknown')) }), 'warning');
@@ -128,19 +125,12 @@ async function showTransactionStep(ctx: ExtensionCommandContext, model: Transact
   return await openTransactionSheet(ctx, model) === 'continue';
 }
 
-function lifecycleOptions(ctx: ExtensionCommandContext): LifecycleFlowOptions {
-  return { cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() };
-}
-
-async function pickScope(ui: ExtensionUIContext): Promise<Scope | undefined> {
-  const labels = scopeOptions();
-  const choice = await ui.select(uiText('life.pick.scope'), [...labels.keys()]);
-  return choice ? labels.get(choice) : undefined;
+function lifecycleOptions(_ctx: ExtensionCommandContext): LifecycleFlowOptions {
+  return {};
 }
 
 async function pickRegistration(
   ctx: ExtensionCommandContext,
-  scope: Scope,
   registrationId?: string,
 ): Promise<{
   registrationId: string;
@@ -150,7 +140,7 @@ async function pickRegistration(
 } | undefined> {
   const ui = ctx.ui;
   const opts = lifecycleOptions(ctx);
-  const state = await readBridgeState(scope, opts);
+  const state = await readBridgeState(opts);
   if (state.status !== 'ok' && state.status !== 'missing') {
     ui.notify(uiText('common.bridgeState.unreadable', { error: quote(state.error ?? 'Persistence Indeterminate') }), 'error');
     return undefined;
@@ -186,7 +176,6 @@ async function pickRegistration(
  */
 export function localizedRegistrationRemovalDisclosure(pf: RegistrationRemovalPreflight): string {
   const lines = [
-    uiText('life.removal.disclosure.scope', { scope: pf.scope }),
     pf.registrationSource
       ? uiText('life.removal.disclosure.registration', {
           id: `${pf.registrationId.slice(0, 8)}…`,
@@ -200,14 +189,12 @@ export function localizedRegistrationRemovalDisclosure(pf: RegistrationRemovalPr
     lines.push('  ' + quote(JSON.stringify(installation.id)) + ' · ' +
       quote(JSON.stringify(installation.pluginId)) + ' · ' + installation.installationState);
   }
-  lines.push(uiText('life.removal.disclosure.otherScopes'));
   return lines.join('\n');
 }
 
 /** Localized presentation of the Installation Removal disclosure. */
 export function localizedInstallationRemovalDisclosure(pf: InstallationRemovalPreflight): string {
   const lines = [
-    uiText('life.removal.disclosure.scope', { scope: pf.scope }),
     uiText('life.removal.disclosure.installationLine', {
       id: quote(JSON.stringify(pf.installation.id)),
       pluginId: quote(JSON.stringify(pf.installation.pluginId)),
@@ -218,14 +205,6 @@ export function localizedInstallationRemovalDisclosure(pf: InstallationRemovalPr
       : uiText('life.removal.disclosure.retainedNone'),
     uiText('life.removal.disclosure.revision', { revision: pf.stateRevision }),
   ];
-  if (pf.resumingInheritedInstallations.length > 0) {
-    lines.push(uiText('life.removal.disclosure.resuming.header'));
-    for (const inherited of pf.resumingInheritedInstallations) {
-      lines.push('  ' + quote(JSON.stringify(inherited.id)) + ' · ' + quote(JSON.stringify(inherited.pluginId)));
-    }
-  } else {
-    lines.push(uiText('life.removal.disclosure.resuming.none'));
-  }
   return lines.join('\n');
 }
 
@@ -236,7 +215,6 @@ export function localizedInstallationRemovalDisclosure(pf: InstallationRemovalPr
  */
 export async function runUpdatePlanChecklist(
   ctx: ExtensionCommandContext,
-  scope: Scope,
   candidate: UpdateCandidate,
   stateRevision: string,
   kind: 'apply-update' | 'rebind',
@@ -245,12 +223,12 @@ export async function runUpdatePlanChecklist(
 ): Promise<void> {
   const ui = ctx.ui;
   const opts = lifecycleOptions(ctx);
-  const state = await readBridgeState(scope, opts);
+  const state = await readBridgeState(opts);
   if (state.status !== 'ok' && state.status !== 'missing') {
     return void ui.notify(uiText('common.bridgeState.unreadable', { error: quote(state.error ?? 'Persistence Indeterminate') }), 'error');
   }
 
-  // Strictly this Registration's own scope-local Installations — independent Registrations and
+  // Strictly this Registration's own Installations — independent Registrations and
   // Installations are never combined into a batch (CONTEXT.md: Lifecycle Operation).
   const installations = (state.state?.installations ?? []).filter((i) => i.registrationId === candidate.registrationId);
 
@@ -259,7 +237,7 @@ export async function runUpdatePlanChecklist(
   const operation = kind === 'rebind' ? 'Registration Rebind' : 'Apply Update';
   const commonModel = {
     actionLabel,
-    authority: scope,
+    authority: 'global',
     target: candidate.registrationId,
     stateRevision,
     validationSnapshot: candidate.snapshot.fingerprint,
@@ -272,7 +250,6 @@ export async function runUpdatePlanChecklist(
     await attemptReport(ctx, {
       receipt: createReceipt({
         operation,
-        scope,
         trigger: `${kind} ${candidate.registrationId}`,
         expectedStateRevision: stateRevision,
         validationSnapshot: candidate.snapshot.fingerprint,
@@ -417,17 +394,15 @@ export async function runUpdatePlanChecklist(
 /** Marketplace Refresh on a single Registration — non-mutating; produces an Update Candidate or reports no change. */
 export async function runRefreshFlow(
   ctx: ExtensionCommandContext,
-  target: { scope?: Scope; registrationId?: string } = {},
+  target: { registrationId?: string } = {},
 ): Promise<void> {
   const ui = ctx.ui;
-  const scope = target.scope ?? await pickScope(ui);
-  if (!scope) return;
-  const picked = await pickRegistration(ctx, scope, target.registrationId);
+  const picked = await pickRegistration(ctx, target.registrationId);
   if (!picked) return;
 
   const model = {
     actionLabel: uiText('life.actionLabel.refresh'),
-    authority: scope,
+    authority: 'global',
     target: picked.registrationId,
     stateRevision: picked.stateRevision,
     validationSnapshot: picked.validationSnapshot,
@@ -441,7 +416,7 @@ export async function runRefreshFlow(
     ],
   })) return;
 
-  const outcome = await refreshRegistration(scope, picked.registrationId, picked.opts);
+  const outcome = await refreshRegistration(picked.registrationId, picked.opts);
   const validationDetails = outcome.status === 'update-candidate'
     ? candidateSummary(outcome.candidate).split('\n')
     : [
@@ -465,24 +440,22 @@ export async function runRefreshFlow(
   }
   ui.notify(uiText('life.refresh.candidateReady'), 'info');
   // Bind the plan to the exact State Revision the candidate was validated against.
-  await runUpdatePlanChecklist(ctx, scope, outcome.candidate, outcome.candidate.stateRevision, 'apply-update');
+  await runUpdatePlanChecklist(ctx, outcome.candidate, outcome.candidate.stateRevision, 'apply-update');
 }
 
 /** Registration Rebind — replace locator/selector under the preserved Registration ID. */
 export async function runRebindFlow(
   ctx: ExtensionCommandContext,
-  targetOptions: { scope?: Scope; registrationId?: string } = {},
+  targetOptions: { registrationId?: string } = {},
 ): Promise<void> {
   const ui = ctx.ui;
-  const scope = targetOptions.scope ?? await pickScope(ui);
-  if (!scope) return;
-  const picked = await pickRegistration(ctx, scope, targetOptions.registrationId);
+  const picked = await pickRegistration(ctx, targetOptions.registrationId);
   if (!picked) return;
 
   if (!await showTransactionStep(ctx, {
     step: 'Intent',
     actionLabel: uiText('life.actionLabel.rebind'),
-    authority: scope,
+    authority: 'global',
     target: picked.registrationId,
     details: [uiText('life.rebind.intent.details')],
   })) return;
@@ -518,12 +491,12 @@ export async function runRebindFlow(
     target = { kind: 'git', locator, selector };
   }
 
-  const pf = await preflightRebind(scope, picked.registrationId, target, picked.opts);
+  const pf = await preflightRebind(picked.registrationId, target, picked.opts);
   if (!pf.ok) {
     await showTransactionStep(ctx, {
       step: 'Validation',
       actionLabel: uiText('life.actionLabel.rebind'),
-      authority: scope,
+      authority: 'global',
       target: picked.registrationId,
       stateRevision: pf.outcome.receipt.expectedStateRevision,
       validationSnapshot: pf.outcome.receipt.validationSnapshot,
@@ -536,7 +509,6 @@ export async function runRebindFlow(
   // Rebind binds to the revision observed while validating the replacement source.
   await runUpdatePlanChecklist(
     ctx,
-    scope,
     pf.preflight.candidate,
     pf.preflight.stateRevision,
     'rebind',
@@ -549,19 +521,16 @@ export async function runRebindFlow(
 export async function runRemovalFlow(
   ctx: ExtensionCommandContext,
   target: {
-    scope?: Scope;
     targetKind?: 'registration' | 'installation';
     targetId?: string;
   } = {},
 ): Promise<void> {
   const ui = ctx.ui;
-  const scope = target.scope ?? await pickScope(ui);
-  if (!scope) return;
-  const opts = { cwd: ctx.cwd, agentDir: undefined as string | undefined, projectTrusted: ctx.isProjectTrusted() };
+  const opts: { agentDir?: string } = {};
   let targetKind = target.targetKind;
 
   if (!targetKind && target.targetId) {
-    const state = await readBridgeState(scope, opts);
+    const state = await readBridgeState(opts);
     if (state.status !== 'ok' && state.status !== 'missing') {
       return void ui.notify(uiText('common.bridgeState.unreadable', { error: quote(state.error ?? 'Persistence Indeterminate') }), 'error');
     }
@@ -582,12 +551,12 @@ export async function runRemovalFlow(
   }
 
   if (targetKind === 'registration') {
-    const picked = await pickRegistration(ctx, scope, target.targetId);
+    const picked = await pickRegistration(ctx, target.targetId);
     if (!picked) return;
 
     const model = {
       actionLabel: uiText('life.actionLabel.registrationRemoval'),
-      authority: scope,
+      authority: 'global',
       target: picked.registrationId,
     } satisfies Omit<TransactionSheetModel, 'step'>;
     if (!await showTransactionStep(ctx, {
@@ -596,7 +565,7 @@ export async function runRemovalFlow(
       details: [uiText('life.removal.reg.intent')],
     })) return;
 
-    const pf = await preflightRegistrationRemoval(scope, picked.registrationId, opts);
+    const pf = await preflightRegistrationRemoval(picked.registrationId, opts);
     if (!pf.ok) {
       await showTransactionStep(ctx, {
         ...model,
@@ -646,7 +615,7 @@ export async function runRemovalFlow(
 
   let installationId = target.targetId;
   if (!installationId) {
-    const state = await readBridgeState(scope, opts);
+    const state = await readBridgeState(opts);
     if (state.status !== 'ok' && state.status !== 'missing') {
       return void ui.notify(uiText('common.bridgeState.unreadable', { error: quote(state.error ?? 'Persistence Indeterminate') }), 'error');
     }
@@ -661,7 +630,7 @@ export async function runRemovalFlow(
 
   const model = {
     actionLabel: uiText('life.actionLabel.installationRemoval'),
-    authority: scope,
+    authority: 'global',
     target: installationId,
   } satisfies Omit<TransactionSheetModel, 'step'>;
   if (!await showTransactionStep(ctx, {
@@ -670,7 +639,7 @@ export async function runRemovalFlow(
     details: [uiText('life.removal.inst.intent')],
   })) return;
 
-  const pf = await preflightInstallationRemoval(scope, installationId, opts);
+  const pf = await preflightInstallationRemoval(installationId, opts);
   if (!pf.ok) {
     await showTransactionStep(ctx, {
       ...model,

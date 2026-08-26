@@ -20,7 +20,6 @@ function makeEnv() {
   return {
     root,
     agentDir: join(root, 'agent'),
-    projectDir: join(root, 'project'),
     fixture: join(root, 'fixture'),
   };
 }
@@ -81,8 +80,8 @@ describe('Source Cache + Source Drift — Git lifecycle (#22)', () => {
   afterEach(() => rmSync(env.root, { recursive: true, force: true }));
 
   async function register(sha: string): Promise<string> {
-    const opts = { agentDir: env.agentDir, cwd: env.projectDir, executor: makeExecutor(env.fixture, sha, counters) };
-    const preflight = await preflightGitRegistration('global', 'https://github.com/acme/plugins.git', { kind: 'branch', value: 'main' }, opts);
+    const opts = { agentDir: env.agentDir, executor: makeExecutor(env.fixture, sha, counters) };
+    const preflight = await preflightGitRegistration('https://github.com/acme/plugins.git', { kind: 'branch', value: 'main' }, opts);
     expect(preflight.ok).toBe(true);
     if (!preflight.ok) throw new Error('preflight failed');
     const confirmed = await confirmGitRegistration(preflight.preflight, true, opts);
@@ -92,7 +91,7 @@ describe('Source Cache + Source Drift — Git lifecycle (#22)', () => {
 
   it('registration populates the fingerprint-addressed cache and index', async () => {
     const registrationId = await register(SHA_A);
-    const state = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
+    const state = await readBridgeState({ agentDir: env.agentDir });
     const fingerprint = state.state!.registrations[0].validationSnapshot!;
     const cache = new SourceCache({ agentDir: env.agentDir });
     const hit = await cache.hitExact(fingerprint);
@@ -110,10 +109,9 @@ describe('Source Cache + Source Drift — Git lifecycle (#22)', () => {
     // Second refresh at the same Resolved Revision: served entirely from cache.
     const secondCounters: Counters = { clones: 0 };
     const start = Date.now();
-    const outcome = await refreshRegistration('global', registrationId, {
+    const outcome = await refreshRegistration(registrationId, {
       agentDir: env.agentDir,
-      cwd: env.projectDir,
-      executor: makeExecutor(env.fixture, SHA_A, secondCounters),
+            executor: makeExecutor(env.fixture, SHA_A, secondCounters),
     });
     const elapsed = Date.now() - start;
     expect(outcome.status).toBe('no-change');
@@ -124,26 +122,25 @@ describe('Source Cache + Source Drift — Git lifecycle (#22)', () => {
 
   it('an offline refresh reuses only the exact fingerprint hit and never mutates state', async () => {
     const registrationId = await register(SHA_A);
-    const before = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
+    const before = await readBridgeState({ agentDir: env.agentDir });
 
-    const outcome = await refreshRegistration('global', registrationId, {
+    const outcome = await refreshRegistration(registrationId, {
       agentDir: env.agentDir,
-      cwd: env.projectDir,
-      executor: makeExecutor(env.fixture, SHA_A, undefined, true),
+            executor: makeExecutor(env.fixture, SHA_A, undefined, true),
     });
 
     expect(outcome.status).toBe('no-change');
     if (outcome.status !== 'no-change') return;
     expect(outcome.receipt.stateChanged).toBe(false);
-    const after = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
+    const after = await readBridgeState({ agentDir: env.agentDir });
     expect(after.state!.stateRevision).toBe(before.state!.stateRevision);
   });
 
   it('a tampered cached tree offline is Source Drift — Blocking Finding, never success', async () => {
     const registrationId = await register(SHA_A);
-    const state = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
+    const state = await readBridgeState({ agentDir: env.agentDir });
     const fingerprint = state.state!.registrations[0].validationSnapshot!;
-    const before = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
+    const before = await readBridgeState({ agentDir: env.agentDir });
 
     // External tampering of the local cached tree.
     writeFileSync(
@@ -151,10 +148,9 @@ describe('Source Cache + Source Drift — Git lifecycle (#22)', () => {
       '---\nname: demo-skill\ndescription: drifted\n---\n\ndrifted.\n',
     );
 
-    const outcome = await refreshRegistration('global', registrationId, {
+    const outcome = await refreshRegistration(registrationId, {
       agentDir: env.agentDir,
-      cwd: env.projectDir,
-      executor: makeExecutor(env.fixture, SHA_A, undefined, true),
+            executor: makeExecutor(env.fixture, SHA_A, undefined, true),
     });
 
     expect(outcome.status).toBe('blocked');
@@ -162,7 +158,7 @@ describe('Source Cache + Source Drift — Git lifecycle (#22)', () => {
     expect(outcome.findings.map((f) => f.code)).toContain('SOURCE_DRIFT');
     expect(outcome.findings[0].rule).toBe('DRIFT-01');
     expect(outcome.receipt.summary).toBe('Blocked');
-    const after = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
+    const after = await readBridgeState({ agentDir: env.agentDir });
     expect(after.state!.stateRevision).toBe(before.state!.stateRevision);
     expect(after.state!.registrations[0].validationSnapshot).toBe(fingerprint);
   });
@@ -172,10 +168,9 @@ describe('Source Cache + Source Drift — Git lifecycle (#22)', () => {
 
     // Upstream advances.
     makeFixture(env.fixture, { extra: true });
-    const outcome = await refreshRegistration('global', registrationId, {
+    const outcome = await refreshRegistration(registrationId, {
       agentDir: env.agentDir,
-      cwd: env.projectDir,
-      executor: makeExecutor(env.fixture, SHA_B, counters),
+            executor: makeExecutor(env.fixture, SHA_B, counters),
     });
     expect(outcome.status).toBe('update-candidate');
     if (outcome.status !== 'update-candidate') return;
@@ -196,16 +191,15 @@ describe('Source Cache + Source Drift — Git lifecycle (#22)', () => {
     const registrationId = await register(SHA_A);
 
     makeFixture(env.fixture, { extra: true });
-    const refreshed = await refreshRegistration('global', registrationId, {
+    const refreshed = await refreshRegistration(registrationId, {
       agentDir: env.agentDir,
-      cwd: env.projectDir,
-      executor: makeExecutor(env.fixture, SHA_B, counters),
+            executor: makeExecutor(env.fixture, SHA_B, counters),
     });
     expect(refreshed.status).toBe('update-candidate');
     if (refreshed.status !== 'update-candidate') return;
     const candidate = refreshed.candidate;
 
-    const state = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
+    const state = await readBridgeState({ agentDir: env.agentDir });
     const planResult = buildUpdatePlan(candidate, [], state.state!.stateRevision, { registrationConfirmed: true, choices: {} });
     expect(planResult.ok).toBe(true);
     if (!planResult.ok) throw new Error(`plan problems: ${planResult.problems.map((p) => p.outcome).join('; ')}`);
@@ -213,7 +207,7 @@ describe('Source Cache + Source Drift — Git lifecycle (#22)', () => {
     // Evict the candidate tree so nothing can verify its fingerprint.
     rmSync(new SourceCache({ agentDir: env.agentDir }).entryPath(candidate.snapshot.fingerprint), { recursive: true, force: true });
 
-    const applied = await applyUpdate(planResult.plan, { agentDir: env.agentDir, cwd: env.projectDir });
+    const applied = await applyUpdate(planResult.plan, { agentDir: env.agentDir });
     expect(applied.status).toBe('rejected-as-stale');
     if (applied.status !== 'rejected-as-stale') return;
     expect(applied.receipt.summary).toBe('Rejected as Stale');

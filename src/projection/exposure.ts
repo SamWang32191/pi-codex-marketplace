@@ -4,8 +4,8 @@
  * See CONTEXT.md: Runtime Skill Exposure, Projected Skill, Projected Plugin, Effective State,
  * Runtime Skill Collision, Source Cache, Skill Availability.
  *
- * Exposure derives entirely from the current Effective State (enabled Installations minus
- * Project Trust exclusions and project-over-global precedence) and its collision survivors. It performs passive
+ * Exposure derives entirely from the current Effective State (enabled Installations) and its
+ * collision survivors. It performs passive
  * existence inspection only: no fingerprint recomputation, no Bridge State mutation, and no
  * Attempt Receipt — snapshot-bound validation stays bound to Lifecycle Operations and Runtime
  * Applications. Missing cache entries or unreadable snapshot material are skipped individually;
@@ -26,24 +26,16 @@ import { parseFrontmatter } from '@earendil-works/pi-coding-agent';
 
 import { getCacheEntriesDir, getCacheDir } from '../cache/paths.js';
 import { readBridgeStateSync } from '../bridge-state/store.js';
-import type { BridgeState } from '../bridge-state/types.js';
+import { createEmptyState, type BridgeState, type Installation, type Registration } from '../bridge-state/types.js';
 import { parseCatalog, type Catalog } from '../registration/catalog.js';
 import { BUDGET } from '../registration/budget.js';
 import { resolveContained } from '../registration/contained.js';
-import {
-  computeEffectiveState,
-  type EffectiveInstallation,
-  type EffectiveState,
-} from './effective-state.js';
+import { computeEffectiveState } from './effective-state.js';
 import { resolveRuntimeSkillCollisions, type SkillCandidate } from './collision.js';
 
 export interface RuntimeSkillExposureOptions {
-  /** Working directory identifying the project scope document. */
-  cwd?: string;
   /** Pi agent dir; defaults to getAgentDir(). */
   agentDir?: string;
-  /** Pi host-owned Project Trust. Defaults to false: project additions stay excluded. */
-  projectTrusted?: boolean;
   /** Exact names already claimed by pre-existing Pi skills (host-owned namespace layer). */
   piSkillNames?: string[];
 }
@@ -54,7 +46,6 @@ export interface ExposedSkill {
   skillId: string;
   pluginId: string;
   installationId: string;
-  sourceScope: 'global' | 'project';
   /** Absolute skill directory containing SKILL.md. */
   skillDir: string;
 }
@@ -82,26 +73,22 @@ function safeFingerprint(fp: string | undefined): fp is string {
   return typeof fp === 'string' && /^[0-9a-f]{64}$/.test(fp);
 }
 
-function emptyScopeState(): BridgeState {
-  return { schemaVersion: 1, stateRevision: '0', registrations: [], installations: [], scopeOverrides: [] };
-}
-
 /** Passive closed read: corrupted or incompatible documents contribute nothing and never throw. */
-function readScopeOrEmpty(scope: 'global' | 'project', opts: RuntimeSkillExposureOptions): BridgeState {
-  const read = readBridgeStateSync(scope, { cwd: opts.cwd, agentDir: opts.agentDir });
-  return read.status === 'ok' || read.status === 'missing' ? read.state! : emptyScopeState();
+function readGlobalOrEmpty(opts: RuntimeSkillExposureOptions): BridgeState {
+  const read = readBridgeStateSync({ agentDir: opts.agentDir });
+  return read.status === 'ok' || read.status === 'missing' ? read.state! : createEmptyState();
 }
 
 /**
  * Locate one Installation's plugin directory inside a snapshot root by resolving its
  * Marketplace Entry ID through the retained catalog, then verify containment.
  */
-function resolvePluginDirInSnapshot(snapshotRoot: string, installation: EffectiveInstallation, scope: 'global' | 'project'): string | undefined {
+function resolvePluginDirInSnapshot(snapshotRoot: string, installation: Installation): string | undefined {
   const catalogPath = join(snapshotRoot, '.agents', 'plugins', 'marketplace.json');
   try {
     if (!existsSync(catalogPath) || statSync(catalogPath).size > BUDGET.maxCatalogBytes) return undefined;
     const parsed: unknown = JSON.parse(readFileSync(catalogPath, 'utf8'));
-    const result = parseCatalog(parsed, { scope });
+    const result = parseCatalog(parsed);
     if (!result.catalog) return undefined;
     return resolveEntryPluginDir(snapshotRoot, result.catalog, installation);
   } catch {
@@ -109,7 +96,7 @@ function resolvePluginDirInSnapshot(snapshotRoot: string, installation: Effectiv
   }
 }
 
-function resolveEntryPluginDir(snapshotRoot: string, catalog: Catalog, installation: EffectiveInstallation): string | undefined {
+function resolveEntryPluginDir(snapshotRoot: string, catalog: Catalog, installation: Installation): string | undefined {
   // A malformed Marketplace Entry ID without the "/plugins/" marker yields an undefined pointer
   // so resolution falls back to manifestName instead of degrading to a bogus tail slice.
   const markerIndex = installation.marketplaceEntryId?.indexOf('/plugins/') ?? -1;
@@ -169,15 +156,13 @@ function descriptorSkillName(skillDir: string, descriptorPath: string): string |
  * missing material.
  */
 export function discoverProjectedSkillPaths(opts: RuntimeSkillExposureOptions = {}): ExposureResult {
-  const globalState = readScopeOrEmpty('global', opts);
-  const projectState = readScopeOrEmpty('project', opts);
-  const effective: EffectiveState = computeEffectiveState(globalState, projectState, { projectTrusted: opts.projectTrusted === true });
+  const globalState = readGlobalOrEmpty(opts);
+  const effective = computeEffectiveState(globalState);
 
-  const registrationsById = new Map(effective.registrations.map((registration) => [`${registration.sourceScope}:${registration.id}`, registration]));
+  const registrationsById = new Map(effective.registrations.map((registration) => [registration.id, registration]));
   const entriesRoot = getCacheEntriesDir(getCacheDir(opts.agentDir));
 
   interface Candidate extends SkillCandidate {
-    sourceScope: 'global' | 'project';
     installationId: string;
     skillDir: string;
   }
@@ -185,7 +170,7 @@ export function discoverProjectedSkillPaths(opts: RuntimeSkillExposureOptions = 
   const skipped: SkippedInstallation[] = [];
 
   for (const installation of effective.installations) {
-    const registration = registrationsById.get(`${installation.sourceScope}:${installation.registrationId}`);
+    const registration: Registration | undefined = registrationsById.get(installation.registrationId ?? '');
     if (!registration || !installation.marketplaceEntryId) {
       skipped.push({ installationId: installation.id, reason: 'entry-not-found' });
       continue;
@@ -223,7 +208,7 @@ export function discoverProjectedSkillPaths(opts: RuntimeSkillExposureOptions = 
       continue;
     }
 
-    const pluginDir = resolvePluginDirInSnapshot(snapshotRoot, installation, installation.sourceScope);
+    const pluginDir = resolvePluginDirInSnapshot(snapshotRoot, installation);
     if (!pluginDir) {
       skipped.push({
         installationId: installation.id,
@@ -238,24 +223,23 @@ export function discoverProjectedSkillPaths(opts: RuntimeSkillExposureOptions = 
     }
     for (const skill of skills) {
       candidates.push({
-        layer: installation.sourceScope,
+        layer: 'global',
         name: skill.name,
         skillId: `${installation.pluginId}/${skill.name}`,
         pluginId: installation.pluginId,
-        sourceScope: installation.sourceScope,
         installationId: installation.id,
         skillDir: skill.skillDir,
       });
     }
   }
 
-  // Only collision survivors are contributed; layering is Pi → Project Scope → Global Scope.
+  // Only collision survivors are contributed; layering is Pi → Global.
   const bridgeCandidates: SkillCandidate[] = opts.piSkillNames?.length
     ? [
         ...opts.piSkillNames.map((name): SkillCandidate => ({ layer: 'pi', name, skillId: `pi/${name}`, pluginId: '(pi)' })),
-        ...candidates.map(({ layer, name, skillId, pluginId }) => ({ layer, name, skillId, pluginId })),
+        ...candidates.map(({ name, skillId, pluginId }): SkillCandidate => ({ layer: 'global', name, skillId, pluginId })),
       ]
-    : candidates.map(({ layer, name, skillId, pluginId }) => ({ layer, name, skillId, pluginId }));
+    : candidates.map(({ name, skillId, pluginId }): SkillCandidate => ({ layer: 'global', name, skillId, pluginId }));
   const survivors = new Set(resolveRuntimeSkillCollisions(bridgeCandidates).survivors.map((s) => s.skillId));
 
   const exposed = candidates
@@ -266,7 +250,6 @@ export function discoverProjectedSkillPaths(opts: RuntimeSkillExposureOptions = 
       skillId: candidate.skillId,
       pluginId: candidate.pluginId,
       installationId: candidate.installationId,
-      sourceScope: candidate.sourceScope,
       skillDir: candidate.skillDir,
     }));
 

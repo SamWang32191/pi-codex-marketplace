@@ -40,7 +40,7 @@ describe('Acceptance matrix — per-row gates (smoke that each layer is covered)
   it('unit row — synthetic: selector/locator/contained/classification exercised', async () => {
     // Import one representative pure seam per row to prove the tier is wired
     const { normalizeGitSelector } = await import('../../src/registration/git-selector.js');
-    const res = normalizeGitSelector({ kind: 'branch', value: 'main' }, 'global');
+    const res = normalizeGitSelector({ kind: 'branch', value: 'main' });
     expect(res.ok && (res as any).selector.canonical).toBe('refs/heads/main');
   });
 

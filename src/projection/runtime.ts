@@ -15,12 +15,8 @@
 
 import { loadSkillsFromDir } from '@earendil-works/pi-coding-agent';
 
-import type { BridgeState, Scope } from '../bridge-state/types.js';
-import {
-  computeEffectiveState,
-  type EffectiveInstallation,
-  type EffectiveRegistration,
-} from './effective-state.js';
+import type { BridgeState } from '../bridge-state/types.js';
+import { computeEffectiveState } from './effective-state.js';
 import {
   resolveRuntimeSkillCollisions,
   type CollisionResolution,
@@ -32,13 +28,11 @@ import { createReceipt, type AttemptReceipt } from '../registration/receipt.js';
 import { appendReceipt } from '../journal/journal.js';
 
 export interface ProjectionOptions {
-  cwd?: string;
   agentDir?: string;
-  projectTrusted?: boolean;
   /** Exact names already claimed by pre-existing Pi skills (host-owned namespace layer). */
   piSkillNames?: string[];
   /** Injection seam for tests; defaults to live local-source inspection. */
-  inspectRegistration?: (registration: EffectiveRegistration) => MarketplaceInspection;
+  inspectRegistration?: (registration: BridgeState['registrations'][number]) => MarketplaceInspection;
   /** Independent host evidence establishing Skill Availability as Available. */
   hostAvailabilityEvidence?: (skillName: string) => boolean;
 }
@@ -49,9 +43,10 @@ export interface RuntimeApplicationInput {
   stateRevision?: string;
   /** Exact Validation Snapshot the runtime application is bound to, when available. */
   validationSnapshot?: string;
-  scope?: Scope;
   /** Whole-Plugin Blocking Findings from projection; any one of them denies Applied. */
   wholePluginFindings?: ValidationFinding[];
+  /** Receipt id this Runtime Application attempt recovers. */
+  recoversReceiptId?: string;
 }
 
 export type SkillAvailability = 'available' | 'snapshot-eligible' | 'unverified' | 'unavailable';
@@ -71,7 +66,6 @@ export interface ProjectedPluginView {
   manifestName?: string;
   installationId: string;
   registrationId?: string;
-  sourceScope: 'global' | 'project';
   skills: ProjectedSkillView[];
 }
 
@@ -89,51 +83,47 @@ export interface ProjectionResult {
   findings: ValidationFinding[];
 }
 
-function driftFinding(scope: 'global' | 'project'): ValidationFinding {
+function driftFinding(): ValidationFinding {
   return blocking({
     code: CODE.SOURCE_DRIFT,
     rule: RULE.SOURCE_DRIFT,
     target: 'registration',
     pointer: '',
     outcome: 'Source Drift: the registered Validation Snapshot no longer matches the source tree; affected Installations cannot become Projected Plugins until Marketplace Refresh produces an Update Candidate',
-    scope,
     phase: 'validation',
   });
 }
 
-function collisionFinding(scope: 'global' | 'project', skillId: string): ValidationFinding {
+function collisionFinding(skillId: string): ValidationFinding {
   return blocking({
     code: CODE.RUNTIME_SKILL_COLLISION,
     rule: RULE.RUNTIME_SKILL_COLLISION,
     target: 'skill',
     pointer: skillId,
     outcome: `Runtime Skill Collision: skill '${skillId}' is unavailable because another candidate claims this exact Skill Descriptor name`,
-    scope,
     phase: 'validation',
   });
 }
 
 /**
- * Compute the projection of one Effective State. Read-only: it never mutates either Bridge
- * State document and never persists anything.
+ * Compute the projection of one Global Bridge State. Read-only: it never mutates the State
+ * document and never persists anything.
  */
 export function projectEffectiveState(
-  globalState: BridgeState,
-  projectState: BridgeState,
+  state: BridgeState,
   opts: ProjectionOptions = {},
 ): ProjectionResult {
-  const effective = computeEffectiveState(globalState, projectState, { projectTrusted: opts.projectTrusted });
+  const effective = computeEffectiveState(state);
   const denied: DeniedPluginView[] = [];
   const findings: ValidationFinding[] = [];
 
   const inspections = new Map<string, MarketplaceInspection>();
-  const inspect = opts.inspectRegistration ?? ((registration: EffectiveRegistration) => inspectMarketplaceEntries(registration, registration.sourceScope, { agentDir: opts.agentDir }));
-  const inspectionFor = (registration: EffectiveRegistration): MarketplaceInspection => {
-    const key = `${registration.sourceScope}:${registration.id}`;
-    let value = inspections.get(key);
+  const inspect = opts.inspectRegistration ?? ((registration: BridgeState['registrations'][number]) => inspectMarketplaceEntries(registration, { agentDir: opts.agentDir }));
+  const inspectionFor = (registration: BridgeState['registrations'][number]): MarketplaceInspection => {
+    let value = inspections.get(registration.id);
     if (!value) {
       value = inspect(registration);
-      inspections.set(key, value);
+      inspections.set(registration.id, value);
     }
     return value;
   };
@@ -143,7 +133,6 @@ export function projectEffectiveState(
     manifestName?: string;
     installationId: string;
     registrationId?: string;
-    sourceScope: 'global' | 'project';
     skills: Array<{ name: string; skillId: string; path: string }>;
   }
   const admitted: AdmittedPlugin[] = [];
@@ -152,9 +141,7 @@ export function projectEffectiveState(
     const deny = (pluginId: string | undefined, reason: ValidationFinding): void => {
       denied.push({ installationId: installation.id, pluginId, reason });
     };
-    const registration = effective.registrations.find(
-      (item) => item.id === installation.registrationId && item.sourceScope === installation.sourceScope,
-    );
+    const registration = effective.registrations.find((item) => item.id === installation.registrationId);
     if (!installation.registrationId || !registration) {
       deny(installation.pluginId, blocking({
         code: CODE.INSTALLATION_NOT_FOUND,
@@ -162,7 +149,6 @@ export function projectEffectiveState(
         target: 'installation',
         pointer: '',
         outcome: `Installation '${installation.id}' references Registration '${installation.registrationId ?? '?'}' which is not part of Effective State`,
-        scope: installation.sourceScope,
         phase: 'validation',
       }));
       continue;
@@ -176,7 +162,7 @@ export function projectEffectiveState(
       inspection.treeFingerprint !== undefined &&
       inspection.treeFingerprint !== registration.validationSnapshot
     ) {
-      deny(installation.pluginId, driftFinding(installation.sourceScope));
+      deny(installation.pluginId, driftFinding());
       continue;
     }
     const entryPointer = installation.marketplaceEntryId
@@ -192,7 +178,6 @@ export function projectEffectiveState(
         target: 'entry',
         pointer: installation.marketplaceEntryId ?? '',
         outcome: `Installed Plugin '${installation.id}' cannot be resolved to its Marketplace Entry in the current snapshot`,
-        scope: installation.sourceScope,
         phase: 'validation',
       }));
       continue;
@@ -205,7 +190,6 @@ export function projectEffectiveState(
         target: 'plugin',
         pointer: '',
         outcome: inspected.unavailableReason ?? 'Plugin is not activatable',
-        scope: installation.sourceScope,
         phase: 'validation',
       }));
       continue;
@@ -215,7 +199,6 @@ export function projectEffectiveState(
       manifestName: inspected.plugin.manifestName,
       installationId: installation.id,
       registrationId: registration.id,
-      sourceScope: installation.sourceScope,
       skills: inspected.plugin.skills.map((skill) => ({
         name: skill.name,
         skillId: `${inspected.plugin!.id}/${skill.name}`,
@@ -224,11 +207,11 @@ export function projectEffectiveState(
     });
   }
 
-  // Runtime Skill Collision resolution across Pi → Project Scope → Global Scope.
+  // Runtime Skill Collision resolution across Pi → Global.
   const candidates: SkillCandidate[] = [
     ...(opts.piSkillNames ?? []).map((name): SkillCandidate => ({ layer: 'pi', name, skillId: `pi/${name}`, pluginId: '(pi)' })),
     ...admitted.flatMap((plugin): SkillCandidate[] => plugin.skills.map((skill) => ({
-      layer: plugin.sourceScope,
+      layer: 'global',
       name: skill.name,
       skillId: skill.skillId,
       pluginId: plugin.pluginId,
@@ -239,7 +222,7 @@ export function projectEffectiveState(
   for (const info of resolution.findings) {
     for (const skillId of info.unavailableSkillIds) {
       const owner = admitted.find((plugin) => plugin.skills.some((skill) => skill.skillId === skillId));
-      if (owner) findings.push(collisionFinding(owner.sourceScope, skillId));
+      if (owner) findings.push(collisionFinding(skillId));
     }
   }
 
@@ -248,7 +231,6 @@ export function projectEffectiveState(
     manifestName: plugin.manifestName,
     installationId: plugin.installationId,
     registrationId: plugin.registrationId,
-    sourceScope: plugin.sourceScope,
     skills: plugin.skills.map((skill): ProjectedSkillView => {
       if (!survivedIds.has(skill.skillId)) {
         return { name: skill.name, skillId: skill.skillId, pluginId: plugin.pluginId, status: 'unavailable-collision', availability: 'unavailable' };
@@ -289,17 +271,6 @@ function dirnamePath(filePath: string): string {
   return index > 0 ? filePath.slice(0, index) : filePath;
 }
 
-export interface RuntimeApplicationInput {
-  /** Exact State Revision the runtime is expected to re-enter at. */
-  stateRevision?: string;
-  scope?: Scope;
-  cwd?: string;
-  agentDir?: string;
-  recoversReceiptId?: string;
-  /** Whole-Plugin Blocking Findings from projection; any one of them denies Applied. */
-  wholePluginFindings?: ValidationFinding[];
-}
-
 export interface RuntimeApplicationOutcome {
   outcome: 'applied' | 'pending-application';
   receipt: AttemptReceipt;
@@ -314,15 +285,12 @@ export async function requestRuntimeApplication(
   verifyReload: () => Promise<boolean> | boolean,
   input: RuntimeApplicationInput = {},
 ): Promise<RuntimeApplicationOutcome> {
-  const scope: Scope = input.scope ?? 'project';
   const stateRevision = input.stateRevision ?? '-';
-  const opts = { cwd: input.cwd, agentDir: input.agentDir };
 
   if (input.wholePluginFindings?.some((finding) => finding.classification === 'blocking')) {
     const receipt = createReceipt({
       kind: 'Runtime Application',
       operation: 'Runtime Application',
-      scope,
       trigger: 'reload projected Effective State',
       expectedStateRevision: stateRevision,
       validationSnapshot: input.validationSnapshot,
@@ -332,7 +300,7 @@ export async function requestRuntimeApplication(
       findings: input.wholePluginFindings,
       recoversReceiptId: input.recoversReceiptId,
     });
-    await appendReceipt(scope, receipt, opts);
+    await appendReceipt(receipt);
     return {
       outcome: 'pending-application',
       receipt,
@@ -343,7 +311,6 @@ export async function requestRuntimeApplication(
   const receipt = createReceipt({
     kind: 'Runtime Application',
     operation: 'Runtime Application',
-    scope,
     trigger: 'reload projected Effective State',
     expectedStateRevision: stateRevision,
     validationSnapshot: input.validationSnapshot,
@@ -353,7 +320,7 @@ export async function requestRuntimeApplication(
     summary: applied ? 'Completed' : 'Pending Application',
     recoversReceiptId: input.recoversReceiptId,
   });
-  await appendReceipt(scope, receipt, opts);
+  await appendReceipt(receipt);
 
   return {
     outcome: applied ? 'applied' : 'pending-application',

@@ -32,7 +32,6 @@ describe('Attempt Receipt — Three Orthogonal Axes & Derivations', () => {
         code: CODE.REJECTED_AS_STALE,
         phase: 'persistence',
         target: 'attempt',
-        scope: 'global',
         pointer: '',
         rule: RULE.REJECTED_AS_STALE,
         outcome: 'stale revision',
@@ -48,7 +47,6 @@ describe('Attempt Receipt — Three Orthogonal Axes & Derivations', () => {
         code: CODE.ATTEMPT_IN_PROGRESS,
         phase: 'admission',
         target: 'attempt',
-        scope: 'global',
         pointer: '',
         rule: RULE.ATTEMPT_IN_PROGRESS,
         outcome: 'in progress',
@@ -74,7 +72,6 @@ describe('Attempt Receipt — Three Orthogonal Axes & Derivations', () => {
         code: CODE.INERT_METADATA_IGNORED,
         phase: 'validation',
         target: 'plugin',
-        scope: 'global',
         pointer: '',
         rule: 'COMP-05',
         outcome: 'ignored metadata',
@@ -99,7 +96,6 @@ describe('Attempt Receipt — Three Orthogonal Axes & Derivations', () => {
         code: CODE.SOURCE_DRIFT,
         phase: 'validation',
         target: 'registration',
-        scope: 'global',
         pointer: '',
         rule: RULE.SOURCE_DRIFT,
         outcome: 'drift',
@@ -112,7 +108,6 @@ describe('Attempt Receipt — Three Orthogonal Axes & Derivations', () => {
         code: CODE.ATTEMPT_IN_PROGRESS,
         phase: 'admission',
         target: 'attempt',
-        scope: 'global',
         pointer: '',
         rule: RULE.ATTEMPT_IN_PROGRESS,
         outcome: 'fence held',
@@ -124,7 +119,6 @@ describe('Attempt Receipt — Three Orthogonal Axes & Derivations', () => {
   it('createReceipt freezes the receipt and redacts secrets/paths', () => {
     const rcpt = createReceipt({
       operation: 'Marketplace Registration',
-      scope: 'global',
       trigger: 'register local /Users/sam/secret/path',
       expectedStateRevision: '0',
       targetStateRevision: '1',
@@ -143,7 +137,6 @@ describe('Attempt Receipt — Three Orthogonal Axes & Derivations', () => {
   it('formatThreeOrthogonalReport produces a formatted three-part report with summary & recovery', () => {
     const rcpt = createReceipt({
       operation: 'Marketplace Registration',
-      scope: 'global',
       trigger: 'register local /repo',
       expectedStateRevision: '0',
       targetStateRevision: '1',
@@ -155,7 +148,6 @@ describe('Attempt Receipt — Three Orthogonal Axes & Derivations', () => {
           code: 'TEST_NOTICE',
           phase: 'post-commit',
           target: 'plugin',
-          scope: 'global',
           pointer: '',
           rule: 'TEST-01',
           outcome: 'operational notice',

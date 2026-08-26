@@ -25,7 +25,6 @@ import { hashBoundedFileSync } from './bounded-read.js';
 import { BUDGET, COMPATIBILITY_PROFILE, VALIDATION_BUDGET, VALIDATION_RULESET } from './budget.js';
 import { CODE, RULE, blocking, type ValidationFinding } from './findings.js';
 import type { SourceKey } from './source-key.js';
-import type { Scope } from '../bridge-state/types.js';
 
 export type SnapshotEntryType = 'file' | 'dir' | 'symlink';
 
@@ -46,7 +45,6 @@ export interface SnapshotEntry {
 export interface ValidationSnapshot {
   /** sha256 hex over ordered entries + binds. */
   fingerprint: string;
-  scope: Scope;
   /** Ordered (sorted) inspected tree entries. */
   entries: SnapshotEntry[];
   /** Bound Source Key (local canonical real path for #17, git canonicalUrl+selector for #18). */
@@ -105,7 +103,6 @@ const IGNORE_DIRS = new Set(['.git', 'node_modules']);
 
 function walkTree(
   canonicalRoot: string,
-  scope: Scope,
   skip: Set<string>,
   findings: ValidationFinding[],
   entries: SnapshotEntry[],
@@ -121,7 +118,6 @@ function walkTree(
         code: CODE.BUDGET_EXCEEDED,
         phase: 'validation',
         target: 'source',
-        scope,
         pointer: '/',
         rule: RULE.BUDGET_EXCEEDED,
         outcome: msg,
@@ -166,7 +162,6 @@ function walkTree(
               code: CODE.CONTAINED_SYMLINK_VIOLATION,
               phase: 'validation',
               target: 'source',
-              scope,
               pointer: rel,
               rule: RULE.CONTAINED_SYMLINK_VIOLATION,
               outcome: `broken symlink: ${err.message}`,
@@ -234,7 +229,7 @@ function walkTree(
   return { fileCount, totalBytes, budgetBlocked };
 }
 
-function checkSymlinkContainment(canonicalRoot: string, entries: SnapshotEntry[], scope: Scope, findings: ValidationFinding[]): void {
+function checkSymlinkContainment(canonicalRoot: string, entries: SnapshotEntry[], findings: ValidationFinding[]): void {
   for (const e of entries) {
     if (e.type !== 'symlink') continue;
     const abs = join(canonicalRoot, ...e.relPath.split('/'));
@@ -247,7 +242,6 @@ function checkSymlinkContainment(canonicalRoot: string, entries: SnapshotEntry[]
           code: CODE.CONTAINED_SYMLINK_VIOLATION,
           phase: 'validation',
           target: 'source',
-          scope,
           pointer: e.relPath,
           rule: RULE.CONTAINED_SYMLINK_VIOLATION,
           outcome: `broken or looping symlink: '${e.relPath}' has no resolvable canonical target`,
@@ -262,7 +256,6 @@ function checkSymlinkContainment(canonicalRoot: string, entries: SnapshotEntry[]
           code: CODE.CONTAINED_SYMLINK_VIOLATION,
           phase: 'validation',
           target: 'source',
-          scope,
           pointer: e.relPath,
           rule: RULE.CONTAINED_SYMLINK_VIOLATION,
           outcome: `symlink target '${canonical}' escapes owning root`,
@@ -280,14 +273,13 @@ function checkSymlinkContainment(canonicalRoot: string, entries: SnapshotEntry[]
 export function buildLocalSnapshot(
   canonicalRoot: string,
   sourceKey: SourceKey,
-  scope: Scope,
   opts: { skipDirs?: Set<string> } = {},
 ): SnapshotResult {
   const findings: ValidationFinding[] = [];
   const entries: SnapshotEntry[] = [];
   const skip = opts.skipDirs ?? IGNORE_DIRS;
 
-  const { budgetBlocked } = walkTree(canonicalRoot, scope, skip, findings, entries);
+  const { budgetBlocked } = walkTree(canonicalRoot, skip, findings, entries);
 
   // Sort deterministically by posix relative path.
   entries.sort((a, b) => a.relPath.localeCompare(b.relPath));
@@ -299,7 +291,7 @@ export function buildLocalSnapshot(
   // Symlink containment: any symlink in the tree whose canonical target escapes the root — or
   // cannot be resolved at all (broken / looping) — is a Blocking Finding (CONTEXT: Contained
   // Symlink).
-  checkSymlinkContainment(canonicalRoot, entries, scope, findings);
+  checkSymlinkContainment(canonicalRoot, entries, findings);
 
   const binds = [sourceKey.key, COMPATIBILITY_PROFILE, VALIDATION_RULESET, VALIDATION_BUDGET];
 
@@ -309,7 +301,6 @@ export function buildLocalSnapshot(
       findings,
       snapshot: {
         fingerprint: fingerprintOf(entries, binds),
-        scope,
         entries,
         sourceKey,
         profile: COMPATIBILITY_PROFILE,
@@ -324,7 +315,6 @@ export function buildLocalSnapshot(
     findings,
     snapshot: {
       fingerprint: fingerprintOf(entries, binds),
-      scope,
       entries,
       sourceKey,
       profile: COMPATIBILITY_PROFILE,
@@ -342,7 +332,6 @@ export function buildLocalSnapshot(
 export function buildGitSnapshot(
   acquiredRoot: string,
   sourceKey: SourceKey,
-  scope: Scope,
   extra: { canonicalLocator: string; resolvedRevision: string; selectorCanonical: string },
   opts: { skipDirs?: Set<string> } = {},
 ): SnapshotResult {
@@ -350,7 +339,7 @@ export function buildGitSnapshot(
   const entries: SnapshotEntry[] = [];
   const skip = opts.skipDirs ?? IGNORE_DIRS;
 
-  const { budgetBlocked } = walkTree(acquiredRoot, scope, skip, findings, entries);
+  const { budgetBlocked } = walkTree(acquiredRoot, skip, findings, entries);
 
   entries.sort((a, b) => a.relPath.localeCompare(b.relPath));
 
@@ -358,7 +347,7 @@ export function buildGitSnapshot(
     return { ok: false, findings };
   }
 
-  checkSymlinkContainment(acquiredRoot, entries, scope, findings);
+  checkSymlinkContainment(acquiredRoot, entries, findings);
 
   const binds = [
     sourceKey.key,
@@ -374,7 +363,6 @@ export function buildGitSnapshot(
 
   const snapshot: ValidationSnapshot = {
     fingerprint,
-    scope,
     entries,
     sourceKey,
     profile: COMPATIBILITY_PROFILE,

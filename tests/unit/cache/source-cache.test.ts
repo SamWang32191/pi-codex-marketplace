@@ -68,7 +68,7 @@ describe('SourceCache (Git-only, fingerprint-addressed)', () => {
     await cache.storeTree(mk(FP_A), FP_A); // oldest
     await cache.storeTree(mk(FP_B), FP_B);
     // A pending Update Candidate fingerprint is pinned (not itself stored here).
-    cache.recordPendingUpdate({ scope: 'global', registrationId: 'r1', fingerprint: FP_PINNED });
+    cache.recordPendingUpdate({ registrationId: 'r1', fingerprint: FP_PINNED });
     await cache.storeTree(mk(FP_C), FP_C);
     await cache.prune();
 
@@ -123,11 +123,11 @@ describe('SourceCache (Git-only, fingerprint-addressed)', () => {
   });
 
   it('records and clears pending Update Candidate fingerprints', () => {
-    cache.recordPendingUpdate({ scope: 'global', registrationId: 'reg-1', fingerprint: FP_A });
-    cache.recordPendingUpdate({ scope: 'global', registrationId: 'reg-1', fingerprint: FP_B }); // replaces
-    cache.recordPendingUpdate({ scope: 'project', registrationId: 'reg-2', fingerprint: FP_C });
+    cache.recordPendingUpdate({ registrationId: 'reg-1', fingerprint: FP_A });
+    cache.recordPendingUpdate({ registrationId: 'reg-1', fingerprint: FP_B }); // replaces
+    cache.recordPendingUpdate({ registrationId: 'reg-2', fingerprint: FP_C });
     expect(cache.pendingUpdates().map((r) => r.fingerprint).sort()).toEqual([FP_B, FP_C].sort());
-    cache.clearPendingUpdate('global', 'reg-1');
+    cache.clearPendingUpdate('reg-1');
     expect(cache.pendingUpdates().map((r) => r.fingerprint)).toEqual([FP_C]);
   });
 

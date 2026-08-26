@@ -6,20 +6,17 @@ import { join } from 'node:path';
 import { runStartupReconciliation } from '../../src/reconciliation/startup.js';
 import { appendReceipt, readReceiptJournal } from '../../src/journal/journal.js';
 import { createReceipt } from '../../src/registration/receipt.js';
-import { getStatePath } from '../../src/bridge-state/paths.js';
+import { getGlobalStatePath } from '../../src/bridge-state/paths.js';
 
 const GLOBAL_PENDING_RECEIPT = 'rcpt_40000000-0000-4000-8000-000000000001';
-const PROJECT_PENDING_RECEIPT = 'rcpt_40000000-0000-4000-8000-000000000002';
 
-describe('Integration — Startup Reconciliation & Multi-scope Lifecycle', () => {
+describe('Integration — Startup Reconciliation (Global-only)', () => {
   let tmpRoot: string;
   let agentDir: string;
-  let projectDir: string;
 
   beforeEach(() => {
     tmpRoot = mkdtempSync(join(tmpdir(), 'startup-recon-int-'));
     agentDir = join(tmpRoot, 'agent');
-    projectDir = join(tmpRoot, 'project');
   });
 
   afterEach(() => {
@@ -29,25 +26,17 @@ describe('Integration — Startup Reconciliation & Multi-scope Lifecycle', () =>
   });
 
   it('performs clean no-op when session starts with empty state and creates no journal records', async () => {
-    const res = await runStartupReconciliation({
-      cwd: projectDir,
-      agentDir,
-      projectTrusted: true,
-    });
-    expect(res.globalReconciled).toBe(false);
-    expect(res.projectReconciled).toBe(false);
+    const res = await runStartupReconciliation({ agentDir });
+    expect(res.reconciled).toBe(false);
+    expect(res.receipt).toBeUndefined();
 
-    const gj = await readReceiptJournal('global', { cwd: projectDir, agentDir });
-    const pj = await readReceiptJournal('project', { cwd: projectDir, agentDir });
+    const gj = await readReceiptJournal({ agentDir });
     expect(gj.receipts).toHaveLength(0);
-    expect(pj.receipts).toHaveLength(0);
   });
 
-  it('runs global-first reconciliation, clears global active chain, and reconciles project cleanly', async () => {
-    const opts = { cwd: projectDir, agentDir, projectTrusted: true };
-
-    // 1. Setup Global Pending Application
-    const globalStatePath = getStatePath('global', opts);
+  it('reconciles the Global pending-application chain and resolves it with a Completed receipt', async () => {
+    // Setup Global Pending Application
+    const globalStatePath = getGlobalStatePath(agentDir);
     mkdirSync(join(agentDir, 'codex-marketplace'), { recursive: true });
     writeFileSync(
       globalStatePath,
@@ -55,7 +44,7 @@ describe('Integration — Startup Reconciliation & Multi-scope Lifecycle', () =>
         schemaVersion: 1,
         stateRevision: '2',
         registrations: [{ id: 'reg1', alias: 'market-1' }],
-        installations: [{ id: 'global/weather', pluginId: 'weather', installationState: 'enabled' }],
+        installations: [{ id: 'weather', pluginId: 'weather', installationState: 'enabled' }],
         scopeOverrides: [],
       }),
       'utf-8',
@@ -63,7 +52,6 @@ describe('Integration — Startup Reconciliation & Multi-scope Lifecycle', () =>
     const globalPending = createReceipt({
       id: GLOBAL_PENDING_RECEIPT,
       operation: 'Plugin Installation',
-      scope: 'global',
       trigger: 'install weather',
       expectedStateRevision: '1',
       targetStateRevision: '2',
@@ -72,53 +60,79 @@ describe('Integration — Startup Reconciliation & Multi-scope Lifecycle', () =>
       runtimeOutcome: 'pending-application',
       summary: 'Pending Application',
     });
-    await appendReceipt('global', globalPending, opts);
+    await appendReceipt(globalPending, { agentDir });
 
-    // 2. Setup Project Pending Application
-    const projectStatePath = getStatePath('project', opts);
-    mkdirSync(join(projectDir, '.pi', 'codex-marketplace'), { recursive: true });
+    const res = await runStartupReconciliation({
+      agentDir,
+      verifyReload: async () => true,
+    });
+
+    expect(res.reconciled).toBe(true);
+    expect(res.receipt?.summary).toBe('Completed');
+    expect(res.receipt?.recoversReceiptId).toBe(GLOBAL_PENDING_RECEIPT);
+
+    const gj = await readReceiptJournal({ agentDir });
+    expect(gj.activeChains).toHaveLength(0);
+  });
+
+  it('leaves a Pending Application receipt when the host reload cannot verify re-entry', async () => {
+    const globalStatePath = getGlobalStatePath(agentDir);
+    mkdirSync(join(agentDir, 'codex-marketplace'), { recursive: true });
     writeFileSync(
-      projectStatePath,
+      globalStatePath,
       JSON.stringify({
         schemaVersion: 1,
         stateRevision: '1',
         registrations: [],
-        installations: [{ id: 'project/tools', pluginId: 'tools', installationState: 'enabled' }],
+        installations: [{ id: 'tools', pluginId: 'tools', installationState: 'enabled' }],
         scopeOverrides: [],
       }),
       'utf-8',
     );
-    const projPending = createReceipt({
-      id: PROJECT_PENDING_RECEIPT,
+
+    // Enabled contributions plus journal history trigger the pass; an unverifiable reload
+    // keeps the chain active as Pending Application.
+    await appendReceipt(createReceipt({
       operation: 'Plugin Installation',
-      scope: 'project',
       trigger: 'install tools',
-      expectedStateRevision: '0',
+      expectedStateRevision: '1',
       targetStateRevision: '1',
       observedStateRevision: '1',
       durableOutcome: 'committed',
       runtimeOutcome: 'pending-application',
       summary: 'Pending Application',
-    });
-    await appendReceipt('project', projPending, opts);
+    }), { agentDir });
 
-    // 3. Run startup reconciliation where both reload cleanly
     const res = await runStartupReconciliation({
-      ...opts,
-      verifyReload: async () => true,
+      agentDir,
+      verifyReload: async () => false,
     });
 
-    expect(res.globalReconciled).toBe(true);
-    expect(res.globalReceipt?.summary).toBe('Completed');
-    expect(res.globalReceipt?.recoversReceiptId).toBe(GLOBAL_PENDING_RECEIPT);
+    expect(res.reconciled).toBe(true);
+    expect(res.receipt?.summary).toBe('Pending Application');
+    expect(res.receipt?.durableOutcome).toBe('unchanged');
 
-    expect(res.projectReconciled).toBe(true);
-    expect(res.projectReceipt?.summary).toBe('Completed');
-    expect(res.projectReceipt?.recoversReceiptId).toBe(PROJECT_PENDING_RECEIPT);
+    const gj = await readReceiptJournal({ agentDir });
+    expect(gj.activeChains.map((chain) => chain.condition)).toContain('pending-application');
+  });
 
-    const gj = await readReceiptJournal('global', opts);
-    const pj = await readReceiptJournal('project', opts);
-    expect(gj.activeChains).toHaveLength(0);
-    expect(pj.activeChains).toHaveLength(0);
+  it('never touches the retired Project state document — zero reads even when one exists', async () => {
+    // A leftover project document from the dual-scope era must be completely ignored (D2).
+    const projectDir = join(tmpRoot, 'project');
+    mkdirSync(join(projectDir, '.pi', 'codex-marketplace'), { recursive: true });
+    writeFileSync(
+      join(projectDir, '.pi', 'codex-marketplace', 'state.json'),
+      '{ this file must never be read or removed }',
+      'utf-8',
+    );
+    const before = await import('node:fs').then(({ readFileSync }) => readFileSync(join(projectDir, '.pi', 'codex-marketplace', 'state.json'), 'utf-8'));
+
+    const res = await runStartupReconciliation({ agentDir, verifyReload: async () => true });
+    expect(res.reconciled).toBe(false);
+
+    // The project document is untouched: not read into any result, not deleted.
+    const after = await import('node:fs').then(({ existsSync }) => existsSync(join(projectDir, '.pi', 'codex-marketplace', 'state.json')));
+    expect(after).toBe(true);
+    expect(before).toBe('{ this file must never be read or removed }');
   });
 });

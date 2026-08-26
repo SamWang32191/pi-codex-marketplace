@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { normalizeGitSelector, parseGitSelectorString } from '../../../src/registration/git-selector.js';
 
-function sel(kind: string, value?: string, scope: 'global' | 'project' = 'global') {
-  return normalizeGitSelector({ kind: kind as any, value }, scope);
+function sel(kind: string, value?: string) {
+  return normalizeGitSelector({ kind: kind as any, value });
 }
 
 describe('Git Selector normalization', () => {
@@ -168,38 +168,38 @@ describe('Git Selector normalization', () => {
   });
 
   it('parse string: default', () => {
-    const r = parseGitSelectorString('default', 'global');
+    const r = parseGitSelectorString('default');
     expect(r.ok).toBe(true);
     expect(r.selector!.kind).toBe('default');
   });
 
   it('parse string: refs/heads/main', () => {
-    const r = parseGitSelectorString('refs/heads/main', 'global');
+    const r = parseGitSelectorString('refs/heads/main');
     expect(r.ok).toBe(true);
     expect(r.selector!.canonical).toBe('refs/heads/main');
   });
 
   it('parse string: refs/tags/v1', () => {
-    const r = parseGitSelectorString('refs/tags/v1.0.0', 'global');
+    const r = parseGitSelectorString('refs/tags/v1.0.0');
     expect(r.ok).toBe(true);
     expect(r.selector!.canonical).toBe('refs/tags/v1.0.0');
   });
 
   it('parse string: 40 hex commit', () => {
     const sha = 'a'.repeat(40);
-    const r = parseGitSelectorString(sha, 'global');
+    const r = parseGitSelectorString(sha);
     expect(r.ok).toBe(true);
     expect(r.selector!.kind).toBe('commit');
   });
 
   it('parse string: branch:main', () => {
-    const r = parseGitSelectorString('branch:main', 'global');
+    const r = parseGitSelectorString('branch:main');
     expect(r.ok).toBe(true);
     expect(r.selector!.canonical).toBe('refs/heads/main');
   });
 
   it('parse string: invalid throws', () => {
-    const r = parseGitSelectorString('unknown-selector', 'global');
+    const r = parseGitSelectorString('unknown-selector');
     expect(r.ok).toBe(false);
   });
 });

@@ -1,8 +1,10 @@
 /**
  * Git Marketplace Registration — interactive TUI flow (Issue #18).
- * Mirrors local registration contract: explicit scope → Git locator + Git Selector
+ * Mirrors local registration contract: Git locator + Git Selector
  * → normalization (Canonical Locator + selector canonical) + Acquisition Trust Base + snapshot
  * → Validation Disclosure → Registration Confirmation (Snapshot+Revision bound, Default No) → atomic commit → Attempt Receipt.
+ *
+ * Global-only (#61): the flow acts on the single Global document only.
  *
  * All user-visible strings come from the centralized ui-strings module (Issue #41).
  */
@@ -14,9 +16,7 @@ import {
   confirmGitRegistration,
 } from '../../src/registration/git-flow.js';
 import type { GitSelectorInput } from '../../src/registration/git-selector.js';
-import type { Scope } from '../../src/bridge-state/types.js';
-import { uiText,
-  scopeOptions } from './ui-strings.js';
+import { uiText } from './ui-strings.js';
 import {
   fullValidationDisclosureLines,
   reportOutcome,
@@ -38,20 +38,8 @@ async function transactionStep(
 
 export async function runGitRegistrationFlow(
   ctx: ExtensionCommandContext,
-  target: { scope?: Scope } = {},
 ): Promise<void> {
   const ui: ExtensionUIContext = ctx.ui;
-  let scope = target.scope;
-  if (!scope) {
-    const scopeLabels = scopeOptions();
-    const scopeChoice = await ui.select(uiText('reg.select.scope.git'), [...scopeLabels.keys()]);
-    if (!scopeChoice) {
-      ui.notify(uiText('reg.git.cancelled'), 'info');
-      return;
-    }
-    scope = scopeLabels.get(scopeChoice);
-    if (!scope) return;
-  }
 
   const locator = await ui.input(uiText('reg.git.locator.prompt'), 'https://github.com/owner/repo.git');
   if (!locator) {
@@ -103,7 +91,7 @@ export async function runGitRegistrationFlow(
   if (!await transactionStep(ctx, {
     step: 'Intent',
     actionLabel,
-    authority: scope,
+    authority: 'global',
     target: intentTarget,
     details: [
       uiText('reg.git.detail.locator', { locator: quoteTerminalText(locator) }),
@@ -111,8 +99,8 @@ export async function runGitRegistrationFlow(
     ],
   })) return;
 
-  const opts = { cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() };
-  const res = await preflightGitRegistration(scope, locator, selectorInput, opts);
+  const opts = {};
+  const res = await preflightGitRegistration(locator, selectorInput, opts);
   if (!res.ok) {
     await reportTerminalPreflightOutcome(ctx, res.outcome);
     return;
@@ -155,7 +143,7 @@ export async function runGitRegistrationFlow(
   ];
   const boundModel = {
     actionLabel,
-    authority: scope,
+    authority: 'global' as const,
     target: pf.registrationId,
     stateRevision: pf.stateRevision,
     validationSnapshot: pf.snapshot.fingerprint,
@@ -181,7 +169,7 @@ export async function runGitRegistrationFlow(
       locator: quoteTerminalText(pf.locator.canonicalUrl),
       selector: quoteTerminalText(pf.selector.canonical),
       revision: pf.resolvedRevision.slice(0, 8),
-      scope,
+      scope: 'global',
       disclosure: validationDetails.join('\n'),
     }),
   );
@@ -197,7 +185,7 @@ export async function runGitRegistrationFlow(
       step: 'Commit',
       details: [
         uiText('reg.commit.persist', { id: quoteTerminalText(pf.registrationId) }),
-        uiText('reg.commit.authority', { scope, revision: quoteTerminalText(pf.stateRevision) }),
+        uiText('reg.commit.authority', { scope: 'global', revision: quoteTerminalText(pf.stateRevision) }),
       ],
     }, cancel)) return;
   }

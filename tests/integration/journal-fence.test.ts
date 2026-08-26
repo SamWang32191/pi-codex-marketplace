@@ -8,7 +8,7 @@ import { preflightLocalRegistration, confirmLocalRegistration } from '../../src/
 import { appendReceipt, readReceiptJournal, pruneReceiptJournal } from '../../src/journal/journal.js';
 import { repairBridgeState } from '../../src/bridge-state/repair.js';
 import { createReceipt } from '../../src/registration/receipt.js';
-import { getReceiptsJournalPath, getStatePath } from '../../src/bridge-state/paths.js';
+import { getGlobalStatePath, getReceiptsJournalPath } from '../../src/bridge-state/paths.js';
 
 const PENDING_RECEIPT = 'rcpt_10000000-0000-4000-8000-000000000001';
 const VALID_RECEIPT_1 = 'rcpt_10000000-0000-4000-8000-000000000002';
@@ -51,13 +51,11 @@ function makeMarketplace(root: string, name = 'test-market') {
 describe('Integration — Journal and Fence', () => {
   let tmpRoot: string;
   let agentDir: string;
-  let projectDir: string;
   let marketplaceRoot: string;
 
   beforeEach(() => {
     tmpRoot = mkdtempSync(join(tmpdir(), 'journal-fence-int-'));
     agentDir = join(tmpRoot, 'agent');
-    projectDir = join(tmpRoot, 'project');
     marketplaceRoot = join(tmpRoot, 'marketplace');
 
     makeMarketplace(marketplaceRoot);
@@ -70,10 +68,10 @@ describe('Integration — Journal and Fence', () => {
   });
 
   it('appends AttemptReceipts to receipt journal on successful registration and preserves active chains across pruning', async () => {
-    const opts = { cwd: projectDir, agentDir, projectTrusted: true };
+    const opts = { agentDir };
 
     // 1. Preflight & confirm local registration
-    const pfRes = await preflightLocalRegistration('global', marketplaceRoot, opts);
+    const pfRes = await preflightLocalRegistration(marketplaceRoot, opts);
     expect(pfRes.ok).toBe(true);
     if (!pfRes.ok) return;
 
@@ -81,7 +79,7 @@ describe('Integration — Journal and Fence', () => {
     expect(confRes.status).toBe('completed');
 
     // Check receipt journal
-    let journal = await readReceiptJournal('global', opts);
+    let journal = await readReceiptJournal(opts);
     expect(journal.receipts).toHaveLength(1);
     expect(journal.receipts[0].summary).toBe('Completed');
     expect(journal.receipts[0].durableOutcome).toBe('committed');
@@ -91,7 +89,6 @@ describe('Integration — Journal and Fence', () => {
     const pendingRcpt = createReceipt({
       id: PENDING_RECEIPT,
       operation: 'Plugin Installation',
-      scope: 'global',
       trigger: 'install weather',
       expectedStateRevision: '1',
       targetStateRevision: '2',
@@ -100,29 +97,28 @@ describe('Integration — Journal and Fence', () => {
       runtimeOutcome: 'pending-application',
       summary: 'Pending Application',
     });
-    await appendReceipt('global', pendingRcpt, opts);
+    await appendReceipt(pendingRcpt, opts);
 
     // 3. Append 15 resolved receipts to trigger pruning threshold
     for (let i = 0; i < 15; i++) {
       const resolvedRcpt = createReceipt({
         id: `rcpt_20000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
         operation: 'Inspect Marketplace',
-        scope: 'global',
         trigger: 'inspect',
         expectedStateRevision: '2',
         summary: 'Completed',
       });
-      await appendReceipt('global', resolvedRcpt, opts);
+      await appendReceipt(resolvedRcpt, opts);
     }
 
-    journal = await readReceiptJournal('global', opts);
+    journal = await readReceiptJournal(opts);
     expect(journal.activeChains).toHaveLength(1);
     expect(journal.activeChains[0].rootReceiptId).toBe(PENDING_RECEIPT);
 
     // Prune with maxReceipts = 5
-    await pruneReceiptJournal('global', 5, opts);
+    await pruneReceiptJournal(5, opts);
 
-    journal = await readReceiptJournal('global', opts);
+    journal = await readReceiptJournal(opts);
     // Active chain MUST be retained!
     expect(journal.activeChains).toHaveLength(1);
     expect(journal.activeChains[0].rootReceiptId).toBe(PENDING_RECEIPT);
@@ -131,34 +127,32 @@ describe('Integration — Journal and Fence', () => {
   });
 
   it('tolerates corrupted lines in receipt journal without failing the whole journal (RECEIPT_CORRUPT notice)', async () => {
-    const opts = { cwd: projectDir, agentDir, projectTrusted: true };
+    const opts = { agentDir };
 
     const validRcpt = createReceipt({
       id: VALID_RECEIPT_1,
       operation: 'Marketplace Registration',
-      scope: 'global',
       trigger: 'register',
       expectedStateRevision: '0',
       summary: 'Completed',
     });
-    await appendReceipt('global', validRcpt, opts);
+    await appendReceipt(validRcpt, opts);
 
     // Manually inject a corrupted line into receipts.jsonl
-    const journalPath = getReceiptsJournalPath('global', opts);
+    const journalPath = getReceiptsJournalPath(agentDir);
     appendFileSync(journalPath, '\n{ invalid corrupted json line\n', 'utf-8');
 
     // Append another valid receipt
     const validRcpt2 = createReceipt({
       id: VALID_RECEIPT_2,
       operation: 'Inspect',
-      scope: 'global',
       trigger: 'inspect',
       expectedStateRevision: '1',
       summary: 'Completed',
     });
-    await appendReceipt('global', validRcpt2, opts);
+    await appendReceipt(validRcpt2, opts);
 
-    const journal = await readReceiptJournal('global', opts);
+    const journal = await readReceiptJournal(opts);
     expect(journal.receipts).toHaveLength(2);
     expect(journal.isDegraded).toBe(true);
     expect(journal.corruptedLineCount).toBe(1);
@@ -168,8 +162,8 @@ describe('Integration — Journal and Fence', () => {
   });
 
   it('recovers journal append after a lock owner is killed', async () => {
-    const opts = { cwd: projectDir, agentDir, projectTrusted: true, journalLockTimeoutMs: 250 };
-    const journalPath = getReceiptsJournalPath('global', opts);
+    const opts = { agentDir, journalLockTimeoutMs: 250 };
+    const journalPath = getReceiptsJournalPath(agentDir);
     const lockPath = `${journalPath}.lock`;
     mkdirSync(dirname(lockPath), { recursive: true });
 
@@ -197,16 +191,15 @@ describe('Integration — Journal and Fence', () => {
       const receipt = createReceipt({
         id: ORPHAN_RECOVERY_RECEIPT,
         operation: 'Inspect',
-        scope: 'global',
         trigger: 'recover orphan journal lock',
         expectedStateRevision: '0',
         summary: 'Completed',
       });
-      const append = await appendReceipt('global', receipt, opts);
+      const append = await appendReceipt(receipt, opts);
 
       expect(append.success).toBe(true);
       expect(existsSync(lockPath)).toBe(false);
-      expect((await readReceiptJournal('global', opts)).receipts.map((item) => item.id)).toEqual([
+      expect((await readReceiptJournal(opts)).receipts.map((item) => item.id)).toEqual([
         ORPHAN_RECOVERY_RECEIPT,
       ]);
     } finally {
@@ -214,23 +207,22 @@ describe('Integration — Journal and Fence', () => {
     }
   });
 
-  it('Project mutations proceed independently of Global recovery conditions (Barrier retired)', async () => {
-    const opts = { cwd: projectDir, agentDir, projectTrusted: true };
+  it('a corrupted Global document fails mutations fail-closed; Repair State recovers the document', async () => {
+    const opts = { agentDir };
 
-    // 1. Put Global Scope into a Persistence Indeterminate condition
-    const globalStatePath = getStatePath('global', opts);
-    mkdirSync(join(agentDir, 'codex-marketplace'), { recursive: true });
+    // 1. Put the Global document into a Persistence Indeterminate condition.
+    const globalStatePath = getGlobalStatePath(agentDir);
+    mkdirSync(dirname(globalStatePath), { recursive: true });
     writeFileSync(globalStatePath, '{ corrupted global state json', 'utf-8');
 
-    // 2. Project Scope mutation is NOT blocked by the Global recovery condition
-    const projPreflight = await preflightLocalRegistration('project', marketplaceRoot, opts);
-    expect(projPreflight.ok).toBe(true);
-    if (projPreflight.ok) {
-      const conf = await confirmLocalRegistration(projPreflight.preflight, true, opts);
-      expect(conf.status).toBe('completed');
+    // 2. A Lifecycle Operation is denied fail-closed while the document is unreadable.
+    const pf = await preflightLocalRegistration(marketplaceRoot, opts);
+    expect(pf.ok).toBe(false);
+    if (!pf.ok && pf.outcome.status === 'persistence-failed') {
+      expect(pf.outcome.isIndeterminate).toBe(true);
     }
 
-    // 3. Journal repair on the Global scope no longer routes through any barrier judgment
+    // 3. Journal repair on the Global document no longer routes through any barrier judgment.
     writeFileSync(
       globalStatePath,
       JSON.stringify({
@@ -242,7 +234,15 @@ describe('Integration — Journal and Fence', () => {
       }),
       'utf-8',
     );
-    const repairRes = await repairBridgeState('global', opts);
+    const repairRes = await repairBridgeState(opts);
     expect(repairRes.success).toBe(true);
+
+    // 4. After repair the same Lifecycle Operation succeeds against the recovered document.
+    const recovered = await preflightLocalRegistration(marketplaceRoot, opts);
+    expect(recovered.ok).toBe(true);
+    if (recovered.ok) {
+      const conf = await confirmLocalRegistration(recovered.preflight, true, opts);
+      expect(conf.status).toBe('completed');
+    }
   });
 });

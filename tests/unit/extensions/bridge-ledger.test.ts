@@ -39,6 +39,7 @@ function component(model = buildBridgeLedgerModel(snapshot())) {
 
 function emptyJournal() {
   return {
+    revision: 'missing' as const,
     receipts: [],
     activeChains: [],
     allChains: [],
@@ -48,38 +49,32 @@ function emptyJournal() {
   };
 }
 
+const REG_ID = '11111111-1111-4111-8111-111111111111';
+
 function snapshot(): BridgeLedgerSnapshot {
-  const globalRegistration = {
-    id: '11111111-1111-4111-8111-111111111111',
+  const registration = {
+    id: REG_ID,
     alias: 'global-market',
     marketplaceName: 'global-market',
     sourceKind: 'local' as const,
     source: '/marketplaces/global',
   };
-  const projectRegistration = {
-    id: '22222222-2222-4222-8222-222222222222',
-    alias: 'project-market',
-    marketplaceName: 'project-market',
-    sourceKind: 'git' as const,
-    source: 'https://example.test/project.git',
-  };
-  const globalInstallation = {
-    id: 'global/plugin/global-tool',
-    pluginId: `${globalRegistration.id}/global-market/global-tool`,
-    registrationId: globalRegistration.id,
+  const installation = {
+    id: 'global-market/global-tool',
+    pluginId: `${REG_ID}/global-market/global-tool`,
+    registrationId: REG_ID,
     installationState: 'enabled' as const,
   };
-  const projectInstallation = {
-    id: 'project/plugin/project-tool',
-    pluginId: `${projectRegistration.id}/project-market/project-tool`,
-    registrationId: projectRegistration.id,
+  const disabledInstallation = {
+    id: 'global-market/disabled-tool',
+    pluginId: `${REG_ID}/global-market/disabled-tool`,
+    registrationId: REG_ID,
     installationState: 'disabled' as const,
   };
   const receipt = {
     id: 'rcpt_33333333-3333-4333-8333-333333333333',
     kind: 'Marketplace Refresh' as const,
     operation: 'Marketplace Refresh',
-    scope: 'global' as const,
     trigger: 'user',
     startedAt: '2026-08-23T00:00:00.000Z',
     completedAt: '2026-08-23T00:00:01.000Z',
@@ -92,83 +87,43 @@ function snapshot(): BridgeLedgerSnapshot {
     stateChanged: false,
     createdAt: '2026-08-23T00:00:01.000Z',
   };
-  const globalMarketplaceEntryId = `${globalRegistration.id}/global-market/plugins/0`;
-  const projectMarketplaceEntryId = `${projectRegistration.id}/project-market/plugins/0`;
+  const marketplaceEntryId = `${REG_ID}/global-market/plugins/0`;
   return {
     global: {
       status: 'ok',
       state: {
         schemaVersion: 1,
         stateRevision: '12',
-        registrations: [globalRegistration],
-        installations: [globalInstallation],
+        registrations: [registration],
+        installations: [installation, disabledInstallation],
         scopeOverrides: [],
       },
     },
-    project: {
-      status: 'ok',
-      state: {
-        schemaVersion: 1,
-        stateRevision: '7',
-        registrations: [projectRegistration],
-        installations: [projectInstallation],
-        scopeOverrides: [],
-      },
-    },
-    projectTrusted: true,
-    journals: {
-      global: { ...emptyJournal(), receipts: [receipt] },
-      project: emptyJournal(),
-    },
-    marketplaceEntries: {
-      global: [{
-        scope: 'global',
-        registrationId: globalRegistration.id,
-        entryPointer: '/plugins/0',
-        marketplaceEntryId: globalMarketplaceEntryId,
-        validationSnapshot: 'snapshot-global-entry',
-        name: 'global-tool',
-        classification: 'compatible',
-        plugin: {
-          id: `${globalRegistration.id}/global-market/global-tool`,
-          manifestName: 'global-tool',
-          marketplaceEntryId: globalMarketplaceEntryId,
-          skills: [{
-            id: `${globalRegistration.id}/global-market/global-tool/build`,
-            name: 'build',
-            path: '/marketplaces/global/plugins/global-tool/skills/build',
-            invocationPolicy: 'explicit',
-            resources: ['references/guide.md'],
-          }],
-        },
-        findings: [],
-      }],
-      project: [{
-        scope: 'project',
-        registrationId: projectRegistration.id,
-        entryPointer: '/plugins/0',
-        marketplaceEntryId: projectMarketplaceEntryId,
-        validationSnapshot: 'snapshot-project-entry',
-        name: 'project-tool',
-        classification: 'incompatible',
-        findings: [{
-          code: 'UNSUPPORTED_ACTIVE_COMPONENT',
-          classification: 'blocking',
-          phase: 'validation',
-          target: 'plugin',
-          scope: 'project',
-          pointer: '.codex-plugin/plugin.json#/extensions',
-          rule: 'COMP-02',
-          outcome: 'unsupported active component',
+    journal: { ...emptyJournal(), receipts: [receipt] },
+    marketplaceEntries: [{
+      registrationId: REG_ID,
+      entryPointer: '/plugins/0',
+      marketplaceEntryId,
+      validationSnapshot: 'snapshot-global-entry',
+      name: 'global-tool',
+      classification: 'compatible',
+      plugin: {
+        id: `${REG_ID}/global-market/global-tool`,
+        manifestName: 'global-tool',
+        marketplaceEntryId,
+        skills: [{
+          id: `${REG_ID}/global-market/global-tool/build`,
+          name: 'build',
+          path: '/marketplaces/global/plugins/global-tool/skills/build',
+          invocationPolicy: 'explicit',
+          resources: ['references/guide.md'],
         }],
-        unavailableReason: 'unsupported active component',
-      }],
-    },
+      },
+      findings: [],
+    }],
     effective: {
-      registrations: [{ ...projectRegistration, sourceScope: 'project' }],
-      installations: [],
-      suppressed: [],
-      excluded: [],
+      registrations: [registration],
+      installations: [installation],
     },
   };
 }
@@ -211,9 +166,6 @@ describe('Bridge Ledger presentation model', () => {
     expect(recovery.rows.find((row) => row.id === 'journal:global')?.detail).toBe(
       uiText('ledger.row.journal.detail', { receipts: 1, chains: 0, degraded: uiText('common.no') }),
     );
-    expect(recovery.rows.find((row) => row.id === 'journal:project')?.detail).toBe(
-      uiText('ledger.row.journal.detail', { receipts: 0, chains: 0, degraded: uiText('common.no') }),
-    );
   });
 
   it('makes Marketplace Entries the stable Plugins objects and binds both install paths directly', () => {
@@ -221,23 +173,20 @@ describe('Bridge Ledger presentation model', () => {
       (section) => section.id === 'plugins',
     )!;
     const compatible = plugins.rows.find((row) =>
-      row.id === 'marketplace-entry:global:11111111-1111-4111-8111-111111111111/global-market/plugins/0');
-    const incompatible = plugins.rows.find((row) =>
-      row.id === 'marketplace-entry:project:22222222-2222-4222-8222-222222222222/project-market/plugins/0');
+      row.id === `marketplace-entry:${REG_ID}/global-market/plugins/0`);
 
     expect(compatible).toMatchObject({
       targetKind: 'marketplace-entry',
-      targetId: '11111111-1111-4111-8111-111111111111/global-market/plugins/0',
+      targetId: `${REG_ID}/global-market/plugins/0`,
       detail: expect.stringMatching(/compatible.*build.*explicit.*references\/guide\.md/i),
     });
     expect(compatible?.actions.map((entry) => entry.intent)).toEqual([
       expect.objectContaining({
         actionId: 'install-disabled',
-        scope: 'global',
-        registrationId: '11111111-1111-4111-8111-111111111111',
+        registrationId: REG_ID,
         entryPointer: '/plugins/0',
         targetKind: 'marketplace-entry',
-        targetId: '11111111-1111-4111-8111-111111111111/global-market/plugins/0',
+        targetId: `${REG_ID}/global-market/plugins/0`,
         stateRevision: '12',
         validationSnapshot: 'snapshot-global-entry',
       }),
@@ -246,21 +195,18 @@ describe('Bridge Ledger presentation model', () => {
         desiredInstallationState: 'enabled',
       }),
     ]);
-    expect(incompatible?.detail).toMatch(/incompatible/i);
-    expect(incompatible?.actions.every((entry) => !entry.enabled)).toBe(true);
-    expect(incompatible?.actions[0]?.disabledReason).toContain('unsupported active component');
   });
 
   it('fails closed when a compatible Marketplace Entry has no presentation Validation Snapshot', () => {
     const unbound = snapshot();
     unbound.global.state!.installations = [];
-    const entry = unbound.marketplaceEntries.global[0]!;
+    const entry = unbound.marketplaceEntries[0]!;
     if (!('marketplaceEntryId' in entry)) throw new Error('fixture requires a Marketplace Entry');
     delete entry.validationSnapshot;
 
     const row = buildBridgeLedgerModel(unbound).sections
       .find((section) => section.id === 'plugins')?.rows
-      .find((candidate) => candidate.id === `marketplace-entry:global:${entry.marketplaceEntryId}`);
+      .find((candidate) => candidate.id === `marketplace-entry:${entry.marketplaceEntryId}`);
 
     expect(row?.actions).toEqual([
       expect.objectContaining({
@@ -277,11 +223,11 @@ describe('Bridge Ledger presentation model', () => {
   it('maps the presentation inspection fingerprint into Marketplace Entry intents', () => {
     const value = snapshot();
     const registration = value.global.state!.registrations[0]!;
-    const fixture = value.marketplaceEntries.global[0]!;
+    const fixture = value.marketplaceEntries[0]!;
     if (!('marketplaceEntryId' in fixture) || !fixture.plugin) {
       throw new Error('fixture requires a compatible Marketplace Entry');
     }
-    const mapped = mapMarketplaceInspectionToLedgerItems('global', registration, {
+    const mapped = mapMarketplaceInspectionToLedgerItems(registration, {
       marketplaceId: `${registration.id}/global-market`,
       snapshot: { fingerprint: 'fresh-presentation-snapshot' } as never,
       entries: [{
@@ -352,28 +298,25 @@ describe('Bridge Ledger presentation model', () => {
         classification: 'blocking' as const,
         phase: 'validation' as const,
         target,
-        scope: 'global' as const,
         pointer: '',
         rule,
         outcome,
       };
 
-      unavailable.marketplaceEntries.global = mapMarketplaceInspectionToLedgerItems(
-        'global',
+      unavailable.marketplaceEntries = mapMarketplaceInspectionToLedgerItems(
         registration,
         { entries: [], findings: [finding] },
       );
 
       const diagnostic = buildBridgeLedgerModel(unavailable).sections
         .find((section) => section.id === 'plugins')?.rows
-        .find((row) => row.id === `marketplace-diagnostic:global:${registration.id}`);
+        .find((row) => row.id === `marketplace-diagnostic:${registration.id}`);
 
-      expect(unavailable.marketplaceEntries.global[0]).not.toHaveProperty('marketplaceEntryId');
-      expect(unavailable.marketplaceEntries.global[0]?.findings).toEqual([finding]);
+      expect(unavailable.marketplaceEntries[0]).not.toHaveProperty('marketplaceEntryId');
+      expect(unavailable.marketplaceEntries[0]?.findings).toEqual([finding]);
       expect(diagnostic).toMatchObject({
         label: 'global-market',
         detail: `Unavailable（無法使用）· ${code} · ${rule} · ${findingOutcomeText({ rule, outcome })}`,
-        scope: 'global',
         targetKind: 'registration',
         targetId: registration.id,
         actions: [],
@@ -383,15 +326,11 @@ describe('Bridge Ledger presentation model', () => {
     },
   );
 
-  it('renders actionless Marketplace diagnostics only in their focused scope without dispatching them', () => {
+  it('renders actionless Marketplace diagnostics without dispatching them', () => {
     const unavailable = snapshot();
-    const globalRegistration = unavailable.global.state!.registrations[0]!;
-    const projectRegistration = unavailable.project.state!.registrations[0]!;
     unavailable.global.state!.installations = [];
-    unavailable.project.state!.installations = [];
-    unavailable.marketplaceEntries.global = mapMarketplaceInspectionToLedgerItems(
-      'global',
-      globalRegistration,
+    unavailable.marketplaceEntries = mapMarketplaceInspectionToLedgerItems(
+      unavailable.global.state!.registrations[0]!,
       {
         entries: [],
         findings: [{
@@ -399,27 +338,9 @@ describe('Bridge Ledger presentation model', () => {
           classification: 'blocking',
           phase: 'validation',
           target: 'registration',
-          scope: 'global',
           pointer: '',
           rule: 'DRIFT-01',
           outcome: 'Source Drift requires Marketplace Refresh',
-        }],
-      },
-    );
-    unavailable.marketplaceEntries.project = mapMarketplaceInspectionToLedgerItems(
-      'project',
-      projectRegistration,
-      {
-        entries: [],
-        findings: [{
-          code: 'CATALOG_MALFORMED',
-          classification: 'blocking',
-          phase: 'validation',
-          target: 'catalog',
-          scope: 'project',
-          pointer: '/',
-          rule: 'CAT-02',
-          outcome: 'marketplace.json is not an object',
         }],
       },
     );
@@ -428,36 +349,28 @@ describe('Bridge Ledger presentation model', () => {
     rendered.instance.handleInput('\x1b[C'); // Sources
     rendered.instance.handleInput('\x1b[C'); // Plugins
 
-    const globalScreen = rendered.instance.render(240).join('\n');
+    const screen = rendered.instance.render(240).join('\n');
     const driftOutcome = findingOutcomeText({ rule: 'DRIFT-01', outcome: 'Source Drift requires Marketplace Refresh' });
-    const catalogOutcome = findingOutcomeText({ rule: 'CAT-02', outcome: 'marketplace.json is not an object' });
-    expect(globalScreen).toContain(`SOURCE_DRIFT · DRIFT-01 · ${driftOutcome}`);
-    expect(globalScreen).not.toContain(`CATALOG_MALFORMED · CAT-02 · ${catalogOutcome}`);
-    rendered.instance.handleInput('\r');
-    expect(rendered.results).toEqual([]);
-
-    rendered.instance.handleInput('p');
-    const projectScreen = rendered.instance.render(240).join('\n');
-    expect(projectScreen).toContain(`CATALOG_MALFORMED · CAT-02 · ${catalogOutcome}`);
-    expect(projectScreen).not.toContain(`SOURCE_DRIFT · DRIFT-01 · ${driftOutcome}`);
+    expect(screen).toContain(`SOURCE_DRIFT · DRIFT-01 · ${driftOutcome}`);
+    // The diagnostic row exposes no actions, so Enter cannot dispatch anything.
     rendered.instance.handleInput('\r');
     expect(rendered.results).toEqual([]);
   });
 
-  it('uses compatible Plugin identity, not Marketplace Entry provenance, to detect scope-local Installations', () => {
+  it('uses compatible Plugin identity, not Marketplace Entry provenance, to detect Installations', () => {
     const findMarketplaceRow = (value: BridgeLedgerSnapshot, marketplaceEntryId: string) =>
       buildBridgeLedgerModel(value).sections
         .find((section) => section.id === 'plugins')?.rows
-        .find((row) => row.id === `marketplace-entry:global:${marketplaceEntryId}`);
+        .find((row) => row.id === `marketplace-entry:${marketplaceEntryId}`);
 
     const moved = snapshot();
-    const movedEntry = moved.marketplaceEntries.global[0]!;
+    const movedEntry = moved.marketplaceEntries[0]!;
     if (!('marketplaceEntryId' in movedEntry) || !movedEntry.plugin) {
       throw new Error('fixture requires a compatible Marketplace Entry');
     }
     moved.global.state!.installations[0]!.marketplaceEntryId = movedEntry.marketplaceEntryId;
     movedEntry.entryPointer = '/plugins/7';
-    movedEntry.marketplaceEntryId = '11111111-1111-4111-8111-111111111111/global-market/plugins/7';
+    movedEntry.marketplaceEntryId = `${REG_ID}/global-market/plugins/7`;
     movedEntry.plugin.marketplaceEntryId = movedEntry.marketplaceEntryId;
 
     const movedRow = findMarketplaceRow(moved, movedEntry.marketplaceEntryId);
@@ -465,7 +378,7 @@ describe('Bridge Ledger presentation model', () => {
     expect(movedRow?.actions[0]?.disabledReason).toContain('Installation');
 
     const replacement = snapshot();
-    const replacementEntry = replacement.marketplaceEntries.global[0]!;
+    const replacementEntry = replacement.marketplaceEntries[0]!;
     if (!('marketplaceEntryId' in replacementEntry) || !replacementEntry.plugin) {
       throw new Error('fixture requires a compatible Marketplace Entry');
     }
@@ -473,7 +386,7 @@ describe('Bridge Ledger presentation model', () => {
     replacementEntry.name = 'replacement-tool';
     replacementEntry.plugin = {
       ...replacementEntry.plugin,
-      id: '11111111-1111-4111-8111-111111111111/global-market/replacement-tool',
+      id: `${REG_ID}/global-market/replacement-tool`,
       manifestName: 'replacement-tool',
     };
 
@@ -481,11 +394,10 @@ describe('Bridge Ledger presentation model', () => {
     expect(replacementRow?.actions.map((entry) => entry.enabled)).toEqual([true, true]);
 
     const unavailable = snapshot();
-    const unavailableEntryId = '11111111-1111-4111-8111-111111111111/global-market/plugins/0';
+    const unavailableEntryId = `${REG_ID}/global-market/plugins/0`;
     unavailable.global.state!.installations[0]!.marketplaceEntryId = unavailableEntryId;
-    unavailable.marketplaceEntries.global = [{
-      scope: 'global',
-      registrationId: '11111111-1111-4111-8111-111111111111',
+    unavailable.marketplaceEntries = [{
+      registrationId: REG_ID,
       entryPointer: '/plugins/0',
       marketplaceEntryId: unavailableEntryId,
       name: 'broken-tool',
@@ -504,7 +416,7 @@ describe('Bridge Ledger presentation model', () => {
   it('offers Retry Application for an exact active Pending Application chain', () => {
     const pending = snapshot();
     const receipt = {
-      ...pending.journals.global.receipts[0]!,
+      ...pending.journal.receipts[0]!,
       summary: 'Pending Application' as const,
       runtimeOutcome: 'pending-application' as const,
       validationSnapshot: 'snapshot-runtime-12',
@@ -512,15 +424,14 @@ describe('Bridge Ledger presentation model', () => {
     };
     const chain = {
       rootReceiptId: receipt.id,
-      scope: 'global' as const,
       condition: 'pending-application' as const,
       stateRevision: '12',
       receipts: [receipt],
       resolved: false,
       superseded: false,
     };
-    pending.journals.global = {
-      ...pending.journals.global,
+    pending.journal = {
+      ...pending.journal,
       receipts: [receipt],
       activeChains: [chain],
       allChains: [chain],
@@ -529,14 +440,13 @@ describe('Bridge Ledger presentation model', () => {
     const recovery = buildBridgeLedgerModel(pending).sections.find(
       (section) => section.id === 'recovery-receipts',
     )!;
-    const retry = recovery.rows.find((row) => row.id === `retry-application:global:${receipt.id}`);
+    const retry = recovery.rows.find((row) => row.id === `retry-application:${receipt.id}`);
 
     expect(retry?.actions[0]).toMatchObject({
       enabled: true,
       intent: {
         actionId: 'retry-application',
         mode: 'mutation',
-        scope: 'global',
         targetKind: 'receipt',
         targetId: receipt.id,
         stateRevision: '12',
@@ -551,22 +461,21 @@ describe('Bridge Ledger presentation model', () => {
   it('keeps an unbound Pending Application visible but disables unsafe Retry', () => {
     const pending = snapshot();
     const receipt = {
-      ...pending.journals.global.receipts[0]!,
+      ...pending.journal.receipts[0]!,
       summary: 'Pending Application' as const,
       runtimeOutcome: 'pending-application' as const,
       recoveryActions: ['Retry Application' as const],
     };
     const chain = {
       rootReceiptId: receipt.id,
-      scope: 'global' as const,
       condition: 'pending-application' as const,
       stateRevision: '12',
       receipts: [receipt],
       resolved: false,
       superseded: false,
     };
-    pending.journals.global = {
-      ...pending.journals.global,
+    pending.journal = {
+      ...pending.journal,
       receipts: [receipt],
       activeChains: [chain],
       allChains: [chain],
@@ -575,7 +484,7 @@ describe('Bridge Ledger presentation model', () => {
     const recovery = buildBridgeLedgerModel(pending).sections.find(
       (section) => section.id === 'recovery-receipts',
     )!;
-    const retry = recovery.rows.find((row) => row.id === `retry-application:global:${receipt.id}`);
+    const retry = recovery.rows.find((row) => row.id === `retry-application:${receipt.id}`);
 
     expect(retry?.actions[0]).toMatchObject({
       enabled: false,
@@ -592,29 +501,23 @@ describe('Bridge Ledger presentation model', () => {
     expect(screen).toContain('CODEX MARKETPLACE / BRIDGE LEDGER');
     expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
     expect(screen).toContain(uiText('ledger.rail.revision', { marker: 'G', revision: '"12"' }));
-    expect(screen).toContain(uiText('ledger.rail.revision', { marker: 'P', revision: '"7"' }));
-    expect(screen.match(new RegExp(uiText('ledger.badge.healthy'), 'g'))).toHaveLength(2);
-    expect(screen).toContain(uiText('ledger.rail.trust.granted'));
+    // Global-only (#61): exactly one healthy rail, no trust indicator anywhere.
+    expect(screen.match(new RegExp(uiText('ledger.badge.healthy'), 'g'))).toHaveLength(1);
+    expect(screen).not.toMatch(/PROJECT|\bP\b/);
+    expect(screen).not.toContain(uiText('ledger.rail.trust.granted'));
     expect(screen).toContain('狀態：');
     expect(screen).toContain('Esc/q');
     expect(screen).toContain(width >= 96 ? uiText('ledger.panel.navigation') : uiText('ledger.panel.sections'));
   });
 
-  it.each([120, 80, 60])('presents both authority rails as bordered panels at every width %i', (width) => {
+  it.each([120, 80, 60])('presents the authority rail as a bordered panel at every width %i', (width) => {
     const { instance } = component();
     const lines = instance.render(width);
     const screen = lines.join('\n');
 
     expect(screen).toContain('┌─ Global Scope');
-    expect(screen).toContain('┌─ Project Scope');
-    expect(lines.filter((line) => line.includes('│')).length).toBeGreaterThanOrEqual(6);
-    if (width >= 96) {
-      const railRow = lines.find((line) => line.includes('Global Scope') && line.includes('Project Scope'));
-      expect(railRow).toBeDefined();
-    } else {
-      const shared = lines.find((line) => line.includes('Global Scope') && line.includes('Project Scope'));
-      expect(shared).toBeUndefined();
-    }
+    expect(screen).not.toContain('┌─ Project Scope');
+    expect(lines.filter((line) => line.includes('│')).length).toBeGreaterThanOrEqual(4);
   });
 
   it('highlights the selected action row with the selected background token and a text cursor', () => {
@@ -652,7 +555,6 @@ describe('Bridge Ledger presentation model', () => {
   it.each([120, 80, 60])('keeps CJK double-width content within %i columns without overflow or frame damage', (width) => {
     const cjk = snapshot();
     cjk.global.state!.registrations[0]!.alias = '全球市集（相當長的雙寬字元名稱測試）';
-    cjk.project.state!.registrations[0]!.alias = '專案市集——CJK 寬度安全檢查';
     const { instance } = component(buildBridgeLedgerModel(cjk));
     instance.render(width);
     if (width >= 96) {
@@ -673,98 +575,61 @@ describe('Bridge Ledger presentation model', () => {
     expect(screen).toContain('全球市集');
   });
 
-  it('changes g/p browsing focus while keeping the visible action authority explicit', () => {
+  it('activates register-local directly from the Sources section without any partition browsing', () => {
     const { instance, requests, results } = component();
     instance.render(120);
 
     instance.handleInput('\x1b[C'); // Sources
+    instance.render(120);
+    expect(instance.render(120).join('\n')).toContain(uiText('ledger.row.registrationActions', { scopeWord: 'Global' }));
+    // The retired g/p partition-focus keys are inert: no re-render, no dispatch.
     instance.handleInput('p');
-    const projectScreen = instance.render(120).join('\n');
-    expect(projectScreen).toContain('瀏覽 P');
-    expect(projectScreen).toContain(uiText('ledger.row.registrationActions', { scopeWord: 'Project' }));
-    expect(projectScreen).not.toContain(uiText('ledger.row.registrationActions', { scopeWord: 'Global' }));
+    instance.handleInput('g');
+    expect(instance.render(120).join('\n')).toContain(uiText('ledger.row.registrationActions', { scopeWord: 'Global' }));
     instance.handleInput('\r');
 
     expect(results).toEqual([{
       actionId: 'register-local',
       mode: 'mutation',
-      scope: 'project',
       targetKind: 'scope',
-      targetId: 'project',
-      stateRevision: '7',
+      targetId: 'global',
+      stateRevision: '12',
     }]);
-    expect(requests.length).toBeGreaterThanOrEqual(2);
+    expect(requests.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('keeps canonical object identities and explicit scopes in structured action intents', () => {
+  it('keeps canonical object identities in structured action intents', () => {
     const model = buildBridgeLedgerModel(snapshot());
     const rows = model.sections.flatMap((section) => section.rows);
     const actions = rows.flatMap((row) => row.actions);
 
-    expect(rows.find((row) => row.id === 'registration:global:11111111-1111-4111-8111-111111111111')).toMatchObject({
+    expect(rows.find((row) => row.id === `registration:${REG_ID}`)).toMatchObject({
       targetKind: 'registration',
-      targetId: '11111111-1111-4111-8111-111111111111',
+      targetId: REG_ID,
     });
-    expect(rows.find((row) => row.id === 'installation:global:global/plugin/global-tool')).toMatchObject({
+    expect(rows.find((row) => row.id === 'installation:global-market/global-tool')).toMatchObject({
       targetKind: 'installation',
-      targetId: 'global/plugin/global-tool',
+      targetId: 'global-market/global-tool',
     });
-    expect(rows.find((row) => row.id === 'receipt:global:rcpt_33333333-3333-4333-8333-333333333333')).toMatchObject({
+    expect(rows.find((row) => row.id === 'receipt:rcpt_33333333-3333-4333-8333-333333333333')).toMatchObject({
       targetKind: 'receipt',
       targetId: 'rcpt_33333333-3333-4333-8333-333333333333',
     });
-    expect(actions.filter((entry) => entry.intent.mode === 'mutation').every((entry) => entry.intent.scope !== undefined)).toBe(true);
+    expect(actions.filter((entry) => entry.intent.mode === 'mutation').every((entry) => entry.intent.stateRevision !== undefined)).toBe(true);
   });
 
-  it('applies Project Trust only to Project mutations', () => {
-    const findAction = (model: ReturnType<typeof buildBridgeLedgerModel>, actionId: LedgerActionId, scope: 'global' | 'project') =>
-      model.sections.flatMap((section) => section.rows).flatMap((row) => row.actions)
-        .find((entry) => entry.intent.actionId === actionId && entry.intent.scope === scope)!;
-
-    const clear = buildBridgeLedgerModel(snapshot());
-    expect(findAction(clear, 'register-local', 'project').enabled).toBe(true);
-    expect(findAction(clear, 'repair-state', 'project')).toMatchObject({
-      enabled: false,
-      disabledReason: expect.stringContaining(uiText('ledger.disabledReason.repairNothing')),
-    });
-
-    const globalPendingSnapshot = snapshot();
-    // Global Pending Barrier retired: a Global recovery chain no longer disables Project mutations.
-    const globalPendingJournal = globalPendingSnapshot.journals.global;
-    globalPendingSnapshot.journals.global = {
-      ...globalPendingJournal,
-      activeChains: [{
-        rootReceiptId: 'rcpt_44444444-4444-4444-8444-444444444449',
-        scope: 'global' as const,
-        condition: 'pending-application' as const,
-        stateRevision: '12',
-        receipts: [],
-        resolved: false,
-        superseded: false,
-      }],
-    };
-    const withGlobalPending = buildBridgeLedgerModel(globalPendingSnapshot);
-    expect(findAction(withGlobalPending, 'register-local', 'project').enabled).toBe(true);
-    expect(findAction(withGlobalPending, 'refresh-registration', 'project').enabled).toBe(true);
-    // Global recovery still routes through its own recovery chain: Repair State remains ineligible for Pending Application.
-    expect(findAction(withGlobalPending, 'repair-state', 'global')).toMatchObject({
-      enabled: false,
-      disabledReason: expect.stringContaining(uiText('ledger.disabledReason.repairIneligible', { conditions: 'Pending Application' })),
-    });
-
-    const untrustedSnapshot = snapshot();
-    untrustedSnapshot.projectTrusted = false;
-    const untrusted = buildBridgeLedgerModel(untrustedSnapshot);
-    expect(findAction(untrusted, 'register-git', 'project')).toMatchObject({
-      enabled: false,
-      disabledReason: expect.stringContaining('Project Trust'),
-    });
-    expect(findAction(untrusted, 'refresh-registration', 'project').enabled).toBe(true);
-    expect(findAction(untrusted, 'view-receipt-journal', 'project').enabled).toBe(true);
-    expect(findAction(untrusted, 'register-local', 'global').enabled).toBe(true);
+  it('binds mutation intents to the observed State Revision of the single authority', () => {
+    const model = buildBridgeLedgerModel(snapshot());
+    const mutations = model.sections.flatMap((section) => section.rows)
+      .flatMap((row) => row.actions)
+      .filter((entry) => entry.intent.mode === 'mutation');
+    expect(mutations.length).toBeGreaterThan(0);
+    for (const entry of mutations) {
+      expect(entry.intent.stateRevision).toBe('12');
+    }
   });
 
-  it('keeps repair available while disabling ordinary mutations for an unreadable scope', () => {
+  it('keeps repair available while disabling ordinary mutations for an unreadable document', () => {
     const unreadableSnapshot = snapshot();
     unreadableSnapshot.global = {
       status: 'corrupted',
@@ -772,37 +637,36 @@ describe('Bridge Ledger presentation model', () => {
     };
     const model = buildBridgeLedgerModel(unreadableSnapshot);
     const actions = model.sections.flatMap((section) => section.rows).flatMap((row) => row.actions);
-    const globalRegistration = actions.find((entry) =>
-      entry.intent.actionId === 'register-local' && entry.intent.scope === 'global')!;
-    const globalRepair = actions.find((entry) =>
-      entry.intent.actionId === 'repair-state' && entry.intent.scope === 'global')!;
+    const registerLocal = actions.find((entry) =>
+      entry.intent.actionId === 'register-local')!;
+    const repairState = actions.find((entry) =>
+      entry.intent.actionId === 'repair-state')!;
 
-    expect(globalRegistration).toMatchObject({
+    expect(registerLocal).toMatchObject({
       enabled: false,
       disabledReason: expect.stringContaining('Persistence Indeterminate'),
     });
-    expect(globalRepair.enabled).toBe(true);
+    expect(repairState.enabled).toBe(true);
   });
 
   it('offers State Repair only for a repairable persistence-indeterminate chain', () => {
     const repairable = snapshot();
     const root = {
-      ...repairable.journals.global.receipts[0]!,
+      ...repairable.journal.receipts[0]!,
       summary: 'Persistence Indeterminate' as const,
       durableOutcome: 'indeterminate' as const,
       recoveryActions: ['Repair State' as const, 'Inspect' as const],
     };
     const chain = {
       rootReceiptId: root.id,
-      scope: 'global' as const,
       condition: 'persistence-indeterminate' as const,
       stateRevision: '12',
       receipts: [root],
       resolved: false,
       superseded: false,
     };
-    repairable.journals.global = {
-      ...repairable.journals.global,
+    repairable.journal = {
+      ...repairable.journal,
       receipts: [root],
       activeChains: [chain],
       allChains: [chain],
@@ -811,15 +675,15 @@ describe('Bridge Ledger presentation model', () => {
     const action = buildBridgeLedgerModel(repairable).sections
       .flatMap((section) => section.rows)
       .flatMap((row) => row.actions)
-      .find((entry) => entry.intent.actionId === 'repair-state' && entry.intent.scope === 'global');
+      .find((entry) => entry.intent.actionId === 'repair-state');
 
     expect(action?.enabled).toBe(true);
   });
 
   it('offers State Repair when corrupted Receipt Journal lines activate recovery without a chain', () => {
     const degraded = snapshot();
-    degraded.journals.global = {
-      ...degraded.journals.global,
+    degraded.journal = {
+      ...degraded.journal,
       isDegraded: true,
       corruptedLineCount: 1,
     };
@@ -834,17 +698,14 @@ describe('Bridge Ledger presentation model', () => {
   it('loads Plugin inspections lazily once per snapshot and refreshes them on reload', async () => {
     const root = mkdtempSync(join(tmpdir(), 'bridge-ledger-'));
     const agentDir = join(root, 'agent');
-    const cwd = join(root, 'project');
     const inspections: string[] = [];
-    const inspector = (registration: { id: string }, scope: 'global' | 'project') => {
-      inspections.push(`${scope}:${registration.id}`);
+    const inspector = (registration: { id: string }) => {
+      inspections.push(registration.id);
       return { entries: [], findings: [] };
     };
     try {
       const globalDir = join(agentDir, 'codex-marketplace');
-      const projectDir = join(cwd, '.pi', 'codex-marketplace');
       mkdirSync(globalDir, { recursive: true });
-      mkdirSync(projectDir, { recursive: true });
       writeFileSync(join(globalDir, 'state.json'), JSON.stringify({
         schemaVersion: 1,
         stateRevision: '3',
@@ -852,26 +713,15 @@ describe('Bridge Ledger presentation model', () => {
         installations: [],
         scopeOverrides: [],
       }));
-      writeFileSync(join(projectDir, 'state.json'), JSON.stringify({
-        schemaVersion: 1,
-        stateRevision: '4',
-        registrations: [{ id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', marketplaceName: 'p' }],
-        installations: [],
-        scopeOverrides: [],
-      }));
 
       const loaded = await loadBridgeLedgerSnapshot({
-        cwd,
         agentDir,
-        projectTrusted: true,
         inspectMarketplaceEntries: inspector,
       });
 
       expect(loaded.global.state?.stateRevision).toBe('3');
-      expect(loaded.project.state?.stateRevision).toBe('4');
-      expect(loaded.journals.global.receipts).toEqual([]);
-      expect(loaded.journals.project.receipts).toEqual([]);
-      expect(loaded.effective?.registrations.map((registration) => registration.sourceScope)).toEqual(['global', 'project']);
+      expect(loaded.journal.receipts).toEqual([]);
+      expect(loaded.effective?.registrations.map((registration) => registration.id)).toEqual(['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa']);
       expect(inspections).toEqual([]);
 
       const first = component(buildBridgeLedgerModel(loaded));
@@ -882,28 +732,21 @@ describe('Bridge Ledger presentation model', () => {
       expect(inspections).toEqual([]);
       first.instance.handleInput('\x1b[C'); // Plugins
       first.instance.render(120);
-      expect(inspections).toEqual([
-        'global:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-        'project:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
-      ]);
+      expect(inspections).toEqual(['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa']);
 
       first.instance.render(120);
       buildBridgeLedgerModel(loaded).sections.find((section) => section.id === 'plugins')!.rows;
-      expect(inspections).toHaveLength(2);
+      expect(inspections).toHaveLength(1);
 
       const reloaded = await loadBridgeLedgerSnapshot({
-        cwd,
         agentDir,
-        projectTrusted: true,
         inspectMarketplaceEntries: inspector,
       });
-      expect(inspections).toHaveLength(2);
+      expect(inspections).toHaveLength(1);
       buildBridgeLedgerModel(reloaded).sections.find((section) => section.id === 'plugins')!.rows;
       expect(inspections).toEqual([
-        'global:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-        'project:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
-        'global:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-        'project:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       ]);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -931,13 +774,12 @@ describe('Bridge Ledger presentation model', () => {
     wide.instance.handleInput('i');
     const expanded = wide.instance.render(120).join('\n');
     expect(expanded).toContain('模式 mutation');
-    expect(expanded).toContain('Scope global');
     expect(expanded).toContain('目標 scope "global"');
     wide.instance.handleInput('i');
     expect(wide.instance.render(120).join('\n')).not.toContain('模式 mutation');
 
     wide.instance.handleInput('\x1b[13u'); // Kitty Enter activates first Global action
-    expect(wide.results[0]).toMatchObject({ actionId: 'register-local', scope: 'global' });
+    expect(wide.results[0]).toMatchObject({ actionId: 'register-local', stateRevision: '12' });
 
     const ctrlC = component();
     ctrlC.instance.handleInput('\x1b[99;5u');
@@ -967,19 +809,17 @@ describe('Bridge Ledger presentation model', () => {
 
   it('does not return an intent when Enter activates a disabled row and reveals its reason by selection', () => {
     const blockedSnapshot = snapshot();
-    blockedSnapshot.global.state!.registrations = [];
-    blockedSnapshot.global.state!.installations = [];
-    blockedSnapshot.project.state!.registrations = [];
-    blockedSnapshot.project.state!.installations = [];
-    blockedSnapshot.projectTrusted = false;
+    blockedSnapshot.global = {
+      status: 'corrupted',
+      error: 'Persistence Indeterminate: invalid JSON',
+    };
     const blocked = component(buildBridgeLedgerModel(blockedSnapshot));
     blocked.instance.render(120);
     blocked.instance.handleInput('\x1b[C'); // Sources
-    blocked.instance.handleInput('p'); // Project register-local
     const screen = blocked.instance.render(120).join('\n');
 
     expect(screen).toContain(`○ ${uiText('ledger.availability.blocked')} ${uiText('ledger.action.register-local')}`);
-    expect(screen).toContain(uiText('ledger.disabledReason.trust'));
+    expect(screen).toContain('Persistence Indeterminate：Persistence Indeterminate: invalid JSON')
     expect(screen).not.toContain('[available]');
     expect(screen).not.toContain('[Unavailable]');
     expect(screen).not.toContain('disabled:');
@@ -993,7 +833,7 @@ describe('Bridge Ledger presentation model', () => {
     const hostile = snapshot();
     hostile.global.state!.registrations[0]!.alias = 'market\nFORGED-MARKET';
     hostile.global.state!.registrations[0]!.source = '/tmp/source\nFORGED-PATH';
-    hostile.journals.global.receipts[0]!.summary = 'Blocked\nFORGED-RECEIPT' as never;
+    hostile.journal.receipts[0]!.summary = 'Blocked\nFORGED-RECEIPT' as never;
     const rendered = component(buildBridgeLedgerModel(hostile));
     rendered.instance.render(120);
     rendered.instance.handleInput('\x1b[C'); // Sources

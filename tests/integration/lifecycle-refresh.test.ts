@@ -16,7 +16,6 @@ function makeEnv() {
   return {
     root,
     agentDir: join(root, 'agent'),
-    projectDir: join(root, 'project'),
     marketplace: join(root, 'marketplace'),
   };
 }
@@ -44,15 +43,13 @@ describe('Marketplace Refresh — non-mutating Update Candidate production', () 
     env = makeEnv();
     makeMarketplace(env.marketplace);
     // Register through the real lifecycle seam so the recorded Validation Snapshot is exact.
-    const preflight = await preflightLocalRegistration('global', env.marketplace, {
+    const preflight = await preflightLocalRegistration(env.marketplace, {
       agentDir: env.agentDir,
-      cwd: env.projectDir,
     });
     expect(preflight.ok).toBe(true);
     if (!preflight.ok) return;
     const confirmed = await confirmLocalRegistration(preflight.preflight, true, {
       agentDir: env.agentDir,
-      cwd: env.projectDir,
     });
     expect(confirmed.status).toBe('completed');
     if (confirmed.status !== 'completed') return;
@@ -62,11 +59,10 @@ describe('Marketplace Refresh — non-mutating Update Candidate production', () 
   afterEach(() => rmSync(env.root, { recursive: true, force: true }));
 
   it('explicitly reports no change when the live tree still matches the recorded Validation Snapshot', async () => {
-    const before = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
+    const before = await readBridgeState({ agentDir: env.agentDir });
 
-    const outcome = await refreshRegistration('global', registrationId, {
+    const outcome = await refreshRegistration(registrationId, {
       agentDir: env.agentDir,
-      cwd: env.projectDir,
     });
 
     expect(outcome.status).toBe('no-change');
@@ -75,12 +71,12 @@ describe('Marketplace Refresh — non-mutating Update Candidate production', () 
     expect(outcome.receipt.summary).toBe('Completed');
     expect(outcome.receipt.stateChanged).toBe(false);
 
-    const after = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
+    const after = await readBridgeState({ agentDir: env.agentDir });
     expect(after.state!.stateRevision).toBe(before.state!.stateRevision);
   });
 
   it('produces an Update Candidate on source drift without mutating Bridge State', async () => {
-    const before = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
+    const before = await readBridgeState({ agentDir: env.agentDir });
     const recorded = before.state!.registrations[0].validationSnapshot;
 
     // External change outside Marketplace Refresh: a new skill joins the Plugin.
@@ -90,15 +86,13 @@ describe('Marketplace Refresh — non-mutating Update Candidate production', () 
       '---\nname: changelog\ndescription: Maintain changelog\n---\n\nMaintain the changelog.\n',
     );
 
-    const outcome = await refreshRegistration('global', registrationId, {
+    const outcome = await refreshRegistration(registrationId, {
       agentDir: env.agentDir,
-      cwd: env.projectDir,
     });
 
     expect(outcome.status).toBe('update-candidate');
     if (outcome.status !== 'update-candidate') return;
     expect(outcome.candidate.registrationId).toBe(registrationId);
-    expect(outcome.candidate.scope).toBe('global');
     expect(outcome.candidate.recordedFingerprint).toBe(recorded);
     expect(outcome.candidate.snapshot.fingerprint).not.toBe(recorded);
     expect(outcome.candidate.snapshot.entries.length).toBeGreaterThan(0);
@@ -106,15 +100,14 @@ describe('Marketplace Refresh — non-mutating Update Candidate production', () 
     expect(outcome.receipt.stateChanged).toBe(false);
 
     // Refresh never writes: revision and recorded snapshot stay exact.
-    const after = await readBridgeState('global', { agentDir: env.agentDir, cwd: env.projectDir });
+    const after = await readBridgeState({ agentDir: env.agentDir });
     expect(after.state!.stateRevision).toBe(before.state!.stateRevision);
     expect(after.state!.registrations[0].validationSnapshot).toBe(recorded);
   });
 
-  it('blocks with a stable finding when the Registration is not in scope Bridge State', async () => {
-    const outcome = await refreshRegistration('global', '99999999-9999-4999-8999-999999999999', {
+  it('blocks with a stable finding when the Registration is not in Bridge State', async () => {
+    const outcome = await refreshRegistration('99999999-9999-4999-8999-999999999999', {
       agentDir: env.agentDir,
-      cwd: env.projectDir,
     });
     expect(outcome.status).toBe('blocked');
     if (outcome.status !== 'blocked') return;

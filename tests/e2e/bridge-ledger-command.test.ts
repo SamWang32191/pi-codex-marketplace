@@ -95,9 +95,9 @@ describe('/codex-marketplace Bridge Ledger command seam', () => {
       const screen = rendered.get(width)!.join('\n');
       expect(screen).toContain('BRIDGE LEDGER');
       expect(screen).toMatch(/GLOBAL|\bG\b/);
-      expect(screen).toMatch(/PROJECT|\bP\b/);
+      // Global-only (#61): no Project rail exists anymore.
+      expect(screen).not.toMatch(/PROJECT|\bP\b/);
       expect(screen).toMatch(/rev(?:ision)?\s+"?0"?/i);
-      expect(screen).toContain(uiText('ledger.rail.trust.granted'));
       expect(screen).toMatch(/Esc.*q|q.*Esc/i);
     }
   });
@@ -129,9 +129,7 @@ describe('/codex-marketplace Bridge Ledger command seam', () => {
         if (customCalls === 1) {
           component.handleInput?.('\r'); // drill into the section (single-column layout at 80)
           component.handleInput?.('\r'); // activate the first available structured action
-          await commitBridgeState(
-            'global',
-            (state) => ({
+          await commitBridgeState((state) => ({
               ...state,
               registrations: [
                 {
@@ -140,7 +138,7 @@ describe('/codex-marketplace Bridge Ledger command seam', () => {
                 },
               ],
             }),
-            { cwd, agentDir },
+            { agentDir },
           );
         } else {
           component.handleInput?.('q');
@@ -164,12 +162,9 @@ describe('/codex-marketplace Bridge Ledger command seam', () => {
     expect(screens[1]!.join('\n')).toContain(uiText('ledger.rail.registrations', { count: 1 }));
   });
 
-  it('keeps Project mutations available while Global has an active recovery chain (Barrier retired)', async () => {
-    await appendReceipt(
-      'global',
-      createReceipt({
+  it('keeps Global mutations available while an active recovery chain exists (Barrier retired)', async () => {
+    await appendReceipt(createReceipt({
         operation: 'Plugin Installation',
-        scope: 'global',
         trigger: 'install',
         expectedStateRevision: '0',
         targetStateRevision: '1',
@@ -178,7 +173,7 @@ describe('/codex-marketplace Bridge Ledger command seam', () => {
         runtimeOutcome: 'pending-application',
         summary: 'Pending Application',
       }),
-      { cwd, agentDir },
+      { agentDir },
     );
     const command = captureCodexMarketplaceCommand();
     let screen = '';
@@ -204,18 +199,15 @@ describe('/codex-marketplace Bridge Ledger command seam', () => {
             },
           );
           component.render(120);
-          component.handleInput?.('\x1b[C');
-          const globalScreen = component.render(120).join('\n');
-          component.handleInput?.('p');
-          const projectScreen = component.render(120).join('\n');
-          screen = `${globalScreen}\n${projectScreen}`;
+          component.handleInput?.('\x1b[C'); // move to the next section (wide layout)
+          screen = component.render(120).join('\n');
           component.handleInput?.('q');
           return result;
         },
       },
     });
 
-    // No Barrier indicator anywhere; Project mutations stay available.
+    // No Barrier indicator anywhere; Global mutations stay available.
     expect(screen).not.toMatch(/Global Pending Barrier|Barrier/);
     expect(screen).toContain(`● ${uiText('ledger.availability.ready')} ${uiText('ledger.action.register-local')}`);
     expect(screen).not.toMatch(/\[available\]|\[Unavailable\]|disabled:/);
@@ -248,6 +240,7 @@ describe('/codex-marketplace Bridge Ledger command seam', () => {
 
     expect(notifications).toHaveLength(1);
     expect(notifications[0]).toContain('Global Scope');
-    expect(notifications[0]).toContain('Project Scope');
+    // Global-only (#61): the project document is never read nor surfaced.
+    expect(notifications[0]).not.toContain('Project Scope');
   });
 });

@@ -17,7 +17,6 @@ function makeEnv() {
   return {
     root,
     agentDir: join(root, 'agent'),
-    projectDir: join(root, 'project'),
     marketV1: join(root, 'market-v1'),
     marketV2: join(root, 'market-v2'),
     marketBroken: join(root, 'market-broken'),
@@ -49,16 +48,16 @@ function writeMarketplace(root: string, opts: { name?: string; extraSkill?: bool
 describe('Registration Rebind — new source under the preserved Registration ID', () => {
   let env: ReturnType<typeof makeEnv>;
   let registrationId: string;
-  let opts: { agentDir: string; cwd: string };
+  let opts: { agentDir: string };
 
   beforeEach(async () => {
     env = makeEnv();
     writeMarketplace(env.marketV1);
     writeMarketplace(env.marketV2, { extraSkill: true });
     mkdirSync(env.marketBroken, { recursive: true }); // no catalog
-    opts = { agentDir: env.agentDir, cwd: env.projectDir };
+    opts = { agentDir: env.agentDir };
 
-    const preflight = await preflightLocalRegistration('global', env.marketV1, opts);
+    const preflight = await preflightLocalRegistration(env.marketV1, opts);
     expect(preflight.ok).toBe(true);
     if (!preflight.ok) throw new Error('seed preflight failed');
     const confirmed = await confirmLocalRegistration(preflight.preflight, true, opts);
@@ -67,7 +66,7 @@ describe('Registration Rebind — new source under the preserved Registration ID
     registrationId = confirmed.registration.id;
 
     // One enabled installation whose activation consent belongs to the OLD source.
-    const installPf = await preflightPluginInstallation('global', registrationId, '/plugins/0', opts);
+    const installPf = await preflightPluginInstallation(registrationId, '/plugins/0', opts);
     expect(installPf.ok).toBe(true);
     if (!installPf.ok) throw new Error('install preflight failed');
     const installed = await confirmPluginInstallation(installPf.preflight, 'enabled', true, opts);
@@ -77,10 +76,10 @@ describe('Registration Rebind — new source under the preserved Registration ID
   afterEach(() => rmSync(env.root, { recursive: true, force: true }));
 
   it('preserves the Registration ID while replacing locator and snapshot after fresh validation and consents', async () => {
-    const before = await readBridgeState('global', opts);
+    const before = await readBridgeState(opts);
     const installationBefore = before.state!.installations[0];
 
-    const pf = await preflightRebind('global', registrationId, { kind: 'local', rootPath: env.marketV2 }, opts);
+    const pf = await preflightRebind(registrationId, { kind: 'local', rootPath: env.marketV2 }, opts);
     expect(pf.ok).toBe(true);
     if (!pf.ok) throw new Error(`rebind preflight failed: ${pf.outcome.findings.map((f) => f.outcome).join('; ')}`);
 
@@ -108,7 +107,7 @@ describe('Registration Rebind — new source under the preserved Registration ID
     expect(outcome.status).toBe('completed');
     if (outcome.status !== 'completed') return;
 
-    const after = await readBridgeState('global', opts);
+    const after = await readBridgeState(opts);
     const rebinded = after.state!.registrations.find((r) => r.id === registrationId)!;
     expect(rebinded).toBeDefined(); // Registration ID preserved across the rebind
     expect(rebinded.source).toBe(realpathSync.native(env.marketV2));
@@ -122,7 +121,7 @@ describe('Registration Rebind — new source under the preserved Registration ID
   });
 
   it('blocks when the replacement source cannot be validated (no Marketplace Catalog)', async () => {
-    const pf = await preflightRebind('global', registrationId, { kind: 'local', rootPath: env.marketBroken }, opts);
+    const pf = await preflightRebind(registrationId, { kind: 'local', rootPath: env.marketBroken }, opts);
     expect(pf.ok).toBe(false);
     if (pf.ok) return;
     expect(pf.outcome.status).toBe('blocked');
@@ -130,19 +129,19 @@ describe('Registration Rebind — new source under the preserved Registration ID
     expect(pf.outcome.findings.some((f) => f.code === 'CATALOG_MISSING')).toBe(true);
 
     // Bridge State untouched by the failed rebind attempt.
-    const after = await readBridgeState('global', opts);
+    const after = await readBridgeState(opts);
     expect(after.state!.registrations[0].source).toBe(realpathSync.native(env.marketV1));
   });
 
-  it('blocks as duplicate when the replacement Source Key equals another Registration in the same scope', async () => {
+  it('blocks as duplicate when the replacement Source Key equals another Registration', async () => {
     // Register market-v2 as its own registration first.
-    const dupPreflight = await preflightLocalRegistration('global', env.marketV2, opts);
+    const dupPreflight = await preflightLocalRegistration(env.marketV2, opts);
     expect(dupPreflight.ok).toBe(true);
     if (!dupPreflight.ok) return;
     const dupConfirm = await confirmLocalRegistration(dupPreflight.preflight, true, opts);
     expect(dupConfirm.status).toBe('completed');
 
-    const pf = await preflightRebind('global', registrationId, { kind: 'local', rootPath: env.marketV2 }, opts);
+    const pf = await preflightRebind(registrationId, { kind: 'local', rootPath: env.marketV2 }, opts);
     expect(pf.ok).toBe(false);
     if (pf.ok) return;
     expect(pf.outcome.status).toBe('blocked');

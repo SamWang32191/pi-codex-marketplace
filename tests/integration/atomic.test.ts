@@ -139,12 +139,10 @@ const MKFIFO_PATH = process.platform === 'win32'
 describe('Atomic store — cross-process concurrency and durability', () => {
   let tmpRoot: string;
   let agentDir: string;
-  let projectDir: string;
 
   beforeEach(() => {
     tmpRoot = mkdtempSync(join(tmpdir(), 'bridge-atomic-'));
     agentDir = join(tmpRoot, 'agent');
-    projectDir = join(tmpRoot, 'project');
   });
 
   afterEach(() => {
@@ -154,18 +152,16 @@ describe('Atomic store — cross-process concurrency and durability', () => {
   });
 
   it('concurrent commits do not corrupt file (file lock protects RMW)', async () => {
-    // Fire 10 concurrent commits to same scope
+    // Fire 10 concurrent commits to the single Global document
     const promises = Array.from({ length: 10 }, (_, i) =>
-      commitBridgeState(
-        'global',
-        (cur) => ({
+      commitBridgeState((cur) => ({
           ...cur,
           registrations: [
             ...cur.registrations,
             { id: `id-${i}-${Date.now()}`, alias: `mp-${i}` },
           ],
         }),
-        { agentDir, cwd: projectDir },
+        { agentDir },
       ),
     );
 
@@ -176,7 +172,7 @@ describe('Atomic store — cross-process concurrency and durability', () => {
     // At least some succeed; due to RMW under lock, all 10 should succeed sequentially
     expect(successes.length).toBe(10);
 
-    const final = await readBridgeState('global', { agentDir, cwd: projectDir });
+    const final = await readBridgeState({ agentDir });
     expect(final.status).toBe('ok');
     expect(final.state!.stateRevision).toBe('10');
     // All registrations should be present (no lost writes beyond last)
@@ -459,7 +455,7 @@ describe('Atomic store — cross-process concurrency and durability', () => {
 
   it('corrupted file after concurrent writer still classified as Indeterminate, not silently fixed', async () => {
     // First, create a valid file
-    await commitBridgeState('global', (c) => ({ ...c }), { agentDir, cwd: projectDir });
+    await commitBridgeState((c) => ({ ...c }), { agentDir });
     const path = getGlobalStatePath(agentDir);
     expect(existsSync(path)).toBe(true);
 
@@ -469,11 +465,11 @@ describe('Atomic store — cross-process concurrency and durability', () => {
     // ensure dir
     writeFileSync(path, '<<<corrupted>>>', 'utf-8');
 
-    const after = await readBridgeState('global', { agentDir, cwd: projectDir });
+    const after = await readBridgeState({ agentDir });
     expect(after.status).toBe('corrupted');
 
     // Another concurrent commit attempt should not overwrite corrupted file silently
-    const attempt = await commitBridgeState('global', (c) => ({ ...c }), { agentDir, cwd: projectDir });
+    const attempt = await commitBridgeState((c) => ({ ...c }), { agentDir });
     expect(attempt.success).toBe(false);
     const stillCorrupted = readFileSync(path, 'utf-8');
     expect(stillCorrupted).toBe('<<<corrupted>>>');

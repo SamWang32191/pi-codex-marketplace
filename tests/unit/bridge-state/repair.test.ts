@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { createRepairStateExpectation, repairBridgeState } from '../../../src/bridge-state/repair.js';
-import { getReceiptsJournalPath, getStatePath } from '../../../src/bridge-state/paths.js';
+import { getGlobalStatePath, getReceiptsJournalPath } from '../../../src/bridge-state/paths.js';
 import { commitBridgeState, readBridgeState } from '../../../src/bridge-state/store.js';
 import { appendReceipt, pruneReceiptJournal, readReceiptJournal } from '../../../src/journal/journal.js';
 import { acquireAttemptFence } from '../../../src/registration/fence.js';
@@ -17,12 +17,10 @@ const PENDING_RECEIPT = 'rcpt_30000000-0000-4000-8000-000000000003';
 describe('Repair State', () => {
   let tmpRoot: string;
   let agentDir: string;
-  let projectDir: string;
 
   beforeEach(() => {
     tmpRoot = mkdtempSync(join(tmpdir(), 'repair-test-'));
     agentDir = join(tmpRoot, 'agent');
-    projectDir = join(tmpRoot, 'project');
   });
 
   afterEach(() => {
@@ -32,43 +30,42 @@ describe('Repair State', () => {
   });
 
   it('fails with Persistence Indeterminate receipt when state file remains corrupted', async () => {
-    const statePath = getStatePath('global', { agentDir, cwd: projectDir });
+    const statePath = getGlobalStatePath(agentDir);
     mkdirSync(join(agentDir, 'codex-marketplace'), { recursive: true });
     writeFileSync(statePath, '{ corrupted json', 'utf-8');
 
-    const res = await repairBridgeState('global', { agentDir, cwd: projectDir });
+    const res = await repairBridgeState({ agentDir });
     expect(res.success).toBe(false);
     expect(res.receipt.summary).toBe('Persistence Indeterminate');
     expect(res.receipt.kind).toBe('State Repair');
 
-    const journal = await readReceiptJournal('global', { agentDir, cwd: projectDir });
+    const journal = await readReceiptJournal({ agentDir });
     expect(journal.receipts).toHaveLength(1);
     expect(journal.receipts[0].summary).toBe('Persistence Indeterminate');
   });
 
   it('keeps an unreadable-state Repair attempt in its existing recovery chain', async () => {
-    const opts = { agentDir, cwd: projectDir };
+    const opts = { agentDir };
     const indeterminate = createReceipt({
       id: INDETERMINATE_RECEIPT,
       operation: 'Marketplace Registration',
-      scope: 'global',
       trigger: 'register',
       expectedStateRevision: '0',
       durableOutcome: 'indeterminate',
       summary: 'Persistence Indeterminate',
     });
-    await appendReceipt('global', indeterminate, opts);
-    const statePath = getStatePath('global', opts);
+    await appendReceipt(indeterminate, opts);
+    const statePath = getGlobalStatePath(opts.agentDir);
     mkdirSync(join(agentDir, 'codex-marketplace'), { recursive: true });
     writeFileSync(statePath, '{ corrupted json', 'utf-8');
 
-    const repaired = await repairBridgeState('global', opts);
+    const repaired = await repairBridgeState(opts);
 
     expect(repaired.receipt).toEqual(expect.objectContaining({
       summary: 'Persistence Indeterminate',
       recoversReceiptId: indeterminate.id,
     }));
-    const journal = await readReceiptJournal('global', opts);
+    const journal = await readReceiptJournal(opts);
     expect(journal.activeChains).toHaveLength(1);
     expect(journal.activeChains[0]?.rootReceiptId).toBe(indeterminate.id);
     expect(journal.activeChains[0]?.receipts.map((receipt) => receipt.id)).toEqual([
@@ -82,16 +79,15 @@ describe('Repair State', () => {
     const indetRcpt = createReceipt({
       id: INDETERMINATE_RECEIPT,
       operation: 'Marketplace Registration',
-      scope: 'global',
       trigger: 'register',
       expectedStateRevision: '0',
       durableOutcome: 'indeterminate',
       summary: 'Persistence Indeterminate',
     });
-    await appendReceipt('global', indetRcpt, { agentDir, cwd: projectDir });
+    await appendReceipt(indetRcpt, { agentDir });
 
     // 2. State file is valid
-    const statePath = getStatePath('global', { agentDir, cwd: projectDir });
+    const statePath = getGlobalStatePath(agentDir);
     mkdirSync(join(agentDir, 'codex-marketplace'), { recursive: true });
     writeFileSync(
       statePath,
@@ -106,32 +102,31 @@ describe('Repair State', () => {
     );
 
     // 3. Run Repair State
-    const res = await repairBridgeState('global', { agentDir, cwd: projectDir });
+    const res = await repairBridgeState({ agentDir });
     expect(res.success).toBe(true);
     expect(res.receipt.summary).toBe('Completed');
     expect(res.receipt.recoversReceiptId).toBe(INDETERMINATE_RECEIPT);
 
-    const journal = await readReceiptJournal('global', { agentDir, cwd: projectDir });
+    const journal = await readReceiptJournal({ agentDir });
     expect(journal.activeChains).toHaveLength(0);
   });
 
   it('atomically removes corrupted journal lines after state verification', async () => {
-    const opts = { agentDir, cwd: projectDir };
+    const opts = { agentDir };
     const valid = createReceipt({
       id: VALID_RECEIPT,
       operation: 'Inspect',
-      scope: 'global',
       trigger: 'inspect',
       expectedStateRevision: '0',
       summary: 'Completed',
     });
-    await appendReceipt('global', valid, opts);
-    appendFileSync(getReceiptsJournalPath('global', opts), '{ malformed journal line\n', 'utf-8');
+    await appendReceipt(valid, opts);
+    appendFileSync(getReceiptsJournalPath(opts.agentDir), '{ malformed journal line\n', 'utf-8');
 
-    const repaired = await repairBridgeState('global', opts);
+    const repaired = await repairBridgeState(opts);
 
     expect(repaired.success).toBe(true);
-    const journal = await readReceiptJournal('global', opts);
+    const journal = await readReceiptJournal(opts);
     expect(journal.isDegraded).toBe(false);
     expect(journal.receipts.some((receipt) => receipt.id === valid.id)).toBe(true);
     expect(journal.receipts.at(-1)).toEqual(expect.objectContaining({
@@ -144,35 +139,33 @@ describe('Repair State', () => {
   });
 
   it('preserves active recovery chains while repairing corrupted journal lines', async () => {
-    const opts = { agentDir, cwd: projectDir };
+    const opts = { agentDir };
     const pending = createReceipt({
       id: PENDING_RECEIPT,
       operation: 'Runtime Application',
-      scope: 'global',
       trigger: 'reload',
       expectedStateRevision: '0',
       runtimeOutcome: 'pending-application',
       summary: 'Pending Application',
     });
-    await appendReceipt('global', pending, opts);
-    appendFileSync(getReceiptsJournalPath('global', opts), '{ malformed journal line\n', 'utf-8');
+    await appendReceipt(pending, opts);
+    appendFileSync(getReceiptsJournalPath(opts.agentDir), '{ malformed journal line\n', 'utf-8');
 
-    const repaired = await repairBridgeState('global', opts);
+    const repaired = await repairBridgeState(opts);
 
     expect(repaired.success).toBe(true);
-    const journal = await readReceiptJournal('global', opts);
+    const journal = await readReceiptJournal(opts);
     expect(journal.isDegraded).toBe(false);
     expect(journal.activeChains).toHaveLength(1);
     expect(journal.activeChains[0]?.rootReceiptId).toBe(pending.id);
   });
 
   it('fingerprints exact raw Journal bytes even when parsed receipt counts stay equal', async () => {
-    const opts = { agentDir, cwd: projectDir };
-    expect((await readReceiptJournal('global', opts)).revision).toBe('missing');
+    const opts = { agentDir };
+    expect((await readReceiptJournal(opts)).revision).toBe('missing');
     const first = createReceipt({
       id: VALID_RECEIPT,
       operation: 'First observation',
-      scope: 'global',
       trigger: 'first',
       expectedStateRevision: '0',
       summary: 'Completed',
@@ -182,10 +175,10 @@ describe('Repair State', () => {
       operation: 'Second observation',
       trigger: 'second',
     });
-    await appendReceipt('global', first, opts);
-    const firstRead = await readReceiptJournal('global', opts);
-    writeFileSync(getReceiptsJournalPath('global', opts), `${JSON.stringify(second)}\n`, 'utf-8');
-    const secondRead = await readReceiptJournal('global', opts);
+    await appendReceipt(first, opts);
+    const firstRead = await readReceiptJournal(opts);
+    writeFileSync(getReceiptsJournalPath(opts.agentDir), `${JSON.stringify(second)}\n`, 'utf-8');
+    const secondRead = await readReceiptJournal(opts);
 
     expect(firstRead.receipts).toHaveLength(1);
     expect(secondRead.receipts).toHaveLength(1);
@@ -195,7 +188,7 @@ describe('Repair State', () => {
   });
 
   it('treats the read-error Journal sentinel as unreadable even without a duplicated error field', async () => {
-    const state = await readBridgeState('global', { agentDir, cwd: projectDir });
+    const state = await readBridgeState({ agentDir });
     const expectation = createRepairStateExpectation(state, {
       revision: 'read-error',
       receipts: [],
@@ -210,12 +203,12 @@ describe('Repair State', () => {
   });
 
   it('rejects a changed State observation without performing State Repair', async () => {
-    const opts = { agentDir, cwd: projectDir };
-    const initialState = await readBridgeState('global', opts);
-    const initialJournal = await readReceiptJournal('global', opts);
-    await commitBridgeState('global', (state) => ({ ...state }), opts);
+    const opts = { agentDir };
+    const initialState = await readBridgeState(opts);
+    const initialJournal = await readReceiptJournal(opts);
+    await commitBridgeState((state) => ({ ...state }), opts);
 
-    const repaired = await repairBridgeState('global', {
+    const repaired = await repairBridgeState({
       ...opts,
       expected: {
         stateStatus: initialState.status,
@@ -231,24 +224,23 @@ describe('Repair State', () => {
       observedStateRevision: '1',
       summary: 'Rejected as Stale',
     }));
-    expect((await readBridgeState('global', opts)).state?.stateRevision).toBe('1');
+    expect((await readBridgeState(opts)).state?.stateRevision).toBe('1');
   });
 
   it('checks the exact Journal revision under the Journal lock before pruning', async () => {
-    const opts = { agentDir, cwd: projectDir };
+    const opts = { agentDir };
     const valid = createReceipt({
       id: VALID_RECEIPT,
       operation: 'Inspect',
-      scope: 'global',
       trigger: 'inspect',
       expectedStateRevision: '0',
       summary: 'Completed',
     });
-    await appendReceipt('global', valid, opts);
-    const journalPath = getReceiptsJournalPath('global', opts);
+    await appendReceipt(valid, opts);
+    const journalPath = getReceiptsJournalPath(opts.agentDir);
     appendFileSync(journalPath, '{ malformed journal line\n', 'utf-8');
-    const initialState = await readBridgeState('global', opts);
-    const initialJournal = await readReceiptJournal('global', opts);
+    const initialState = await readBridgeState(opts);
+    const initialJournal = await readReceiptJournal(opts);
 
     const drifted = readFileSync(journalPath, 'utf-8').replace(
       '{ malformed journal line',
@@ -256,7 +248,7 @@ describe('Repair State', () => {
     );
     writeFileSync(journalPath, drifted, 'utf-8');
 
-    const repaired = await repairBridgeState('global', {
+    const repaired = await repairBridgeState({
       ...opts,
       expected: {
         stateStatus: initialState.status,
@@ -268,18 +260,17 @@ describe('Repair State', () => {
 
     expect(repaired.success).toBe(false);
     expect(repaired.receipt.summary).toBe('Rejected as Stale');
-    const journal = await readReceiptJournal('global', opts);
+    const journal = await readReceiptJournal(opts);
     expect(journal.isDegraded).toBe(true);
     expect(journal.corruptedLineCount).toBe(1);
     expect(journal.receipts.some((receipt) => receipt.id === valid.id)).toBe(true);
   });
 
   it('rechecks exact Journal bytes after the pre-rewrite hook and refuses to overwrite a bypassing writer', async () => {
-    const opts = { agentDir, cwd: projectDir };
+    const opts = { agentDir };
     const valid = createReceipt({
       id: VALID_RECEIPT,
       operation: 'Inspect',
-      scope: 'global',
       trigger: 'inspect',
       expectedStateRevision: '0',
       summary: 'Completed',
@@ -287,18 +278,17 @@ describe('Repair State', () => {
     const bypassingWriter = createReceipt({
       id: 'rcpt_30000000-0000-4000-8000-000000000006',
       operation: 'Pre-rewrite Bypass',
-      scope: 'global',
       trigger: 'bypass journal lock before rewrite',
       expectedStateRevision: '0',
       summary: 'Completed',
     });
-    const journalPath = getReceiptsJournalPath('global', opts);
-    await appendReceipt('global', valid, opts);
+    const journalPath = getReceiptsJournalPath(opts.agentDir);
+    await appendReceipt(valid, opts);
     appendFileSync(journalPath, '{ malformed journal line\n', 'utf-8');
-    const initialState = await readBridgeState('global', opts);
-    const initialJournal = await readReceiptJournal('global', opts);
+    const initialState = await readBridgeState(opts);
+    const initialJournal = await readReceiptJournal(opts);
 
-    const repaired = await repairBridgeState('global', {
+    const repaired = await repairBridgeState({
       ...opts,
       expected: {
         stateStatus: initialState.status,
@@ -315,7 +305,7 @@ describe('Repair State', () => {
 
     expect(repaired.status).toBe('rejected-as-stale');
     expect(repaired.journalRepaired).not.toBe(true);
-    const journal = await readReceiptJournal('global', opts);
+    const journal = await readReceiptJournal(opts);
     expect(journal.isDegraded).toBe(true);
     expect(journal.receipts.map((receipt) => receipt.id)).toEqual([
       valid.id,
@@ -325,11 +315,10 @@ describe('Repair State', () => {
   });
 
   it('classifies healthy Journal drift before Repair Receipt append without claiming a prune', async () => {
-    const opts = { agentDir, cwd: projectDir };
+    const opts = { agentDir };
     const valid = createReceipt({
       id: VALID_RECEIPT,
       operation: 'Inspect',
-      scope: 'global',
       trigger: 'inspect',
       expectedStateRevision: '0',
       summary: 'Completed',
@@ -337,17 +326,16 @@ describe('Repair State', () => {
     const bypassingWriter = createReceipt({
       id: 'rcpt_30000000-0000-4000-8000-000000000007',
       operation: 'Pre-append Bypass',
-      scope: 'global',
       trigger: 'bypass journal lock before append',
       expectedStateRevision: '0',
       summary: 'Completed',
     });
-    const journalPath = getReceiptsJournalPath('global', opts);
-    await appendReceipt('global', valid, opts);
-    const initialState = await readBridgeState('global', opts);
-    const initialJournal = await readReceiptJournal('global', opts);
+    const journalPath = getReceiptsJournalPath(opts.agentDir);
+    await appendReceipt(valid, opts);
+    const initialState = await readBridgeState(opts);
+    const initialJournal = await readReceiptJournal(opts);
 
-    const repaired = await repairBridgeState('global', {
+    const repaired = await repairBridgeState({
       ...opts,
       expected: {
         stateStatus: initialState.status,
@@ -364,7 +352,7 @@ describe('Repair State', () => {
 
     expect(repaired.status).toBe('rejected-as-stale');
     expect(repaired.journalRepaired).not.toBe(true);
-    expect((await readReceiptJournal('global', opts)).receipts.map((receipt) => receipt.id)).toEqual([
+    expect((await readReceiptJournal(opts)).receipts.map((receipt) => receipt.id)).toEqual([
       valid.id,
       bypassingWriter.id,
       repaired.receipt.id,
@@ -372,11 +360,10 @@ describe('Repair State', () => {
   });
 
   it('preserves a concurrent append started after prune and before the bound success Receipt', async () => {
-    const opts = { agentDir, cwd: projectDir };
+    const opts = { agentDir };
     const valid = createReceipt({
       id: VALID_RECEIPT,
       operation: 'Inspect',
-      scope: 'global',
       trigger: 'inspect',
       expectedStateRevision: '0',
       summary: 'Completed',
@@ -384,18 +371,17 @@ describe('Repair State', () => {
     const concurrent = createReceipt({
       id: 'rcpt_30000000-0000-4000-8000-000000000004',
       operation: 'Concurrent Inspection',
-      scope: 'global',
       trigger: 'concurrent inspect',
       expectedStateRevision: '0',
       summary: 'Completed',
     });
-    await appendReceipt('global', valid, opts);
-    appendFileSync(getReceiptsJournalPath('global', opts), '{ malformed journal line\n', 'utf-8');
-    const initialState = await readBridgeState('global', opts);
-    const initialJournal = await readReceiptJournal('global', opts);
+    await appendReceipt(valid, opts);
+    appendFileSync(getReceiptsJournalPath(opts.agentDir), '{ malformed journal line\n', 'utf-8');
+    const initialState = await readBridgeState(opts);
+    const initialJournal = await readReceiptJournal(opts);
     let concurrentAppend: ReturnType<typeof appendReceipt> | undefined;
 
-    const repaired = await repairBridgeState('global', {
+    const repaired = await repairBridgeState({
       ...opts,
       expected: {
         stateStatus: initialState.status,
@@ -407,7 +393,7 @@ describe('Repair State', () => {
         afterPruneRewrite: () => {
           // This append must wait for Repair's journal lock instead of slipping between
           // reconstruction and its revision-bound success Receipt.
-          concurrentAppend = appendReceipt('global', concurrent, opts);
+          concurrentAppend = appendReceipt(concurrent, opts);
         },
       },
     });
@@ -415,7 +401,7 @@ describe('Repair State', () => {
 
     expect(repaired.success).toBe(true);
     expect(repaired.receipt.summary).toBe('Completed with diagnostics');
-    const journal = await readReceiptJournal('global', opts);
+    const journal = await readReceiptJournal(opts);
     expect(journal.isDegraded).toBe(false);
     expect(journal.receipts.map((receipt) => receipt.id)).toEqual([
       valid.id,
@@ -425,15 +411,15 @@ describe('Repair State', () => {
   });
 
   it('keeps the observed State Revision locked until the bound Repair Receipt is durable', async () => {
-    const opts = { agentDir, cwd: projectDir };
+    const opts = { agentDir };
     let directCommit: ReturnType<typeof commitBridgeState> | undefined;
     let writerSettled = false;
 
-    const repaired = await repairBridgeState('global', {
+    const repaired = await repairBridgeState({
       ...opts,
       testHooks: {
         beforeRepairReceiptAppend: async () => {
-          directCommit = commitBridgeState('global', (current) => ({ ...current }), opts);
+          directCommit = commitBridgeState((current) => ({ ...current }), opts);
           void directCommit.then(
             () => { writerSettled = true; },
             () => { writerSettled = true; },
@@ -454,21 +440,21 @@ describe('Repair State', () => {
       observedStateRevision: '0',
     }));
     expect(await directCommit).toEqual(expect.objectContaining({ success: true, newRevision: '1' }));
-    expect((await readBridgeState('global', opts)).state?.stateRevision).toBe('1');
+    expect((await readBridgeState(opts)).state?.stateRevision).toBe('1');
 
-    const journal = await readReceiptJournal('global', opts);
+    const journal = await readReceiptJournal(opts);
     expect(journal.receipts.map((receipt) => receipt.id)).toContain(repaired.receipt.id);
   });
 
   it('reports when an indeterminate Repair Receipt could not be persisted', async () => {
-    const opts = { agentDir, cwd: projectDir };
-    const statePath = getStatePath('global', opts);
+    const opts = { agentDir };
+    const statePath = getGlobalStatePath(opts.agentDir);
     mkdirSync(join(agentDir, 'codex-marketplace'), { recursive: true });
     writeFileSync(statePath, '{ corrupted json', 'utf-8');
     let releaseRewrite!: () => void;
     let signalLocked!: () => void;
     const locked = new Promise<void>((resolve) => { signalLocked = resolve; });
-    const pruning = pruneReceiptJournal('global', 100, {
+    const pruning = pruneReceiptJournal(100, {
       ...opts,
       testHooks: {
         beforePruneRewrite: () => {
@@ -481,7 +467,7 @@ describe('Repair State', () => {
 
     let repaired: Awaited<ReturnType<typeof repairBridgeState>>;
     try {
-      repaired = await repairBridgeState('global', {
+      repaired = await repairBridgeState({
         ...opts,
         journalLockTimeoutMs: 20,
       });
@@ -497,21 +483,20 @@ describe('Repair State', () => {
       expect.objectContaining({ code: 'RECEIPT_PERSISTENCE_FAILED' }),
     ]));
     expect(Object.isFrozen(repaired.receipt)).toBe(true);
-    expect((await readReceiptJournal('global', opts)).receipts).toEqual([]);
+    expect((await readReceiptJournal(opts)).receipts).toEqual([]);
   });
 
   it('propagates a Receipt fsync failure instead of reporting append success', async () => {
-    const opts = { agentDir, cwd: projectDir };
+    const opts = { agentDir };
     const receipt = createReceipt({
       id: VALID_RECEIPT,
       operation: 'Injected fsync failure',
-      scope: 'global',
       trigger: 'fsync injection',
       expectedStateRevision: '0',
       summary: 'Completed',
     });
 
-    const appended = await appendReceipt('global', receipt, {
+    const appended = await appendReceipt(receipt, {
       ...opts,
       testHooks: {
         beforeReceiptFsync: () => { throw new Error('injected receipt fsync failure'); },
@@ -525,10 +510,10 @@ describe('Repair State', () => {
   });
 
   it('requires a readable post-append Journal containing the bound Repair Receipt', async () => {
-    const opts = { agentDir, cwd: projectDir };
-    const journalPath = getReceiptsJournalPath('global', opts);
+    const opts = { agentDir };
+    const journalPath = getReceiptsJournalPath(opts.agentDir);
 
-    const repaired = await repairBridgeState('global', {
+    const repaired = await repairBridgeState({
       ...opts,
       testHooks: {
         afterRepairReceiptAppend: () => {
@@ -543,17 +528,16 @@ describe('Repair State', () => {
       receiptPersisted: true,
       error: expect.stringContaining('could not be verified'),
     }));
-    const journal = await readReceiptJournal('global', opts);
+    const journal = await readReceiptJournal(opts);
     expect(journal.receipts.map((receipt) => receipt.id)).toEqual([repaired.receipt.id]);
     expect(repaired.receipt.summary).toBe('Persistence Indeterminate');
   });
 
   it('reports post-prune drift as a partial Journal repair rather than a no-mutation stale rejection', async () => {
-    const opts = { agentDir, cwd: projectDir };
+    const opts = { agentDir };
     const valid = createReceipt({
       id: VALID_RECEIPT,
       operation: 'Inspect',
-      scope: 'global',
       trigger: 'inspect',
       expectedStateRevision: '0',
       summary: 'Completed',
@@ -561,18 +545,17 @@ describe('Repair State', () => {
     const bypassingWriter = createReceipt({
       id: 'rcpt_30000000-0000-4000-8000-000000000005',
       operation: 'Bypassing Writer',
-      scope: 'global',
       trigger: 'bypass journal lock',
       expectedStateRevision: '0',
       summary: 'Completed',
     });
-    const journalPath = getReceiptsJournalPath('global', opts);
-    await appendReceipt('global', valid, opts);
+    const journalPath = getReceiptsJournalPath(opts.agentDir);
+    await appendReceipt(valid, opts);
     appendFileSync(journalPath, '{ malformed journal line\n', 'utf-8');
-    const initialState = await readBridgeState('global', opts);
-    const initialJournal = await readReceiptJournal('global', opts);
+    const initialState = await readBridgeState(opts);
+    const initialJournal = await readReceiptJournal(opts);
 
-    const repaired = await repairBridgeState('global', {
+    const repaired = await repairBridgeState({
       ...opts,
       expected: {
         stateStatus: initialState.status,
@@ -597,7 +580,7 @@ describe('Repair State', () => {
     expect(repaired.receipt.summary).toBe('Persistence Indeterminate');
     expect(repaired.receipt.findings[0]?.classification).toBe('blocking');
     expect(repaired.receipt.findings[0]?.outcome).toContain('reconstruction completed');
-    const journal = await readReceiptJournal('global', opts);
+    const journal = await readReceiptJournal(opts);
     expect(journal.isDegraded).toBe(false);
     expect(journal.receipts.map((receipt) => receipt.id)).toEqual([
       valid.id,
@@ -607,13 +590,13 @@ describe('Repair State', () => {
   });
 
   it('reports a non-durable fence-blocked Receipt as Journal persistence failure', async () => {
-    const opts = { agentDir, cwd: projectDir };
-    const heldFence = await acquireAttemptFence('global', opts);
+    const opts = { agentDir };
+    const heldFence = await acquireAttemptFence({ agentDir: opts.agentDir });
     expect(heldFence.ok).toBe(true);
     let releaseRewrite!: () => void;
     let signalLocked!: () => void;
     const locked = new Promise<void>((resolve) => { signalLocked = resolve; });
-    const pruning = pruneReceiptJournal('global', 100, {
+    const pruning = pruneReceiptJournal(100, {
       ...opts,
       testHooks: {
         beforePruneRewrite: () => {
@@ -626,7 +609,7 @@ describe('Repair State', () => {
 
     let repaired: Awaited<ReturnType<typeof repairBridgeState>>;
     try {
-      repaired = await repairBridgeState('global', {
+      repaired = await repairBridgeState({
         ...opts,
         fenceTimeoutMs: 20,
         journalLockTimeoutMs: 20,
@@ -650,11 +633,11 @@ describe('Repair State', () => {
   });
 
   it('reports a non-durable catch fallback Receipt as Journal persistence failure', async () => {
-    const opts = { agentDir, cwd: projectDir };
+    const opts = { agentDir };
     let releaseRewrite!: () => void;
     let signalLocked!: () => void;
     const locked = new Promise<void>((resolve) => { signalLocked = resolve; });
-    const pruning = pruneReceiptJournal('global', 100, {
+    const pruning = pruneReceiptJournal(100, {
       ...opts,
       testHooks: {
         beforePruneRewrite: () => {
@@ -667,7 +650,7 @@ describe('Repair State', () => {
 
     let repaired: Awaited<ReturnType<typeof repairBridgeState>>;
     try {
-      repaired = await repairBridgeState('global', {
+      repaired = await repairBridgeState({
         ...opts,
         journalLockTimeoutMs: 20,
       });

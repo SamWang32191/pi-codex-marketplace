@@ -1,20 +1,21 @@
 /**
  * Bridge Ledger presentation model and Pi TUI component.
  *
- * The two ReadResults in BridgeLedgerSnapshot are the only Bridge State authority.
+ * The single ReadResult in BridgeLedgerSnapshot is the only Bridge State authority.
  * Effective State, action availability, labels, counts, journals, and rendering are
  * derived presentation data and are never persisted by this module.
+ *
+ * Global-only (#61): one authority rail, one document, one journal.
  */
 
 import type { Theme } from '@earendil-works/pi-coding-agent';
 import { Key, matchesKey, wrapTextWithAnsi, type Component, type TUI } from '@earendil-works/pi-tui';
 
-import { readBothStates } from '../../src/bridge-state/store.js';
+import { readBridgeState } from '../../src/bridge-state/store.js';
 import type {
   BridgeState,
   ReadResult,
   Registration,
-  Scope,
 } from '../../src/bridge-state/types.js';
 import type {
   CompatiblePlugin,
@@ -74,7 +75,6 @@ export type LedgerTargetKind =
 export interface LedgerActionIntent {
   actionId: LedgerActionId;
   mode: 'read' | 'mutation';
-  scope?: Scope;
   targetKind?: LedgerTargetKind;
   targetId?: string;
   /** Canonical parent Registration for a Marketplace Entry action. */
@@ -102,7 +102,6 @@ export interface LedgerObjectRow {
   id: string;
   label: string;
   detail?: string;
-  scope?: Scope;
   targetKind?: LedgerTargetKind;
   targetId?: string;
   actions: LedgerActionRow[];
@@ -118,7 +117,6 @@ export interface LedgerSection {
 export type LedgerHealth = 'healthy' | 'incompatible' | 'indeterminate';
 
 export interface LedgerAuthorityRail {
-  scope: Scope;
   label: string;
   revision: string;
   registrationCount: number;
@@ -126,20 +124,16 @@ export interface LedgerAuthorityRail {
   installationDisabledCount: number;
   health: LedgerHealth;
   healthText: string;
-  trustText: string;
 }
 
 export interface BridgeLedgerSnapshot {
   global: ReadResult;
-  project: ReadResult;
-  projectTrusted: boolean;
-  journals: Record<Scope, JournalReadResult>;
-  marketplaceEntries: Record<Scope, LedgerMarketplaceItem[]>;
+  journal: JournalReadResult;
+  marketplaceEntries: LedgerMarketplaceItem[];
   effective?: EffectiveState;
 }
 
 export interface LedgerMarketplaceEntry {
-  scope: Scope;
   registrationId: string;
   entryPointer: string;
   marketplaceEntryId: string;
@@ -152,7 +146,6 @@ export interface LedgerMarketplaceEntry {
 }
 
 export interface LedgerMarketplaceDiagnostic {
-  scope: Scope;
   registrationId: string;
   name: string;
   classification: 'unavailable';
@@ -162,61 +155,41 @@ export interface LedgerMarketplaceDiagnostic {
 export type LedgerMarketplaceItem = LedgerMarketplaceEntry | LedgerMarketplaceDiagnostic;
 
 export interface BridgeLedgerModel {
-  rails: Record<Scope, LedgerAuthorityRail>;
-  projectTrusted: boolean;
+  rail: LedgerAuthorityRail;
   effective: {
     registrationCount: number;
     installationCount: number;
-    suppressedCount: number;
-    excludedCount: number;
   };
   sections: LedgerSection[];
 }
 
 export interface LoadBridgeLedgerSnapshotOptions {
-  cwd: string;
   agentDir?: string;
-  projectTrusted: boolean;
   inspectMarketplaceEntries?: typeof inspectMarketplaceEntries;
 }
 
 export async function loadBridgeLedgerSnapshot(
-  options: LoadBridgeLedgerSnapshotOptions,
+  options: LoadBridgeLedgerSnapshotOptions = {},
 ): Promise<BridgeLedgerSnapshot> {
-  const io = { cwd: options.cwd, agentDir: options.agentDir };
-  const [states, globalJournal, projectJournal] = await Promise.all([
-    readBothStates(io),
-    readReceiptJournal('global', io),
-    readReceiptJournal('project', io),
+  const [state, journal] = await Promise.all([
+    readBridgeState({ agentDir: options.agentDir }),
+    readReceiptJournal({ agentDir: options.agentDir }),
   ]);
-  const globalReadable = readableState(states.global);
-  const projectReadable = readableState(states.project);
-  const effective = globalReadable && projectReadable
-    ? computeEffectiveState(globalReadable, projectReadable, {
-        projectTrusted: options.projectTrusted,
-      })
-    : undefined;
-  let marketplaceEntries: Record<Scope, LedgerMarketplaceItem[]> | undefined;
+  const readable = readableState(state);
+  const effective = readable ? computeEffectiveState(readable) : undefined;
+  let marketplaceEntries: LedgerMarketplaceItem[] | undefined;
 
   return {
-    ...states,
-    projectTrusted: options.projectTrusted,
-    journals: { global: globalJournal, project: projectJournal },
+    global: state,
+    journal,
+    // Lazy once per snapshot: Plugins-section rendering triggers the single inspection pass;
+    // a fresh reload rebuilds the snapshot and re-inspects.
     get marketplaceEntries() {
-      marketplaceEntries ??= {
-        global: inspectLedgerEntries(
-          'global',
-          globalReadable,
-          options.agentDir,
-          options.inspectMarketplaceEntries,
-        ),
-        project: inspectLedgerEntries(
-          'project',
-          projectReadable,
-          options.agentDir,
-          options.inspectMarketplaceEntries,
-        ),
-      };
+      marketplaceEntries ??= inspectLedgerEntries(
+        readable,
+        options.agentDir,
+        options.inspectMarketplaceEntries,
+      );
       return marketplaceEntries;
     },
     effective,
@@ -224,24 +197,21 @@ export async function loadBridgeLedgerSnapshot(
 }
 
 function inspectLedgerEntries(
-  scope: Scope,
   state: BridgeState | undefined,
   agentDir?: string,
   inspector = inspectMarketplaceEntries,
 ): LedgerMarketplaceItem[] {
   return (state?.registrations ?? []).flatMap((registration) => {
-    const inspection = inspector(registration, scope, { agentDir });
-    return mapMarketplaceInspectionToLedgerItems(scope, registration, inspection);
+    const inspection = inspector(registration, { agentDir });
+    return mapMarketplaceInspectionToLedgerItems(registration, inspection);
   });
 }
 
 export function mapMarketplaceInspectionToLedgerItems(
-  scope: Scope,
   registration: Registration,
   inspection: MarketplaceInspection,
 ): LedgerMarketplaceItem[] {
   const entries = inspection.entries.map((item: InspectedMarketplaceEntry): LedgerMarketplaceEntry => ({
-    scope,
     registrationId: registration.id,
     entryPointer: item.entry.entryId,
     marketplaceEntryId: inspection.marketplaceId
@@ -256,7 +226,6 @@ export function mapMarketplaceInspectionToLedgerItems(
   }));
   if (entries.length > 0) return entries;
   return [{
-    scope,
     registrationId: registration.id,
     name: registrationName(registration),
     classification: 'unavailable',
@@ -268,7 +237,7 @@ function readableState(result: ReadResult): BridgeState | undefined {
   return (result.status === 'ok' || result.status === 'missing') ? result.state : undefined;
 }
 
-function rail(scope: Scope, result: ReadResult, projectTrusted: boolean): LedgerAuthorityRail {
+function rail(result: ReadResult): LedgerAuthorityRail {
   const state = readableState(result);
   const health: LedgerHealth = result.status === 'incompatible'
     ? 'incompatible'
@@ -283,8 +252,7 @@ function rail(scope: Scope, result: ReadResult, projectTrusted: boolean): Ledger
       ? uiText('ledger.rail.health.incompatible', { error: result.error ?? uiText('common.unknown') })
       : uiText('ledger.rail.health.indeterminate', { error: result.error ?? uiText('common.unknown') });
   return {
-    scope,
-    label: scope === 'global' ? uiText('common.scope.global') : uiText('common.scope.project'),
+    label: uiText('common.scope.global'),
     revision: state?.stateRevision ?? uiText('ledger.revision.unavailable'),
     registrationCount: state?.registrations.length ?? 0,
     installationEnabledCount:
@@ -293,9 +261,6 @@ function rail(scope: Scope, result: ReadResult, projectTrusted: boolean): Ledger
       state?.installations.filter((item) => item.installationState === 'disabled').length ?? 0,
     health,
     healthText,
-    trustText: scope === 'global'
-      ? uiText('ledger.rail.trust.notApplicable')
-      : projectTrusted ? uiText('ledger.rail.trust.granted') : uiText('ledger.rail.trust.notGranted'),
   };
 }
 
@@ -303,16 +268,10 @@ function availability(
   intent: LedgerActionIntent,
   snapshot: BridgeLedgerSnapshot,
 ): Pick<LedgerActionRow, 'enabled' | 'disabledReason'> {
-  if (intent.mode !== 'mutation' || intent.scope === undefined) return { enabled: true };
-  if (intent.scope === 'project' && !snapshot.projectTrusted) {
-    return {
-      enabled: false,
-      disabledReason: uiText('ledger.disabledReason.trust'),
-    };
-  }
-  const authority = intent.scope === 'global' ? snapshot.global : snapshot.project;
+  if (intent.mode !== 'mutation') return { enabled: true };
+  const authority = snapshot.global;
   if (intent.actionId === 'retry-application') {
-    const chain = snapshot.journals[intent.scope].activeChains.find(
+    const chain = snapshot.journal.activeChains.find(
       (candidate) => candidate.rootReceiptId === intent.targetId,
     );
     if (!chain?.receipts[0]?.validationSnapshot) {
@@ -332,12 +291,12 @@ function availability(
         }),
       };
     }
-    if (snapshot.journals[intent.scope].isDegraded) return { enabled: true };
-    const repairable = snapshot.journals[intent.scope].activeChains.find(
+    if (snapshot.journal.isDegraded) return { enabled: true };
+    const repairable = snapshot.journal.activeChains.find(
       (chain) => chain.condition === 'persistence-indeterminate' || chain.condition === 'journal-degradation',
     );
     if (repairable) return { enabled: true };
-    const activeConditions = snapshot.journals[intent.scope].activeChains.map((chain) =>
+    const activeConditions = snapshot.journal.activeChains.map((chain) =>
       chain.condition === 'pending-application'
         ? uiText('ledger.condition.pending-application')
         : chain.condition === 'persistence-failed'
@@ -390,17 +349,12 @@ const ACTION_LABELS: Record<LedgerActionId, string> = {
 };
 
 function action(snapshot: BridgeLedgerSnapshot, intent: LedgerActionIntent): LedgerActionRow {
-  if (intent.mode === 'mutation' && intent.scope === undefined) {
-    throw new Error(`Mutation action ${intent.actionId} requires an explicit scope`);
-  }
-  const authority = intent.scope === undefined
-    ? undefined
-    : readableState(intent.scope === 'global' ? snapshot.global : snapshot.project);
+  const authority = intent.mode === 'mutation' ? readableState(snapshot.global) : undefined;
   const boundIntent: LedgerActionIntent = intent.mode === 'mutation' && authority
     ? { ...intent, stateRevision: authority.stateRevision }
     : intent;
   return {
-    id: [intent.actionId, intent.scope, intent.targetKind, intent.targetId]
+    id: [intent.actionId, intent.targetKind, intent.targetId]
       .filter((part): part is string => part !== undefined)
       .join(':'),
     label: ACTION_LABELS[intent.actionId],
@@ -413,46 +367,42 @@ function registrationName(registration: Registration): string {
   return registration.alias ?? registration.marketplaceName ?? registration.id;
 }
 
-function scopeRegistrationRows(
-  scope: Scope,
+function registrationRows(
   state: BridgeState | undefined,
   snapshot: BridgeLedgerSnapshot,
 ): LedgerObjectRow[] {
   const createRow: LedgerObjectRow = {
-    id: `registration-create:${scope}`,
+    id: 'registration-create',
     label: uiText('ledger.row.registrationActions', {
-      scopeWord: scope === 'global' ? uiText('common.scope.word.global') : uiText('common.scope.word.project'),
+      scopeWord: uiText('common.scope.word.global'),
     }),
-    scope,
     targetKind: 'scope',
-    targetId: scope,
+    targetId: 'global',
     actions: [
-      action(snapshot, { actionId: 'register-local', mode: 'mutation', scope, targetKind: 'scope', targetId: scope }),
-      action(snapshot, { actionId: 'register-git', mode: 'mutation', scope, targetKind: 'scope', targetId: scope }),
+      action(snapshot, { actionId: 'register-local', mode: 'mutation', targetKind: 'scope', targetId: 'global' }),
+      action(snapshot, { actionId: 'register-git', mode: 'mutation', targetKind: 'scope', targetId: 'global' }),
     ],
   };
   const records = (state?.registrations ?? []).map((registration): LedgerObjectRow => ({
-    id: `registration:${scope}:${registration.id}`,
+    id: `registration:${registration.id}`,
     label: registrationName(registration),
     detail: `${registration.sourceKind ?? uiText('ledger.row.registration.sourceUnknown')} · ${registration.source ?? uiText('ledger.row.registration.sourceUnavailable')}`,
-    scope,
     targetKind: 'registration',
     targetId: registration.id,
     actions: [
-      action(snapshot, { actionId: 'refresh-registration', mode: 'read', scope, targetKind: 'registration', targetId: registration.id }),
-      action(snapshot, { actionId: 'rebind-registration', mode: 'mutation', scope, targetKind: 'registration', targetId: registration.id }),
-      action(snapshot, { actionId: 'remove-registration', mode: 'mutation', scope, targetKind: 'registration', targetId: registration.id }),
+      action(snapshot, { actionId: 'refresh-registration', mode: 'read', targetKind: 'registration', targetId: registration.id }),
+      action(snapshot, { actionId: 'rebind-registration', mode: 'mutation', targetKind: 'registration', targetId: registration.id }),
+      action(snapshot, { actionId: 'remove-registration', mode: 'mutation', targetKind: 'registration', targetId: registration.id }),
     ],
   }));
   return [createRow, ...records];
 }
 
 function pluginRows(
-  scope: Scope,
   state: BridgeState | undefined,
   snapshot: BridgeLedgerSnapshot,
 ): LedgerObjectRow[] {
-  const installRows = snapshot.marketplaceEntries[scope].map((entry): LedgerObjectRow => {
+  const installRows = snapshot.marketplaceEntries.map((entry): LedgerObjectRow => {
     if (!('marketplaceEntryId' in entry)) {
       const findings = entry.findings.length > 0
         ? entry.findings.map((finding) =>
@@ -460,10 +410,9 @@ function pluginRows(
           ).join('; ')
         : uiText('ledger.row.diagnostic.noEntries');
       return {
-        id: `marketplace-diagnostic:${scope}:${entry.registrationId}`,
+        id: `marketplace-diagnostic:${entry.registrationId}`,
         label: entry.name,
         detail: uiText('ledger.row.diagnostic.unavailable', { findings }),
-        scope,
         targetKind: 'registration',
         targetId: entry.registrationId,
         actions: [],
@@ -499,7 +448,6 @@ function pluginRows(
       const candidate = action(snapshot, {
         actionId,
         mode: 'mutation',
-        scope,
         targetKind: 'marketplace-entry',
         targetId: entry.marketplaceEntryId,
         registrationId: entry.registrationId,
@@ -512,10 +460,9 @@ function pluginRows(
         : candidate;
     };
     return {
-      id: `marketplace-entry:${scope}:${entry.marketplaceEntryId}`,
+      id: `marketplace-entry:${entry.marketplaceEntryId}`,
       label: entry.name,
       detail: `${entry.classification} · ${entry.marketplaceEntryId} · ${skillDetail}`,
-      scope,
       targetKind: 'marketplace-entry',
       targetId: entry.marketplaceEntryId,
       actions: [
@@ -525,10 +472,9 @@ function pluginRows(
     };
   });
   const installationRows = (state?.installations ?? []).map((installation): LedgerObjectRow => ({
-    id: `installation:${scope}:${installation.id}`,
+    id: `installation:${installation.id}`,
     label: installation.manifestName ?? installation.pluginId,
     detail: `${installation.installationState} · ${installation.id}`,
-    scope,
     targetKind: 'installation',
     targetId: installation.id,
     actions: [
@@ -537,11 +483,10 @@ function pluginRows(
           ? 'disable-installation'
           : 'enable-installation',
         mode: 'mutation',
-        scope,
         targetKind: 'installation',
         targetId: installation.id,
       }),
-      action(snapshot, { actionId: 'remove-installation', mode: 'mutation', scope, targetKind: 'installation', targetId: installation.id }),
+      action(snapshot, { actionId: 'remove-installation', mode: 'mutation', targetKind: 'installation', targetId: installation.id }),
     ],
   }));
   return [...installRows, ...installationRows];
@@ -549,48 +494,42 @@ function pluginRows(
 
 function receiptRow(receipt: AttemptReceipt, snapshot: BridgeLedgerSnapshot): LedgerObjectRow {
   return {
-    id: `receipt:${receipt.scope}:${receipt.id}`,
+    id: `receipt:${receipt.id}`,
     label: `${attemptSummaryText(receipt.summary)} · ${receipt.operation}`,
     detail: `${receipt.createdAt} · ${receipt.id}`,
-    scope: receipt.scope,
     targetKind: 'receipt',
     targetId: receipt.id,
     actions: [
-      action(snapshot, { actionId: 'inspect-receipt', mode: 'read', scope: receipt.scope, targetKind: 'receipt', targetId: receipt.id }),
+      action(snapshot, { actionId: 'inspect-receipt', mode: 'read', targetKind: 'receipt', targetId: receipt.id }),
     ],
   };
 }
 
 function retryApplicationRows(snapshot: BridgeLedgerSnapshot): LedgerObjectRow[] {
-  return (['global', 'project'] as const).flatMap((scope) =>
-    snapshot.journals[scope].activeChains
-      .filter((chain) => chain.condition === 'pending-application')
-      .map((chain): LedgerObjectRow => ({
-        id: `retry-application:${scope}:${chain.rootReceiptId}`,
-        label: uiText('ledger.row.retry.label', {
-          scopeWord: scope === 'global' ? uiText('common.scope.word.global') : uiText('common.scope.word.project'),
-        }),
-        detail: uiText('ledger.row.retry.detail', {
-          receiptId: chain.rootReceiptId,
-          revision: chain.stateRevision,
-        }),
-        scope,
+  return snapshot.journal.activeChains
+    .filter((chain) => chain.condition === 'pending-application')
+    .map((chain): LedgerObjectRow => ({
+      id: `retry-application:${chain.rootReceiptId}`,
+      label: uiText('ledger.row.retry.label', {
+        scopeWord: uiText('common.scope.word.global'),
+      }),
+      detail: uiText('ledger.row.retry.detail', {
+        receiptId: chain.rootReceiptId,
+        revision: chain.stateRevision,
+      }),
+      targetKind: 'receipt',
+      targetId: chain.rootReceiptId,
+      actions: [action(snapshot, {
+        actionId: 'retry-application',
+        mode: 'mutation',
         targetKind: 'receipt',
         targetId: chain.rootReceiptId,
-        actions: [action(snapshot, {
-          actionId: 'retry-application',
-          mode: 'mutation',
-          scope,
-          targetKind: 'receipt',
-          targetId: chain.rootReceiptId,
-        })],
-      })),
-  );
+      })],
+    }));
 }
 
 export function buildBridgeLedgerModel(snapshot: BridgeLedgerSnapshot): BridgeLedgerModel {
   const globalState = readableState(snapshot.global);
-  const projectState = readableState(snapshot.project);
   const effective = snapshot.effective;
   const observe: LedgerSection = {
     id: 'observe',
@@ -602,7 +541,7 @@ export function buildBridgeLedgerModel(snapshot: BridgeLedgerSnapshot): BridgeLe
         label: uiText('ledger.row.observe.partitions'),
         detail: uiText('ledger.row.observe.partitionsDetail', {
           global: snapshot.global.state?.stateRevision ?? uiText('ledger.revision.unavailable'),
-          project: snapshot.project.state?.stateRevision ?? uiText('ledger.revision.unavailable'),
+          project: uiText('ledger.revision.unavailable'),
         }),
         actions: [action(snapshot, { actionId: 'observe-partitions', mode: 'read' })],
       },
@@ -612,8 +551,8 @@ export function buildBridgeLedgerModel(snapshot: BridgeLedgerSnapshot): BridgeLe
         detail: uiText('ledger.row.observe.effectiveDetail', {
           registrations: effective?.registrations.length ?? 0,
           installations: effective?.installations.length ?? 0,
-          suppressed: effective?.suppressed.length ?? 0,
-          excluded: effective?.excluded.length ?? 0,
+          suppressed: 0,
+          excluded: 0,
         }),
         actions: [action(snapshot, { actionId: 'observe-effective-state', mode: 'read' })],
       },
@@ -623,10 +562,7 @@ export function buildBridgeLedgerModel(snapshot: BridgeLedgerSnapshot): BridgeLe
     id: 'sources',
     label: uiText('ledger.section.sources.label'),
     description: uiText('ledger.section.sources.description'),
-    rows: [
-      ...scopeRegistrationRows('global', globalState, snapshot),
-      ...scopeRegistrationRows('project', projectState, snapshot),
-    ],
+    rows: registrationRows(globalState, snapshot),
   };
   let pluginRowCache: LedgerObjectRow[] | undefined;
   const plugins: LedgerSection = {
@@ -634,10 +570,7 @@ export function buildBridgeLedgerModel(snapshot: BridgeLedgerSnapshot): BridgeLe
     label: uiText('ledger.section.plugins.label'),
     description: uiText('ledger.section.plugins.description'),
     get rows() {
-      pluginRowCache ??= [
-        ...pluginRows('global', globalState, snapshot),
-        ...pluginRows('project', projectState, snapshot),
-      ];
+      pluginRowCache ??= pluginRows(globalState, snapshot);
       return pluginRowCache;
     },
   };
@@ -646,50 +579,39 @@ export function buildBridgeLedgerModel(snapshot: BridgeLedgerSnapshot): BridgeLe
     label: uiText('ledger.section.recovery-receipts.label'),
     description: uiText('ledger.section.recovery-receipts.description'),
     rows: [
-      ...(['global', 'project'] as const).flatMap((scope): LedgerObjectRow[] => [
-        {
-          id: `journal:${scope}`,
-          label: uiText('ledger.row.journal.label', {
-            scopeWord: scope === 'global' ? uiText('common.scope.word.global') : uiText('common.scope.word.project'),
-          }),
-          detail: uiText('ledger.row.journal.detail', {
-            receipts: snapshot.journals[scope].receipts.length,
-            chains: snapshot.journals[scope].activeChains.length,
-            degraded: snapshot.journals[scope].isDegraded ? uiText('common.yes') : uiText('common.no'),
-          }),
-          scope,
-          targetKind: 'scope',
-          targetId: scope,
-          actions: [action(snapshot, { actionId: 'view-receipt-journal', mode: 'read', scope, targetKind: 'scope', targetId: scope })],
-        },
-        {
-          id: `repair:${scope}`,
-          label: uiText('ledger.row.repair.label', {
-            scopeWord: scope === 'global' ? uiText('common.scope.word.global') : uiText('common.scope.word.project'),
-          }),
-          scope,
-          targetKind: 'scope',
-          targetId: scope,
-          actions: [action(snapshot, { actionId: 'repair-state', mode: 'mutation', scope, targetKind: 'scope', targetId: scope })],
-        },
-      ]),
+      {
+        id: 'journal:global',
+        label: uiText('ledger.row.journal.label', {
+          scopeWord: uiText('common.scope.word.global'),
+        }),
+        detail: uiText('ledger.row.journal.detail', {
+          receipts: snapshot.journal.receipts.length,
+          chains: snapshot.journal.activeChains.length,
+          degraded: snapshot.journal.isDegraded ? uiText('common.yes') : uiText('common.no'),
+        }),
+        targetKind: 'scope',
+        targetId: 'global',
+        actions: [action(snapshot, { actionId: 'view-receipt-journal', mode: 'read', targetKind: 'scope', targetId: 'global' })],
+      },
+      {
+        id: 'repair:global',
+        label: uiText('ledger.row.repair.label', {
+          scopeWord: uiText('common.scope.word.global'),
+        }),
+        targetKind: 'scope',
+        targetId: 'global',
+        actions: [action(snapshot, { actionId: 'repair-state', mode: 'mutation', targetKind: 'scope', targetId: 'global' })],
+      },
       ...retryApplicationRows(snapshot),
-      ...snapshot.journals.global.receipts.map((receipt) => receiptRow(receipt, snapshot)),
-      ...snapshot.journals.project.receipts.map((receipt) => receiptRow(receipt, snapshot)),
+      ...snapshot.journal.receipts.map((receipt) => receiptRow(receipt, snapshot)),
     ],
   };
 
   return {
-    rails: {
-      global: rail('global', snapshot.global, snapshot.projectTrusted),
-      project: rail('project', snapshot.project, snapshot.projectTrusted),
-    },
-    projectTrusted: snapshot.projectTrusted,
+    rail: rail(snapshot.global),
     effective: {
       registrationCount: effective?.registrations.length ?? 0,
       installationCount: effective?.installations.length ?? 0,
-      suppressedCount: effective?.suppressed.length ?? 0,
-      excludedCount: effective?.excluded.length ?? 0,
     },
     sections: [observe, sources, plugins, recovery],
   };
@@ -719,7 +641,6 @@ export class BridgeLedgerComponent implements Component {
   private readonly onDone: (intent?: LedgerActionIntent) => void;
   private sectionIndex = 0;
   private rowIndex = 0;
-  private browseFocus: Scope = 'global';
   private helpVisible = false;
   /** Single-column drill-down state for sub-96-column workspaces. */
   private sectionDetail = false;
@@ -766,16 +687,6 @@ export class BridgeLedgerComponent implements Component {
     }
     if (this.helpVisible) return;
 
-    if (matchesKey(data, 'g') || matchesKey(data, 'p')) {
-      const nextFocus: Scope = matchesKey(data, 'g') ? 'global' : 'project';
-      if (nextFocus !== this.browseFocus) {
-        this.browseFocus = nextFocus;
-        this.rowIndex = 0;
-        this.metadataExpanded = false;
-        this.tui.requestRender();
-      }
-      return;
-    }
     if (matchesKey(data, 'i')) {
       this.metadataExpanded = !this.metadataExpanded;
       this.tui.requestRender();
@@ -882,63 +793,25 @@ export class BridgeLedgerComponent implements Component {
     return fitTerminalLine(this.theme.fg(token, text), width);
   }
 
-  // --- Authority rails -----------------------------------------------------
+  // --- Authority rail ------------------------------------------------------
 
   private railPanels(width: number): string[] {
-    if (width < WIDE_WORKSPACE_WIDTH) {
-      return [
-        ...renderPanel(this.theme, {
-          title: this.model.rails.global.label,
-          lines: this.railContentLines('global', width - 3),
-          width,
-          borderToken: 'borderMuted',
-        }),
-        ...renderPanel(this.theme, {
-          title: this.model.rails.project.label,
-          lines: this.railContentLines('project', width - 3),
-          width,
-          borderToken: 'borderAccent',
-        }),
-      ];
-    }
-    const leftWidth = Math.max(24, Math.floor((width - 2) / 2));
-    const rightWidth = Math.max(24, width - 2 - leftWidth);
-    return renderSideBySidePanels(this.theme, {
-      left: {
-        title: this.model.rails.global.label,
-        lines: this.railContentLines('global', leftWidth - 3),
-        width: leftWidth,
-        borderToken: 'borderMuted',
-      },
-      right: {
-        title: this.model.rails.project.label,
-        lines: this.railContentLines('project', rightWidth - 3),
-        width: rightWidth,
+    return [
+      ...renderPanel(this.theme, {
+        title: this.model.rail.label,
+        lines: this.railContentLines(width - 3),
+        width,
         borderToken: 'borderAccent',
-      },
-      totalWidth: width,
-    });
+      }),
+    ];
   }
 
-  private railBadge(scope: Scope): string {
-    const rail = scope === 'global' ? this.model.rails.global : this.model.rails.project;
-    const badges = [renderBadge(this.theme, HEALTH_BADGES[rail.health].tone, uiText(HEALTH_BADGES[rail.health].labelId))];
-    if (scope === 'project') {
-      badges.push(renderBadge(
-        this.theme,
-        this.model.projectTrusted ? 'success' : 'warning',
-        this.model.projectTrusted ? uiText('ledger.badge.trustGranted') : uiText('ledger.badge.noTrust'),
-      ));
-    }
-    return badges.join(' ');
-  }
-
-  private railContentLines(scope: Scope, width: number): string[] {
-    const rail = scope === 'global' ? this.model.rails.global : this.model.rails.project;
-    const marker = scope === 'global' ? 'G' : 'P';
+  private railContentLines(width: number): string[] {
+    const rail = this.model.rail;
+    const marker = 'G';
     const fitDim = (text: string): string => this.fit(text, width, 'dim');
     const lines = [
-      this.railBadge(scope),
+      this.railBadge(),
       uiText('ledger.rail.revision', { marker, revision: quoteTerminalText(rail.revision) }),
       uiText('ledger.rail.registrations', { count: rail.registrationCount }),
       uiText('ledger.rail.installations', {
@@ -947,8 +820,12 @@ export class BridgeLedgerComponent implements Component {
       }),
     ];
     if (rail.health !== 'healthy') lines.push(fitDim(quoteTerminalText(rail.healthText)));
-    if (scope === 'project') lines.push(fitDim(rail.trustText));
     return lines;
+  }
+
+  private railBadge(): string {
+    const badges = [renderBadge(this.theme, HEALTH_BADGES[this.model.rail.health].tone, uiText(HEALTH_BADGES[this.model.rail.health].labelId))];
+    return badges.join(' ');
   }
 
   // --- Workspaces ----------------------------------------------------------
@@ -1050,7 +927,6 @@ export class BridgeLedgerComponent implements Component {
               kind: intent.targetKind ?? row.targetKind ?? uiText('common.none'),
               target: quoteTerminalText(intent.targetId ?? row.targetId ?? uiText('common.none')),
             }),
-            uiText('ledger.meta.scope', { scope: intent.scope ?? row.scope ?? uiText('common.none') }),
             uiText('ledger.meta.mode', { mode: intent.mode }),
           ];
           if (row.detail !== undefined) meta.push(uiText('ledger.meta.detail', { detail: quoteTerminalText(row.detail) }));
@@ -1072,18 +948,12 @@ export class BridgeLedgerComponent implements Component {
       uiText('ledger.help.sections'),
       uiText('ledger.help.enter'),
       uiText('ledger.help.metadata'),
-      uiText('ledger.help.browse'),
       uiText('ledger.help.close'),
     ];
   }
 
   private visibleRows(section = this.currentSection()): LedgerObjectRow[] {
-    const scopePartitioned = section.id === 'sources'
-      || section.id === 'plugins'
-      || section.id === 'recovery-receipts';
-    return scopePartitioned
-      ? section.rows.filter((row) => row.scope === undefined || row.scope === this.browseFocus)
-      : section.rows;
+    return section.rows;
   }
 
   private actionEntries(section = this.currentSection()): { row: LedgerObjectRow; action: LedgerActionRow }[] {
@@ -1101,7 +971,7 @@ export class BridgeLedgerComponent implements Component {
       ? uiText('ledger.status.pane.actions')
       : uiText('ledger.status.pane.sections');
     return uiText('ledger.status.browsing', {
-      marker: this.browseFocus === 'global' ? 'G' : 'P',
+      marker: 'G',
       section: section.label,
       pane,
     });

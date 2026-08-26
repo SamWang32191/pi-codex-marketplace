@@ -12,7 +12,6 @@
  * option-like values, whitespace, control characters.
  */
 
-import type { Scope } from '../bridge-state/types.js';
 import { CODE, RULE, blocking, type ValidationFinding } from './findings.js';
 
 export type GitSelectorKind = 'default' | 'branch' | 'tag' | 'commit';
@@ -90,12 +89,11 @@ function isValidRefName(name: string): { ok: boolean; reason?: string } {
   return { ok: true };
 }
 
-function selectorFinding(scope: Scope, code: string, rule: string, outcome: string): ValidationFinding {
+function selectorFinding(code: string, rule: string, outcome: string): ValidationFinding {
   return blocking({
     code,
     phase: 'validation',
     target: 'source',
-    scope,
     pointer: '',
     rule,
     outcome,
@@ -106,28 +104,28 @@ function selectorFinding(scope: Scope, code: string, rule: string, outcome: stri
  * Normalize a Git Selector.
  * Input is a structured { kind, value } where branch/tag value is the short name (or possibly already qualified).
  */
-export function normalizeGitSelector(input: GitSelectorInput, scope: Scope): SelectorResult {
+export function normalizeGitSelector(input: GitSelectorInput): SelectorResult {
   const findings: ValidationFinding[] = [];
   const kind = input.kind;
   const rawValue = input.value ?? '';
 
   // Common whitespace/control rejection on kind
   if (typeof kind !== 'string' || kind.length === 0) {
-    findings.push(selectorFinding(scope, CODE.GIT_SELECTOR_INVALID, RULE.GIT_SELECTOR_INVALID, 'Git selector kind is missing'));
+    findings.push(selectorFinding(CODE.GIT_SELECTOR_INVALID, RULE.GIT_SELECTOR_INVALID, 'Git selector kind is missing'));
     return { ok: false, findings };
   }
 
   // Normalize kind string
   const k = String(kind).toLowerCase() as GitSelectorKind;
   if (k !== 'default' && k !== 'branch' && k !== 'tag' && k !== 'commit') {
-    findings.push(selectorFinding(scope, CODE.GIT_SELECTOR_INVALID, RULE.GIT_SELECTOR_INVALID, `unknown Git selector kind '${kind}' — expected default/branch/tag/commit`));
+    findings.push(selectorFinding(CODE.GIT_SELECTOR_INVALID, RULE.GIT_SELECTOR_INVALID, `unknown Git selector kind '${kind}' — expected default/branch/tag/commit`));
     return { ok: false, findings };
   }
 
   // default selector: value must be empty/undefined and canonical is "default"
   if (k === 'default') {
     if (rawValue !== undefined && String(rawValue).trim().length > 0) {
-      findings.push(selectorFinding(scope, CODE.GIT_SELECTOR_INVALID, RULE.GIT_SELECTOR_INVALID, 'default selector must not have a value'));
+      findings.push(selectorFinding(CODE.GIT_SELECTOR_INVALID, RULE.GIT_SELECTOR_INVALID, 'default selector must not have a value'));
       return { ok: false, findings };
     }
     return { ok: true, findings: [], selector: { kind: 'default', canonical: 'default', raw: 'default' } };
@@ -138,7 +136,7 @@ export function normalizeGitSelector(input: GitSelectorInput, scope: Scope): Sel
   if (value.length === 0) {
     const code = k === 'branch' ? CODE.GIT_SELECTOR_BRANCH_INVALID : k === 'tag' ? CODE.GIT_SELECTOR_TAG_INVALID : CODE.GIT_SELECTOR_COMMIT_INVALID;
     const rule = k === 'branch' ? RULE.GIT_SELECTOR_BRANCH_INVALID : k === 'tag' ? RULE.GIT_SELECTOR_TAG_INVALID : RULE.GIT_SELECTOR_COMMIT_INVALID;
-    findings.push(selectorFinding(scope, code, rule, `${k} selector value is empty`));
+    findings.push(selectorFinding(code, rule, `${k} selector value is empty`));
     return { ok: false, findings };
   }
 
@@ -146,23 +144,23 @@ export function normalizeGitSelector(input: GitSelectorInput, scope: Scope): Sel
   if (ws.has) {
     const code = k === 'commit' ? CODE.GIT_SELECTOR_COMMIT_INVALID : CODE.GIT_SELECTOR_INVALID;
     const rule = k === 'commit' ? RULE.GIT_SELECTOR_COMMIT_INVALID : RULE.GIT_SELECTOR_INVALID;
-    findings.push(selectorFinding(scope, code, rule, `${k} selector contains ${ws.reason}`));
+    findings.push(selectorFinding(code, rule, `${k} selector contains ${ws.reason}`));
     return { ok: false, findings };
   }
   if (isOptionLike(value)) {
-    findings.push(selectorFinding(scope, CODE.GIT_SELECTOR_INVALID, RULE.GIT_SELECTOR_INVALID, `${k} selector must not be option-like '${value}'`));
+    findings.push(selectorFinding(CODE.GIT_SELECTOR_INVALID, RULE.GIT_SELECTOR_INVALID, `${k} selector must not be option-like '${value}'`));
     return { ok: false, findings };
   }
   if (isHead(value) || isHead(value.split('/').pop() ?? '')) {
-    findings.push(selectorFinding(scope, CODE.GIT_SELECTOR_INVALID, RULE.GIT_SELECTOR_INVALID, `${k} selector must not be HEAD`));
+    findings.push(selectorFinding(CODE.GIT_SELECTOR_INVALID, RULE.GIT_SELECTOR_INVALID, `${k} selector must not be HEAD`));
     return { ok: false, findings };
   }
   if (containsReflog(value)) {
-    findings.push(selectorFinding(scope, CODE.GIT_SELECTOR_INVALID, RULE.GIT_SELECTOR_INVALID, `${k} selector must not contain reflog '@{'`));
+    findings.push(selectorFinding(CODE.GIT_SELECTOR_INVALID, RULE.GIT_SELECTOR_INVALID, `${k} selector must not contain reflog '@{'`));
     return { ok: false, findings };
   }
   if (containsRevisionChars(value)) {
-    findings.push(selectorFinding(scope, CODE.GIT_SELECTOR_INVALID, RULE.GIT_SELECTOR_INVALID, `${k} selector must not contain revision characters ~ ^ :`));
+    findings.push(selectorFinding(CODE.GIT_SELECTOR_INVALID, RULE.GIT_SELECTOR_INVALID, `${k} selector must not contain revision characters ~ ^ :`));
     return { ok: false, findings };
   }
 
@@ -181,7 +179,6 @@ export function normalizeGitSelector(input: GitSelectorInput, scope: Scope): Sel
       if (!value.startsWith(expectedPrefix)) {
         findings.push(
           selectorFinding(
-            scope,
             CODE.GIT_SELECTOR_INVALID,
             k === 'branch' ? RULE.GIT_SELECTOR_BRANCH_INVALID : RULE.GIT_SELECTOR_TAG_INVALID,
             `${k} selector with refs/ prefix must be ${expectedPrefix}<name>, got '${value}'`,
@@ -192,7 +189,7 @@ export function normalizeGitSelector(input: GitSelectorInput, scope: Scope): Sel
       hadPrefix = true;
       name = value.slice(expectedPrefix.length);
       if (name.length === 0) {
-        findings.push(selectorFinding(scope, CODE.GIT_SELECTOR_INVALID, k === 'branch' ? RULE.GIT_SELECTOR_BRANCH_INVALID : RULE.GIT_SELECTOR_TAG_INVALID, `${k} selector ref name is empty after prefix`));
+        findings.push(selectorFinding(CODE.GIT_SELECTOR_INVALID, k === 'branch' ? RULE.GIT_SELECTOR_BRANCH_INVALID : RULE.GIT_SELECTOR_TAG_INVALID, `${k} selector ref name is empty after prefix`));
         return { ok: false, findings };
       }
     }
@@ -202,7 +199,7 @@ export function normalizeGitSelector(input: GitSelectorInput, scope: Scope): Sel
     if (!refCheck.ok) {
       const code = k === 'branch' ? CODE.GIT_SELECTOR_BRANCH_INVALID : CODE.GIT_SELECTOR_TAG_INVALID;
       const rule = k === 'branch' ? RULE.GIT_SELECTOR_BRANCH_INVALID : RULE.GIT_SELECTOR_TAG_INVALID;
-      findings.push(selectorFinding(scope, code, rule, `${k} selector ref name invalid '${name}': ${refCheck.reason}`));
+      findings.push(selectorFinding(code, rule, `${k} selector ref name invalid '${name}': ${refCheck.reason}`));
       return { ok: false, findings };
     }
 
@@ -212,7 +209,7 @@ export function normalizeGitSelector(input: GitSelectorInput, scope: Scope): Sel
     if (!fullCheck.ok) {
       const code = k === 'branch' ? CODE.GIT_SELECTOR_BRANCH_INVALID : CODE.GIT_SELECTOR_TAG_INVALID;
       const rule = k === 'branch' ? RULE.GIT_SELECTOR_BRANCH_INVALID : RULE.GIT_SELECTOR_TAG_INVALID;
-      findings.push(selectorFinding(scope, code, rule, `canonical ${k} ref '${canonical}' invalid: ${fullCheck.reason}`));
+      findings.push(selectorFinding(code, rule, `canonical ${k} ref '${canonical}' invalid: ${fullCheck.reason}`));
       return { ok: false, findings };
     }
 
@@ -226,7 +223,6 @@ export function normalizeGitSelector(input: GitSelectorInput, scope: Scope): Sel
     if (value.length !== 40 && value.length !== 64) {
       findings.push(
         selectorFinding(
-          scope,
           CODE.GIT_SELECTOR_COMMIT_INVALID,
           RULE.GIT_SELECTOR_COMMIT_INVALID,
           `commit selector must be complete 40 or 64 hex (got ${value.length} chars) — abbreviated object names not accepted`,
@@ -236,7 +232,7 @@ export function normalizeGitSelector(input: GitSelectorInput, scope: Scope): Sel
     }
     if (!isHex(value)) {
       findings.push(
-        selectorFinding(scope, CODE.GIT_SELECTOR_COMMIT_INVALID, RULE.GIT_SELECTOR_COMMIT_INVALID, `commit selector must be hex, got '${value}'`),
+        selectorFinding(CODE.GIT_SELECTOR_COMMIT_INVALID, RULE.GIT_SELECTOR_COMMIT_INVALID, `commit selector must be hex, got '${value}'`),
       );
       return { ok: false, findings };
     }
@@ -247,33 +243,33 @@ export function normalizeGitSelector(input: GitSelectorInput, scope: Scope): Sel
   }
 
   // Fallback
-  findings.push(selectorFinding(scope, CODE.GIT_SELECTOR_INVALID, RULE.GIT_SELECTOR_INVALID, `unhandled selector kind '${k}'`));
+  findings.push(selectorFinding(CODE.GIT_SELECTOR_INVALID, RULE.GIT_SELECTOR_INVALID, `unhandled selector kind '${k}'`));
   return { ok: false, findings };
 }
 
 /** Parse a freeform string like "default", "branch:main", "refs/heads/main", "abc...40hex" into a structured selector */
-export function parseGitSelectorString(input: string, scope: Scope): SelectorResult {
+export function parseGitSelectorString(input: string): SelectorResult {
   const s = String(input ?? '').trim();
   if (s.length === 0) {
-    return { ok: false, findings: [selectorFinding(scope, CODE.GIT_SELECTOR_INVALID, RULE.GIT_SELECTOR_INVALID, 'empty selector string')] };
+    return { ok: false, findings: [selectorFinding(CODE.GIT_SELECTOR_INVALID, RULE.GIT_SELECTOR_INVALID, 'empty selector string')] };
   }
-  if (s === 'default') return normalizeGitSelector({ kind: 'default' }, scope);
-  if (s.startsWith('refs/heads/')) return normalizeGitSelector({ kind: 'branch', value: s }, scope);
-  if (s.startsWith('refs/tags/')) return normalizeGitSelector({ kind: 'tag', value: s }, scope);
-  if (/^[0-9a-fA-F]{40}$/.test(s) || /^[0-9a-fA-F]{64}$/.test(s)) return normalizeGitSelector({ kind: 'commit', value: s }, scope);
+  if (s === 'default') return normalizeGitSelector({ kind: 'default' });
+  if (s.startsWith('refs/heads/')) return normalizeGitSelector({ kind: 'branch', value: s });
+  if (s.startsWith('refs/tags/')) return normalizeGitSelector({ kind: 'tag', value: s });
+  if (/^[0-9a-fA-F]{40}$/.test(s) || /^[0-9a-fA-F]{64}$/.test(s)) return normalizeGitSelector({ kind: 'commit', value: s });
   // branch:xxx or tag:xxx or commit:xxx syntax
   const colon = s.indexOf(':');
   if (colon > 0) {
     const kind = s.slice(0, colon).toLowerCase();
     const val = s.slice(colon + 1);
     if ((kind === 'branch' || kind === 'tag' || kind === 'commit') && val) {
-      return normalizeGitSelector({ kind: kind as GitSelectorKind, value: val }, scope);
+      return normalizeGitSelector({ kind: kind as GitSelectorKind, value: val });
     }
   }
   // Default to branch short name? But we can't disambiguate. For now, if it looks like a branch name, treat as branch
   // Safer to return invalid to force explicit kind.
   return {
     ok: false,
-    findings: [selectorFinding(scope, CODE.GIT_SELECTOR_INVALID, RULE.GIT_SELECTOR_INVALID, `unable to parse selector string '${s}' — expected default, refs/heads/*, refs/tags/*, 40/64 hex, or kind:value`)],
+    findings: [selectorFinding(CODE.GIT_SELECTOR_INVALID, RULE.GIT_SELECTOR_INVALID, `unable to parse selector string '${s}' — expected default, refs/heads/*, refs/tags/*, 40/64 hex, or kind:value`)],
   };
 }

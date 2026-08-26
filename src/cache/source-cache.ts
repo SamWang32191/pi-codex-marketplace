@@ -28,9 +28,8 @@ import { cpSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { acquireLock, acquireLockSync, releaseLock, atomicWriteFile } from '../bridge-state/atomic.js';
-import { readBridgeState } from '../bridge-state/store.js';
+import { readBridgeStateSync } from '../bridge-state/store.js';
 import type { BridgeState } from '../bridge-state/types.js';
-import type { Scope } from '../bridge-state/types.js';
 import {
   getCacheDir,
   getCacheEntriesDir,
@@ -59,7 +58,6 @@ export interface CacheIndexRecord {
 }
 
 export interface PendingUpdateRecord {
-  scope: Scope;
   registrationId: string;
   fingerprint: string;
   recordedAtMs: number;
@@ -238,13 +236,11 @@ export class SourceCache {
     }
   }
 
-  /** Fingerprints referenced by authoritative Bridge State (both scopes). Never evicted. */
+  /** Fingerprints referenced by authoritative Global Bridge State. Never evicted. */
   async statePinnedFingerprints(): Promise<Set<string>> {
     const pinned = new Set<string>();
-    for (const scope of ['global', 'project'] as const) {
-      const read = await readBridgeState(scope, {});
-      collectPinned(read.state, pinned);
-    }
+    const read = readBridgeStateSync({});
+    collectPinned(read.state, pinned);
     return pinned;
   }
 
@@ -258,13 +254,13 @@ export class SourceCache {
   // ---- Pending Update Candidate registry ---------------------------------
 
   recordPendingUpdate(rec: Omit<PendingUpdateRecord, 'recordedAtMs'>): void {
-    const records = this.pendingUpdates().filter((r) => !(r.scope === rec.scope && r.registrationId === rec.registrationId));
+    const records = this.pendingUpdates().filter((r) => !(r.registrationId === rec.registrationId));
     records.push({ ...rec, recordedAtMs: this.now() });
     atomicWriteFile(getCachePendingPath(this.root), JSON.stringify(records));
   }
 
-  clearPendingUpdate(scope: Scope, registrationId: string): void {
-    const records = this.pendingUpdates().filter((r) => !(r.scope === scope && r.registrationId === registrationId));
+  clearPendingUpdate(registrationId: string): void {
+    const records = this.pendingUpdates().filter((r) => !(r.registrationId === registrationId));
     atomicWriteFile(getCachePendingPath(this.root), JSON.stringify(records));
   }
 

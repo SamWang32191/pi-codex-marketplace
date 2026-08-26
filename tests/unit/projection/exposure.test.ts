@@ -1,11 +1,12 @@
 /**
  * Runtime Skill Exposure — read-time discovery of Projected Skill paths for Pi's
  * resource-discovery seam. See CONTEXT.md: Runtime Skill Exposure, Projected Skill,
- * Effective State, Scope Override, Project Trust, Runtime Skill Collision.
+ * Effective State, Runtime Skill Collision.
  *
- * Only external observable behavior is asserted: which skill directories are contributed,
- * which Installations are skipped and why, that discovery never mutates Bridge State and
- * never writes an Attempt Receipt, and that missing cache material never fails discovery.
+ * Global-only (#61): discovery reads the single Global document only. Only external observable
+ * behavior is asserted: which skill directories are contributed, which Installations are skipped
+ * and why, that discovery never mutates Bridge State and never writes an Attempt Receipt, and
+ * that missing cache material never fails discovery.
  */
 
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
@@ -27,7 +28,6 @@ function makeEnv() {
   return {
     root,
     agentDir: join(root, 'agent'),
-    projectDir: join(root, 'project'),
     marketplace: join(root, 'marketplace'),
   };
 }
@@ -63,9 +63,7 @@ async function seedGitRegistrationAndCache(env: ReturnType<typeof makeEnv>, opts
   const cache = new SourceCache({ agentDir: env.agentDir });
   const fingerprint = 'a'.repeat(64);
   await cache.storeTree(env.marketplace, fingerprint);
-  await commitBridgeState(
-    'global',
-    (state: BridgeState) => ({
+  await commitBridgeState((state: BridgeState) => ({
       ...state,
       registrations: [
         ...state.registrations,
@@ -82,6 +80,7 @@ async function seedGitRegistrationAndCache(env: ReturnType<typeof makeEnv>, opts
       installations: [
         ...state.installations,
         {
+          // Legacy persisted Installation ID form ('global/<pluginId>') must stay recognizable.
           id: `global/${registrationId}/acme-marketplace/release-helper`,
           pluginId: `${registrationId}/acme-marketplace/release-helper`,
           installationState: 'enabled' as const,
@@ -92,7 +91,7 @@ async function seedGitRegistrationAndCache(env: ReturnType<typeof makeEnv>, opts
         },
       ],
     }),
-    { agentDir: env.agentDir, cwd: env.projectDir },
+    { agentDir: env.agentDir },
   );
   return { fingerprint };
 }
@@ -119,7 +118,7 @@ describe('Runtime Skill Exposure — contribution', () => {
     makeMarketplace(env.marketplace, 'release-helper', 'release-helper', ['release-notes', 'changelog']);
     const { fingerprint } = await seedGitRegistrationAndCache(env);
 
-    const result = discoverProjectedSkillPaths({ cwd: env.projectDir, agentDir: env.agentDir });
+    const result = discoverProjectedSkillPaths({ agentDir: env.agentDir });
 
     expect(result.skillPaths).toHaveLength(2);
     expect(result.exposed.map((s) => s.name).sort()).toEqual(['changelog', 'release-notes']);
@@ -128,7 +127,6 @@ describe('Runtime Skill Exposure — contribution', () => {
       expect(exposed.pluginId).toBe(`${GLOBAL_REG}/acme-marketplace/release-helper`);
       expect(exposed.installationId).toBe(`global/${GLOBAL_REG}/acme-marketplace/release-helper`);
       expect(exposed.skillId).toBe(`${GLOBAL_REG}/acme-marketplace/release-helper/${exposed.name}`);
-      expect(exposed.sourceScope).toBe('global');
       expect(realpathSync(exposed.skillDir)).toBe(
         realpathSync(join(new SourceCache({ agentDir: env.agentDir }).entryPath(fingerprint), 'plugins', 'release-helper', 'skills', exposed.name)),
       );
@@ -141,8 +139,8 @@ describe('Runtime Skill Exposure — contribution', () => {
     makeMarketplace(env.marketplace, 'release-helper', 'release-helper', ['release-notes']);
     await seedGitRegistrationAndCache(env);
 
-    const first = discoverProjectedSkillPaths({ cwd: env.projectDir, agentDir: env.agentDir });
-    const second = discoverProjectedSkillPaths({ cwd: env.projectDir, agentDir: env.agentDir });
+    const first = discoverProjectedSkillPaths({ agentDir: env.agentDir });
+    const second = discoverProjectedSkillPaths({ agentDir: env.agentDir });
     expect(first.skillPaths).toEqual(second.skillPaths);
   });
 
@@ -150,119 +148,17 @@ describe('Runtime Skill Exposure — contribution', () => {
     const env = freshEnv();
     makeMarketplace(env.marketplace, 'release-helper', 'release-helper', ['release-notes']);
     const { fingerprint } = await seedGitRegistrationAndCache(env);
-    await commitBridgeState(
-      'global',
-      (state) => ({
+    await commitBridgeState((state) => ({
         ...state,
         installations: state.installations.map((i) => ({ ...i, installationState: 'disabled' as const })),
       }),
-      { agentDir: env.agentDir, cwd: env.projectDir },
+      { agentDir: env.agentDir },
     );
 
-    const result = discoverProjectedSkillPaths({ cwd: env.projectDir, agentDir: env.agentDir });
+    const result = discoverProjectedSkillPaths({ agentDir: env.agentDir });
     expect(result.skillPaths).toEqual([]);
     expect(result.exposed).toEqual([]);
     void fingerprint;
-  });
-
-  it('legacy persisted Scope Overrides do not suppress Runtime Skill Exposure', async () => {
-    const env = freshEnv();
-    makeMarketplace(env.marketplace, 'release-helper', 'release-helper', ['release-notes']);
-    await seedGitRegistrationAndCache(env);
-    // A pre-retirement project document still carrying a suppression entry must be ignored.
-    await commitBridgeState('project', (state) => ({ ...state, scopeOverrides: [{ kind: 'registration', targetId: GLOBAL_REG }] }), { agentDir: env.agentDir, cwd: env.projectDir });
-
-    expect(discoverProjectedSkillPaths({ cwd: env.projectDir, agentDir: env.agentDir, projectTrusted: true }).skillPaths).toHaveLength(1);
-  });
-
-  it('without Project Trust, project additions do not contribute; global baseline still does', async () => {
-    const env = freshEnv();
-    makeMarketplace(env.marketplace, 'release-helper', 'release-helper', ['global-skill']);
-    await seedGitRegistrationAndCache(env);
-
-    const PROJECT_REG = '22222222-2222-4222-8222-222222222222';
-    const projectMarket = join(env.root, 'project-market');
-    makeMarketplace(projectMarket, 'beta-tool', 'beta-tool', ['project-skill']);
-    const cache = new SourceCache({ agentDir: env.agentDir });
-    const projectFp = 'b'.repeat(64);
-    await cache.storeTree(projectMarket, projectFp);
-    await commitBridgeState(
-      'project',
-      (state) => ({
-        ...state,
-        registrations: [
-          ...state.registrations,
-          {
-            id: PROJECT_REG,
-            alias: 'beta',
-            marketplaceName: 'acme-marketplace',
-            sourceKind: 'git' as const,
-            source: 'https://github.com/acme/project-market.git',
-            validationSnapshot: projectFp,
-          },
-        ],
-        installations: [
-          ...state.installations,
-          {
-            id: `project/${PROJECT_REG}/acme-marketplace/beta-tool`,
-            pluginId: `${PROJECT_REG}/acme-marketplace/beta-tool`,
-            installationState: 'enabled' as const,
-            registrationId: PROJECT_REG,
-            marketplaceEntryId: `${PROJECT_REG}/acme-marketplace/plugins/0`,
-            validationSnapshot: `bound-${projectFp.slice(0, 8)}`,
-            manifestName: 'beta-tool',
-          },
-        ],
-      }),
-      { agentDir: env.agentDir, cwd: env.projectDir },
-    );
-
-    const untrusted = discoverProjectedSkillPaths({ cwd: env.projectDir, agentDir: env.agentDir, projectTrusted: false });
-    expect(untrusted.exposed.map((s) => s.name)).toEqual(['global-skill']);
-
-    const trusted = discoverProjectedSkillPaths({ cwd: env.projectDir, agentDir: env.agentDir, projectTrusted: true });
-    expect(trusted.exposed.map((s) => s.name).sort()).toEqual(['global-skill', 'project-skill']);
-  });
-
-  it('resolves cross-scope Runtime Skill Collision at skill granularity — only the Project survivor is contributed', async () => {
-    const env = freshEnv();
-    makeMarketplace(env.marketplace, 'release-helper', 'release-helper', ['shared-name']);
-    await seedGitRegistrationAndCache(env);
-
-    const PROJECT_REG = '33333333-3333-4333-8333-333333333333';
-    const projectMarket = join(env.root, 'project-market');
-    makeMarketplace(projectMarket, 'helper-two', 'helper-two', ['shared-name']);
-    const cache = new SourceCache({ agentDir: env.agentDir });
-    const projectFp = 'c'.repeat(64);
-    await cache.storeTree(projectMarket, projectFp);
-    await commitBridgeState(
-      'project',
-      (state) => ({
-        ...state,
-        registrations: [
-          ...state.registrations,
-          { id: PROJECT_REG, alias: 'beta', marketplaceName: 'beta-marketplace', sourceKind: 'git' as const, source: 'https://github.com/acme/beta.git', validationSnapshot: projectFp },
-        ],
-        installations: [
-          ...state.installations,
-          {
-            id: `project/${PROJECT_REG}/beta-marketplace/helper-two`,
-            pluginId: `${PROJECT_REG}/beta-marketplace/helper-two`,
-            installationState: 'enabled' as const,
-            registrationId: PROJECT_REG,
-            marketplaceEntryId: `${PROJECT_REG}/beta-marketplace/plugins/0`,
-            validationSnapshot: `bound-${projectFp.slice(0, 8)}`,
-            manifestName: 'helper-two',
-          },
-        ],
-      }),
-      { agentDir: env.agentDir, cwd: env.projectDir },
-    );
-
-    const result = discoverProjectedSkillPaths({ cwd: env.projectDir, agentDir: env.agentDir, projectTrusted: true });
-    expect(result.exposed.map((s) => s.sourceScope)).toEqual(['project']);
-    expect(result.skillPaths).toHaveLength(1);
-    expect(result.skillPaths[0]).toContain(join('plugins', 'helper-two', 'skills', 'shared-name'));
   });
 
   it('a pre-existing Pi-layer name reserves the name when supplied via piSkillNames', async () => {
@@ -270,7 +166,7 @@ describe('Runtime Skill Exposure — contribution', () => {
     makeMarketplace(env.marketplace, 'release-helper', 'release-helper', ['deploy']);
     await seedGitRegistrationAndCache(env);
 
-    const result = discoverProjectedSkillPaths({ cwd: env.projectDir, agentDir: env.agentDir, piSkillNames: ['deploy'] });
+    const result = discoverProjectedSkillPaths({ agentDir: env.agentDir, piSkillNames: ['deploy'] });
     expect(result.skillPaths).toEqual([]);
   });
 });
@@ -280,22 +176,21 @@ describe('Runtime Skill Exposure — passive inspection only', () => {
     const env = freshEnv();
     makeMarketplace(env.marketplace, 'release-helper', 'release-helper', ['release-notes']);
     const { fingerprint } = await seedGitRegistrationAndCache(env);
-    const revisionBefore = readBridgeStateSync('global', { agentDir: env.agentDir, cwd: env.projectDir }).state!.stateRevision;
+    const revisionBefore = readBridgeStateSync({ agentDir: env.agentDir }).state!.stateRevision;
 
     // External deletion outside any lifecycle operation.
     const cache = new SourceCache({ agentDir: env.agentDir });
     rmSync(cache.entryPath(fingerprint), { recursive: true, force: true });
     rmSync(cache.metaPath(fingerprint), { force: true });
 
-    const result = discoverProjectedSkillPaths({ cwd: env.projectDir, agentDir: env.agentDir });
+    const result = discoverProjectedSkillPaths({ agentDir: env.agentDir });
     expect(result.skillPaths).toEqual([]);
     expect(result.skipped).toHaveLength(1);
     expect(result.skipped[0]?.reason).toBe('missing-cache-entry');
 
-    // Passive: no receipt journal materialized in either scope, State Revision untouched.
-    expect(readBridgeStateSync('global', { agentDir: env.agentDir, cwd: env.projectDir }).state!.stateRevision).toBe(revisionBefore);
-    expect(existsSync(getReceiptsJournalPath('global', { agentDir: env.agentDir, cwd: env.projectDir }))).toBe(false);
-    expect(existsSync(getReceiptsJournalPath('project', { agentDir: env.agentDir, cwd: env.projectDir }))).toBe(false);
+    // Passive: no receipt journal materialized, State Revision untouched.
+    expect(readBridgeStateSync({ agentDir: env.agentDir }).state!.stateRevision).toBe(revisionBefore);
+    expect(existsSync(getReceiptsJournalPath(env.agentDir))).toBe(false);
   });
 
   it('skips an Installation whose cached catalog cannot be read', async () => {
@@ -306,7 +201,7 @@ describe('Runtime Skill Exposure — passive inspection only', () => {
     const cache = new SourceCache({ agentDir: env.agentDir });
     rmSync(join(cache.entryPath(fingerprint), '.agents', 'plugins', 'marketplace.json'));
 
-    const result = discoverProjectedSkillPaths({ cwd: env.projectDir, agentDir: env.agentDir });
+    const result = discoverProjectedSkillPaths({ agentDir: env.agentDir });
     expect(result.skillPaths).toEqual([]);
     expect(result.skipped[0]?.reason).toBe('catalog-unreadable');
   });
@@ -315,9 +210,7 @@ describe('Runtime Skill Exposure — passive inspection only', () => {
     const env = freshEnv();
     makeMarketplace(env.marketplace, 'release-helper', 'release-helper', ['release-notes']);
     await seedGitRegistrationAndCache(env);
-    await commitBridgeState(
-      'global',
-      (state) => ({
+    await commitBridgeState((state) => ({
         ...state,
         installations: [
           ...state.installations,
@@ -332,10 +225,10 @@ describe('Runtime Skill Exposure — passive inspection only', () => {
           },
         ],
       }),
-      { agentDir: env.agentDir, cwd: env.projectDir },
+      { agentDir: env.agentDir },
     );
 
-    const result = discoverProjectedSkillPaths({ cwd: env.projectDir, agentDir: env.agentDir });
+    const result = discoverProjectedSkillPaths({ agentDir: env.agentDir });
     expect(result.exposed.map((s) => s.name)).toEqual(['release-notes']); // healthy one stays
     const ghost = result.skipped.find((s) => s.installationId.endsWith('/ghost'));
     expect(ghost?.reason).toBe('entry-not-found');
@@ -346,29 +239,27 @@ describe('Runtime Skill Exposure — passive inspection only', () => {
     makeMarketplace(env.marketplace, 'release-helper', 'release-helper', ['release-notes']);
     await seedGitRegistrationAndCache(env);
     // Overwrite the Installation's marketplaceEntryId with an ID lacking the "/plugins/" marker.
-    await commitBridgeState(
-      'global',
-      (state) => ({
+    await commitBridgeState((state) => ({
         ...state,
         installations: state.installations.map((installation) =>
           installation.manifestName === 'release-helper' ? { ...installation, marketplaceEntryId: 'not-a-pointer' } : installation,
         ),
       }),
-      { agentDir: env.agentDir, cwd: env.projectDir },
+      { agentDir: env.agentDir },
     );
 
-    const result = discoverProjectedSkillPaths({ cwd: env.projectDir, agentDir: env.agentDir });
+    const result = discoverProjectedSkillPaths({ agentDir: env.agentDir });
     // The retained manifestName still resolves the entry; the malformed ID must not produce a bogus pointer.
     expect(result.exposed.map((s) => s.name)).toEqual(['release-notes']);
     expect(result.skipped).toEqual([]);
   });
 
-  it('treats corrupted or incompatible scope documents as empty instead of failing', async () => {
+  it('treats a corrupted document as empty instead of failing', async () => {
     const env = freshEnv();
     mkdirSync(join(env.agentDir, 'codex-marketplace'), { recursive: true });
     writeFileSync(join(env.agentDir, 'codex-marketplace', 'state.json'), '{ corrupted', 'utf-8');
 
-    const result = discoverProjectedSkillPaths({ cwd: env.projectDir, agentDir: env.agentDir });
+    const result = discoverProjectedSkillPaths({ agentDir: env.agentDir });
     expect(result.skillPaths).toEqual([]);
     expect(result.exposed).toEqual([]);
   });
@@ -376,9 +267,7 @@ describe('Runtime Skill Exposure — passive inspection only', () => {
   it('local Registrations expose skills from their live Marketplace Root without a cache round-trip', async () => {
     const env = freshEnv();
     makeMarketplace(env.marketplace, 'release-helper', 'release-helper', ['local-skill']);
-    await commitBridgeState(
-      'global',
-      (state) => ({
+    await commitBridgeState((state) => ({
         ...state,
         registrations: [
           ...state.registrations,
@@ -397,10 +286,10 @@ describe('Runtime Skill Exposure — passive inspection only', () => {
           },
         ],
       }),
-      { agentDir: env.agentDir, cwd: env.projectDir },
+      { agentDir: env.agentDir },
     );
 
-    const result = discoverProjectedSkillPaths({ cwd: env.projectDir, agentDir: env.agentDir });
+    const result = discoverProjectedSkillPaths({ agentDir: env.agentDir });
     expect(result.exposed.map((s) => s.name)).toEqual(['local-skill']);
     expect(realpathSync(result.skillPaths[0]!)).toBe(realpathSync(join(env.marketplace, 'plugins', 'release-helper', 'skills', 'local-skill')));
   });
