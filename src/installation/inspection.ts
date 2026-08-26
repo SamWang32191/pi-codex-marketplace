@@ -166,7 +166,11 @@ export function inspectMarketplaceEntries(registration: Registration, opts: Insp
     if (contained.outcome.kind !== 'ok') return { entry, findings: [], unavailableReason: 'cannot resolve Plugin' };
     let baseClassification = classifications.get(contained.outcome.canonicalPath);
     if (!baseClassification) {
-      baseClassification = classifyPlugin(contained.outcome.canonicalPath, { marketplaceId, marketplaceEntryId: `${marketplaceId}${entry.entryId}` });
+      baseClassification = classifyPlugin(contained.outcome.canonicalPath, {
+        marketplaceId,
+        marketplaceEntryId: `${marketplaceId}${entry.entryId}`,
+        format: registration.format,
+      });
       classifications.set(contained.outcome.canonicalPath, baseClassification);
     }
     const classification = baseClassification.plugin

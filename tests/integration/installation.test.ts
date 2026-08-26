@@ -266,7 +266,7 @@ describe('Plugin Installation lifecycle', () => {
     const sourceKey = localSourceKey(env.marketplace).sourceKey!;
     const currentSnapshot = buildLocalSnapshot(env.marketplace, sourceKey).snapshot!;
     const legacyFingerprint = legacyValidationFingerprint(currentSnapshot);
-    expect(currentSnapshot.ruleset).toBe('ruleset:v2');
+    expect(currentSnapshot.ruleset).toBe('ruleset:v3');
     expect(currentSnapshot.budget).toBe('budget:v2');
     expect(legacyFingerprint).not.toBe(currentSnapshot.fingerprint);
 
