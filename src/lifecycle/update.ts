@@ -88,6 +88,9 @@ function draftNextState(state: BridgeState, plan: UpdatePlan): BridgeState {
         budget: candidate.snapshot.budget,
       },
     };
+    // Marketplace Format is fixed onto the Registration; it changes only here — through the
+    // disclosed Update Candidate and this explicit atomic commit (never implicitly).
+    if (candidate.format) next.format = candidate.format;
     if (candidate.resolvedRevision) next.resolvedRevision = candidate.resolvedRevision;
     if (plan.rebindSource) {
       next.sourceKind = plan.rebindSource.sourceKind;

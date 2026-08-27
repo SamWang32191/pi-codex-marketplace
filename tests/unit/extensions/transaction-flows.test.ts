@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, cpSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -10,7 +10,7 @@ import { inspectMarketplaceEntries } from '../../../src/installation/inspection.
 import { appendReceipt, readReceiptJournal } from '../../../src/journal/journal.js';
 import { dispatchLedgerAction, formatStartupReceipt } from '../../../extensions/pi/index.js';
 import { TRANSACTION_STEPS } from '../../../extensions/pi/transaction-sheet.js';
-import { transactionStepLabel, uiText, verdictText, findingOutcomeText } from '../../../extensions/pi/ui-strings.js';
+import { transactionStepLabel, uiText, verdictText, findingOutcomeText, marketplaceFormatText } from '../../../extensions/pi/ui-strings.js';
 import { quoteTerminalText } from '../../../extensions/pi/terminal-presentation.js';
 import {
   fullValidationDisclosureLines,
@@ -1478,5 +1478,104 @@ describe('Bridge Ledger transaction flow adapters', () => {
     expect(confirmationTitles[1]).toMatch(/^Activation Confirmation/);
     const installed = await readBridgeState({ agentDir });
     expect(installed.state?.installations[0]?.installationState).toBe('enabled');
+  });
+
+  it('registers a mattpocock-shaped claude repo end-to-end through the mock Git executor (#47)', async () => {
+    // --- claude-only fixture: mattpocock-like layout with nested skill categories ---
+    const fixture = join(root, 'matt-fixture');
+    mkdirSync(join(fixture, '.claude-plugin'), { recursive: true });
+    const pluginRoot = join(fixture, 'plugins', 'mattpocock-skills');
+    mkdirSync(join(pluginRoot, '.claude-plugin'), { recursive: true });
+    for (const [skillDir, frontmatter] of [
+      ['skills/engineering/code-review', 'name: code-review\ndescription: Review code changes\ndisable-model-invocation: true'],
+      ['skills/diagnostics/diagnosing-bugs', 'name: diagnosing-bugs\ndescription: Diagnose hard bugs'],
+    ] as const) {
+      mkdirSync(join(pluginRoot, ...skillDir.split('/')), { recursive: true });
+      writeFileSync(join(pluginRoot, ...skillDir.split('/'), 'SKILL.md'), `---\n${frontmatter}\n---\n\nBody.\n`);
+    }
+    writeFileSync(
+      join(pluginRoot, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'mattpocock-skills', skills: ['./skills/engineering/code-review', './skills/diagnostics/diagnosing-bugs'] }),
+    );
+    writeFileSync(
+      join(fixture, '.claude-plugin', 'marketplace.json'),
+      JSON.stringify({
+        name: 'mattpocock-marketplace',
+        owner: { name: 'Matt Pocock' },
+        plugins: [{ name: 'mattpocock-skills', source: './plugins/mattpocock-skills' }],
+      }),
+    );
+
+    const sha = 'a'.repeat(40);
+    const executor = async (args: string[]) => {
+      if (args.includes('ls-remote')) {
+        return { exitCode: 0, stdout: `${sha}\trefs/heads/main\n`, stderr: '' };
+      }
+      if (args.includes('clone')) {
+        const dest = args[args.length - 1]!;
+        cpSync(fixture, dest, { recursive: true });
+        mkdirSync(join(dest, '.git'), { recursive: true });
+        return { exitCode: 0, stdout: '', stderr: '' };
+      }
+      return { exitCode: 0, stdout: '', stderr: '' };
+    };
+
+    const events: string[] = [];
+    const renderedByStep = new Map<string, string>();
+    let confirmationBody = '';
+    const notifications: string[] = [];
+    const ctx = {
+      cwd,
+      mode: 'tui',
+      hasUI: true,
+      isProjectTrusted: () => true,
+      ui: {
+        select: async () => uiText('reg.git.selector.default'),
+        input: async () => 'https://github.com/mattpocock/skills',
+        custom: async (factory: any): Promise<unknown> => new Promise((resolve) => {
+          const component = factory({ requestRender: () => {} }, theme, {}, resolve);
+          let rendered = component.render(120).join('\n');
+          const active = TRANSACTION_STEPS.find((step, index) =>
+            rendered.includes(`▸ ${index + 1} ${transactionStepLabel(step)}（${uiText('step.activeSuffix')}）`));
+          if (active) {
+            events.push(active);
+            if (active === 'Validation' && !renderedByStep.has(active)) {
+              // expand the collapsible full Validation Disclosure before capturing
+              component.handleInput?.('d');
+              rendered = component.render(120).join('\n');
+            }
+            if (!renderedByStep.has(active)) renderedByStep.set(active, rendered);
+          }
+          component.handleInput?.('\r');
+        }),
+        confirm: async (_title: string, message: string) => {
+          confirmationBody = message;
+          return true;
+        },
+        notify: (message: string) => notifications.push(message),
+      },
+    };
+
+    await runGitRegistrationFlow(ctx as never, { executor });
+
+    // Full transaction: Intent → Validation → Consent → Plan → Commit → Receipt
+    expect(events).toEqual(['Intent', 'Validation', 'Consent', 'Plan', 'Commit', 'Receipt']);
+
+    // Validation disclosure and Registration Confirmation both show the detected format.
+    expect(renderedByStep.get('Validation')).toContain(`Marketplace Format ${marketplaceFormatText('claude')}`);
+    expect(confirmationBody).toContain(marketplaceFormatText('claude'));
+
+    const state = await readBridgeState({ agentDir });
+    const registration = state.state?.registrations[0];
+    expect(registration).toBeDefined();
+    expect(registration!.format).toBe('claude');
+    expect(registration!.sourceKind).toBe('git');
+    expect(registration!.canonicalLocator).toBe('https://github.com/mattpocock/skills');
+
+    const journal = await readReceiptJournal({ agentDir });
+    const receipt = journal.receipts.at(-1)!;
+    expect(receipt.summary).toBe('Completed');
+    expect(receipt.marketplaceFormat).toBe('claude');
+    expect(notifications.join('\n')).toContain(marketplaceFormatText('claude'));
   });
 });

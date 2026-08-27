@@ -368,3 +368,73 @@ describe('Git Marketplace Registration flow', () => {
     }
   });
 });
+
+describe('Marketplace Format detection wiring — git registration', () => {
+  let env: ReturnType<typeof makeEnv>;
+  let fixture: string;
+  const locator = 'https://github.com/mattpocock/skills';
+
+  beforeEach(() => {
+    env = makeEnv();
+    fixture = realpathSync(mkdtempSync(join(tmpdir(), 'mkt-git-claude-')));
+    // claude-only repo: `.claude-plugin/` catalogs with a manifest-backed plugin
+    mkdirSync(join(fixture, '.claude-plugin'), { recursive: true });
+    const pluginRoot = join(fixture, 'plugins', 'mattpocock-skills');
+    mkdirSync(join(pluginRoot, '.claude-plugin'), { recursive: true });
+    mkdirSync(join(pluginRoot, 'skills', 'engineering', 'code-review'), { recursive: true });
+    writeFileSync(
+      join(pluginRoot, 'skills', 'engineering', 'code-review', 'SKILL.md'),
+      '---\nname: code-review\ndescription: Review code changes\n---\n\nReview code.\n',
+    );
+    writeFileSync(
+      join(pluginRoot, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'mattpocock-skills', skills: ['./skills/engineering/code-review'] }),
+    );
+    writeFileSync(
+      join(fixture, '.claude-plugin', 'marketplace.json'),
+      JSON.stringify({
+        name: 'mattpocock-marketplace',
+        owner: { name: 'Matt Pocock' },
+        plugins: [{ name: 'mattpocock-skills', source: './plugins/mattpocock-skills' }],
+      }),
+    );
+  });
+  afterEach(() => {
+    try { rmSync(env.tmpRoot, { recursive: true, force: true }); } catch {}
+    try { rmSync(fixture, { recursive: true, force: true }); } catch {}
+  });
+
+  it('registers an acquired claude-only repo and fixes format=claude onto the Registration', async () => {
+    const exec = makeMockExecutor(fixture, { sha: 'f'.repeat(40) });
+    const res = await preflightGitRegistration(locator, { kind: 'branch', value: 'main' }, gitOpts(env, exec));
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.preflight.format).toBe('claude');
+    expect(disclosureSummaryGit(res.preflight)).toContain('Marketplace Format: claude');
+
+    const outcome = await confirmGitRegistration(res.preflight, true, gitOpts(env, exec));
+    expect(outcome.status).toBe('completed');
+    if (outcome.status !== 'completed') return;
+    expect(outcome.registration.format).toBe('claude');
+    expect(outcome.receipt.marketplaceFormat).toBe('claude');
+
+    const state = await readBridgeState({ agentDir: env.agentDir });
+    expect(state.state!.registrations[0].format).toBe('claude');
+    expect(state.state!.registrations[0].canonicalLocator).toBe(locator);
+  });
+
+  it('keeps CATALOG_MISSING unchanged when the acquired repo has neither catalog', async () => {
+    const emptyFixture = realpathSync(mkdtempSync(join(tmpdir(), 'empty-git-claude-')));
+    try {
+      const exec = makeMockExecutor(emptyFixture);
+      const res = await preflightGitRegistration(locator, { kind: 'branch', value: 'main' }, gitOpts(env, exec));
+      expect(res.ok).toBe(false);
+      if (res.ok) return;
+      expect(res.outcome.status).toBe('blocked');
+      if (res.outcome.status !== 'blocked') return;
+      expect(res.outcome.findings[0].code).toBe('CATALOG_MISSING');
+    } finally {
+      try { rmSync(emptyFixture, { recursive: true, force: true }); } catch {}
+    }
+  });
+});

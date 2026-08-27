@@ -14,8 +14,9 @@ import {
   type CompatiblePlugin,
   type PluginClassification,
 } from '../compatibility/profile.js';
-import type { Registration } from '../bridge-state/types.js';
+import type { Registration, MarketplaceFormat } from '../bridge-state/types.js';
 import type { MarketplaceEntry } from '../registration/catalog.js';
+import { catalogContractFor } from '../registration/format.js';
 import { parseCatalog } from '../registration/catalog.js';
 import { resolveContained } from '../registration/contained.js';
 import { CODE, RULE, blocking, hasBlocking, sortFindings, type ValidationFinding } from '../registration/findings.js';
@@ -50,6 +51,8 @@ export interface InspectionOptions {
   baseSnapshot?: ValidationSnapshot;
   /** Suppress the recorded-snapshot drift Blocking Finding — Refresh compares fingerprints explicitly instead. */
   ignoreRecordedDrift?: boolean;
+  /** Format-bound catalog override for candidate validation of a replacement/new source state (Refresh / Rebind). Committed registrations always read through their registered format. */
+  format?: MarketplaceFormat;
   agentDir?: string;
   cache?: SourceCache;
 }
@@ -60,6 +63,10 @@ function inspectionFinding(code: string, rule: string, target: ValidationFinding
 
 /** Inspect every Marketplace Entry once. All filesystem work occurs after a bounded snapshot. */
 export function inspectMarketplaceEntries(registration: Registration, opts: InspectionOptions = {}): MarketplaceInspection {
+  // Browse reads through the REGISTERED format — an upstream flip is never adopted implicitly;
+  // candidate validation (Refresh / Rebind) passes the detected live format explicitly.
+  const format: MarketplaceFormat = opts.format ?? registration.format ?? 'codex';
+  const contract = catalogContractFor(format);
   const override = Boolean(opts.root && opts.baseSnapshot);
   let root: string;
   let snapshotResult: { ok: boolean; snapshot?: ValidationSnapshot; findings: ValidationFinding[] };
@@ -122,7 +129,7 @@ export function inspectMarketplaceEntries(registration: Registration, opts: Insp
     const key = localSourceKey(registration.source);
     if (!key.ok) return { entries: [], findings: [inspectionFinding(CODE.SOURCE_REACQUISITION_REQUIRED, RULE.SOURCE_REACQUISITION_REQUIRED, 'registration', key.error ?? 'Marketplace Root cannot be revalidated')] };
     root = key.sourceKey!.canonicalPath!;
-    const catalogPath = join(root, '.agents', 'plugins', 'marketplace.json');
+    const catalogPath = join(root, ...contract.relPath.split('/'));
     try {
       if (lstatSync(catalogPath).size > BUDGET.maxCatalogBytes) {
         return { entries: [], findings: [inspectionFinding(CODE.BUDGET_EXCEEDED, RULE.BUDGET_EXCEEDED, 'catalog', `Validation Budget exceeded: catalog exceeds ${BUDGET.maxCatalogBytes} bytes`)] };
@@ -139,7 +146,7 @@ export function inspectMarketplaceEntries(registration: Registration, opts: Insp
     };
   }
 
-  const catalogPath = join(root, '.agents', 'plugins', 'marketplace.json');
+  const catalogPath = join(root, ...contract.relPath.split('/'));
 
   let catalogRaw: string;
   let catalogValue: unknown;
@@ -149,9 +156,9 @@ export function inspectMarketplaceEntries(registration: Registration, opts: Insp
     catalogRaw = bytes.toString('utf8');
     catalogValue = JSON.parse(catalogRaw);
   } catch {
-    return { entries: [], snapshot: snapshotResult.snapshot, findings: [inspectionFinding(CODE.CATALOG_MISSING, RULE.CATALOG_MISSING, 'catalog', 'Marketplace Catalog cannot be read')] };
+    return { entries: [], snapshot: snapshotResult.snapshot, findings: [inspectionFinding(CODE.CATALOG_MISSING, RULE.CATALOG_MISSING, 'catalog', `Marketplace Catalog cannot be read at ${contract.relPath}`)] };
   }
-  const parsed = parseCatalog(catalogValue);
+  const parsed = contract.parse(catalogValue);
   if (!parsed.catalog) return { entries: [], snapshot: snapshotResult.snapshot, findings: parsed.findings };
   const marketplaceId = `${registration.id}/${parsed.catalog.name}`;
   const drift = !opts.ignoreRecordedDrift && registration.validationSnapshot && registration.validationSnapshot !== snapshotResult.snapshot!.fingerprint
@@ -169,7 +176,7 @@ export function inspectMarketplaceEntries(registration: Registration, opts: Insp
       baseClassification = classifyPlugin(contained.outcome.canonicalPath, {
         marketplaceId,
         marketplaceEntryId: `${marketplaceId}${entry.entryId}`,
-        format: registration.format,
+        format,
       });
       classifications.set(contained.outcome.canonicalPath, baseClassification);
     }

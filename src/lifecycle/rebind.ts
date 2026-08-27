@@ -30,6 +30,7 @@ import {
   type GitSelectorInput,
 } from '../registration/git-selector.js';
 import { createReceipt, type AttemptReceipt } from '../registration/receipt.js';
+import { detectMarketplaceFormat } from '../registration/format.js';
 import { findDuplicateRegistration, sourceKeyForLocalRoot } from '../registration/registration.js';
 import { buildGitSnapshot, buildLocalSnapshot } from '../registration/snapshot.js';
 import { gitSourceKey, type SourceKey } from '../registration/source-key.js';
@@ -152,10 +153,14 @@ function rebindToLocal(
   const snap = buildLocalSnapshot(sourceKey.canonicalPath!, sourceKey);
   if (!snap.ok || !snap.snapshot) return blocked(trigger, revision, snap.findings, recordedSnapshot);
 
+  // The replacement source's own format is detected fresh; it lands on the Registration only
+  // when the disclosed Update Plan is explicitly applied.
+  const replacementFormat = detectMarketplaceFormat(sourceKey.canonicalPath!);
   const inspection = inspectMarketplaceEntries(identityProbe(registrationId), {
     root: sourceKey.canonicalPath!,
     baseSnapshot: snap.snapshot,
     ignoreRecordedDrift: true,
+    format: replacementFormat ?? undefined,
   });
   const name = marketplaceNameOf(registrationId, inspection.marketplaceId);
   if (!inspection.marketplaceId || inspection.findings.some((f) => f.classification === 'blocking')) {
@@ -170,6 +175,7 @@ function rebindToLocal(
     recordedFingerprint: undefined,
     snapshot: snap.snapshot,
     marketplaceName: name,
+    format: replacementFormat ?? undefined,
     catalog: { name, entries: inspection.entries.map((item) => item.entry) },
     inspection,
     sourceKey,
@@ -234,10 +240,12 @@ async function rebindToGit(
     });
     if (!snap.ok || !snap.snapshot) return blocked(trigger, revision, snap.findings, recordedSnapshot);
 
+    const replacementFormat = detectMarketplaceFormat(acq.acquiredPath!);
     const inspection = inspectMarketplaceEntries(identityProbe(registrationId), {
       root: acq.acquiredPath!,
       baseSnapshot: snap.snapshot,
       ignoreRecordedDrift: true,
+      format: replacementFormat ?? undefined,
     });
     const name = marketplaceNameOf(registrationId, inspection.marketplaceId);
     if (!inspection.marketplaceId || inspection.findings.some((f) => f.classification === 'blocking')) {
@@ -250,6 +258,7 @@ async function rebindToGit(
       recordedFingerprint: undefined,
       snapshot: snap.snapshot,
       marketplaceName: name,
+      format: replacementFormat ?? undefined,
       catalog: { name, entries: inspection.entries.map((item) => item.entry) },
       inspection,
       sourceKey: boundKey,

@@ -4,6 +4,14 @@ All notable changes to `pi-codex-marketplace` are documented here. Format follow
 
 ## [Unreleased]
 
+### Added
+- **格式偵測接入登記與瀏覽流程（local + git）** (#47)：
+  - 掃描 Marketplace Root 決定性推導 Marketplace Format（codex 優先；兩種 catalog 並存時自動採用 codex，無額外提問）。
+  - 僅含 `.claude-plugin/marketplace.json` 的 repo 全程可登記：`format=claude` 固化於 Registration；兩者皆無時 CATALOG_MISSING 行為不變。
+  - 驗證披露、Registration Confirmation 畫面與 Attempt Receipt（Transaction Sheet、Receipt Journal、Attempt Summary 通知）顯示 Marketplace Format。
+  - 瀏覽（Bridge Ledger / 安裝選單）讀經註冊格式：Compatible entry 顯示外掛與技能清單，不合格 entry 顯示 Unavailable 原因；上游格式翻轉不被靜默採用，僅經 Marketplace Refresh 產生的 Update Candidate 加上明確 Apply Update 變更。
+  - transaction-flow 測試以 mock Git executor 完整登記仿 mattpocock 夾具成功。
+
 ### Changed
 - **Bridge State Schema v3 + format 屬性遷移** (#44)：`schemaVersion` 升為 `3`。
   - `Registration` 記錄新增 Marketplace Format 屬性（`codex | claude`）——本票只鋪持久層地基，格式偵測與 claude 解析由後續票交付。
