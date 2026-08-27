@@ -3,12 +3,10 @@
  * Single extension "pi" package, Pi 0.84.2 compatible.
  *
  * Provides:
- * - /codex-marketplace command: persistent Bridge Ledger workspace
- * - Bridge State reading via the single-document store (Global)
- * - Startup Reconciliation on session_start
- * - Receipt Journal inspection & State Repair flows
+ * - /codex-marketplace command: Thin Pi adapter delegating to pure runCommand
+ * - resources_discover: Runtime Skill Exposure contributing Projected Skill paths
  *
- * Domain vocabulary follows CONTEXT.md (Bridge Package, Bridge Extension, Bridge State, State Revision, etc.)
+ * Legacy flow exports retained for unit testing and backward compatibility.
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
@@ -16,6 +14,7 @@ import { stripTerminalSequences } from '@earendil-works/pi-tui';
 
 import { readBridgeStateSync } from '../../src/bridge-state/store.js';
 import type { ReadResult } from '../../src/bridge-state/types.js';
+import { runCommand } from '../../src/bridge/command.js';
 import { discoverProjectedSkillPaths } from '../../src/projection/exposure.js';
 import { runStartupReconciliation } from '../../src/reconciliation/startup.js';
 import type { AttemptReceipt } from '../../src/registration/receipt.js';
@@ -30,12 +29,8 @@ import {
   runRetryApplicationFlow,
 } from './journal.js';
 import {
-  BridgeLedgerComponent,
-  buildBridgeLedgerModel,
-  loadBridgeLedgerSnapshot,
   type LedgerActionIntent,
 } from './bridge-ledger.js';
-import { quoteTerminalText } from './terminal-presentation.js';
 import { renderTransactionSheet } from './transaction-sheet.js';
 import { uiText } from './ui-strings.js';
 
@@ -92,43 +87,6 @@ function requiredMarketplaceEntryTarget(intent: LedgerActionIntent): {
   throw new Error(`Ledger action ${intent.actionId} requires a stable Marketplace Entry identity`);
 }
 
-/** Localized state summary for TUI surfaces (the non-TUI list/inspect output stays canonical English). */
-function formatLocalizedStateSummary(result: ReadResult): string {
-  const scopeLabel = uiText('common.scope.global');
-  if (result.status === 'missing') {
-    const s = result.state!;
-    return uiText('cmd.state.empty', {
-      scope: scopeLabel,
-      version: s.schemaVersion,
-      revision: s.stateRevision,
-    });
-  }
-  if (result.status === 'ok') {
-    const s = result.state!;
-    const regCount = s.registrations.length;
-    const instEnabled = s.installations.filter((i) => i.installationState === 'enabled').length;
-    const instDisabled = s.installations.filter((i) => i.installationState === 'disabled').length;
-    const base = uiText('cmd.state.ok', {
-      scope: scopeLabel,
-      revision: s.stateRevision,
-      registrations: regCount,
-      enabled: instEnabled,
-      disabled: instDisabled,
-    });
-    return base;
-  }
-  if (result.status === 'incompatible') {
-    return uiText('cmd.state.incompatible', {
-      scope: scopeLabel,
-      error: quoteTerminalText(result.error ?? uiText('common.unknown')),
-    });
-  }
-  return uiText('cmd.state.corrupted', {
-    scope: scopeLabel,
-    error: quoteTerminalText(result.error ?? uiText('common.unknown')),
-  });
-}
-
 /** Dispatches only by stable semantic identity; display labels never select behavior. */
 export async function dispatchLedgerAction(
   ctx: ExtensionCommandContext,
@@ -137,7 +95,7 @@ export async function dispatchLedgerAction(
   switch (intent.actionId) {
     case 'observe-authority': {
       const global = readBridgeStateSync();
-      ctx.ui.notify(formatLocalizedStateSummary(global), 'info');
+      ctx.ui.notify(global.status, 'info');
       return;
     }
     case 'observe-effective-state':
@@ -213,28 +171,8 @@ export async function dispatchLedgerAction(
   }
 }
 
-// Closed helper to format state summary for disclosure
-function formatStateSummary(result: ReadResult, scopeLabel: string): string {
-  if (result.status === 'missing') {
-    const s = result.state!;
-    return `${scopeLabel}: empty · schema v${s.schemaVersion} · revision ${s.stateRevision} · 0 registrations · 0 installations`;
-  }
-  if (result.status === 'ok') {
-    const s = result.state!;
-    const regCount = s.registrations.length;
-    const instEnabled = s.installations.filter((i) => i.installationState === 'enabled').length;
-    const instDisabled = s.installations.filter((i) => i.installationState === 'disabled').length;
-    return `${scopeLabel}: revision ${s.stateRevision} · ${regCount} registrations · ${instEnabled} enabled / ${instDisabled} disabled`;
-  }
-  if (result.status === 'incompatible') {
-    return `${scopeLabel}: incompatible — ${quoteTerminalText(result.error ?? 'unknown schema')} (requires newer Bridge Package)`;
-  }
-  return `${scopeLabel}: corrupted — ${quoteTerminalText(result.error ?? 'unreadable Bridge State')} (Persistence Indeterminate, no auto-rollback)`;
-}
-
 export default function (pi: ExtensionAPI) {
   pi.on('session_start', async (_event, ctx) => {
-    // Startup reconciliation: Global pass
     try {
       const recon = await runStartupReconciliation({});
       if (recon.reconciled && recon.receipt) {
@@ -262,35 +200,16 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerCommand('codex-marketplace', {
     description: uiText('cmd.description'),
-    handler: async (args, ctx) => {
-      // Hybrid discovery/guided: support /codex-marketplace list|inspect <args> for non-TUI quick paths
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
       const rawArgs = (args ?? '').trim();
-      if (rawArgs.length > 0 && (rawArgs.startsWith('list') || rawArgs.startsWith('inspect') || rawArgs === '--help' || rawArgs === '-h')) {
-        const global = readBridgeStateSync();
-        const g = formatStateSummary(global, 'Global Scope');
-        ctx.ui.notify(`${g}\n(完整導向流請於 TUI 內執行 /codex-marketplace)`, 'info');
-        return;
-      }
+      const argv = rawArgs.length > 0 ? rawArgs.split(/\s+/) : [];
+      const result = await runCommand(argv);
 
-      // Non-TUI fallback: notify with summary
-      if (ctx.mode !== 'tui' || !ctx.hasUI) {
-        const global = readBridgeStateSync();
-        const g = formatStateSummary(global, 'Global Scope');
-        ctx.ui.notify(`${g}\n互動流程需 TUI 模式（/codex-marketplace 於 TUI 內）`, 'info');
-        return;
+      if (result.output) {
+        ctx.ui.notify(result.output, 'info');
       }
-
-      // The workspace is deliberately reopened from a fresh snapshot after every action.
-      // Neither cached revisions nor presentation-derived eligibility become authority.
-      while (true) {
-        const snapshot = await loadBridgeLedgerSnapshot({});
-        const model = buildBridgeLedgerModel(snapshot);
-        const intent = await ctx.ui.custom<LedgerActionIntent | undefined>(
-          (tui, theme, _keybindings, done) =>
-            new BridgeLedgerComponent(model, theme, tui, done),
-        );
-        if (!intent) return;
-        await dispatchLedgerAction(ctx, intent);
+      if (result.reload) {
+        await ctx.reload();
       }
     },
   });

@@ -1,13 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import registerBridgeExtension from '../../extensions/pi/index.js';
-import { uiText } from '../../extensions/pi/ui-strings.js';
-import { commitBridgeState } from '../../src/bridge-state/store.js';
-import { appendReceipt } from '../../src/journal/journal.js';
-import { createReceipt } from '../../src/registration/receipt.js';
+import { writeMinimalBridgeState, type MinimalBridgeState } from '../../src/bridge/state.js';
 
 interface CapturedCommand {
   handler(args: string, ctx: unknown): Promise<void>;
@@ -26,19 +23,16 @@ function captureCodexMarketplaceCommand(): CapturedCommand {
   return command;
 }
 
-const identityTheme = {
-  fg: (_color: string, text: string) => text,
-  bg: (_token: string, text: string) => text,
-  bold: (text: string) => text,
-};
-
-describe('/codex-marketplace Bridge Ledger command seam', () => {
+describe('/codex-marketplace thin Pi adapter seam (#88)', () => {
   let cwd: string;
   let agentDir: string;
+  let statePath: string;
 
   beforeEach(() => {
-    cwd = mkdtempSync(join(tmpdir(), 'bridge-ledger-command-cwd-'));
-    agentDir = mkdtempSync(join(tmpdir(), 'bridge-ledger-command-agent-'));
+    cwd = mkdtempSync(join(tmpdir(), 'bridge-adapter-cwd-'));
+    agentDir = mkdtempSync(join(tmpdir(), 'bridge-adapter-agent-'));
+    statePath = join(agentDir, 'codex-marketplace', 'state.json');
+    mkdirSync(join(agentDir, 'codex-marketplace'), { recursive: true });
     process.env.PI_CODING_AGENT_DIR = agentDir;
     process.env.PI_AGENT_DIR = agentDir;
   });
@@ -50,198 +44,103 @@ describe('/codex-marketplace Bridge Ledger command seam', () => {
     delete process.env.PI_AGENT_DIR;
   });
 
-  it('opens the custom Bridge Ledger workspace directly instead of the flat action select', async () => {
+  it('routes overview output to ctx.ui.notify on no arguments', async () => {
     const command = captureCodexMarketplaceCommand();
-    const rendered = new Map<number, string[]>();
-    let customCalls = 0;
+    const notifications: { message: string; type: string }[] = [];
 
-    const ui = {
-      select: async () => {
-        throw new Error('flat action select must not be used');
+    const ctx = {
+      cwd,
+      mode: 'tui',
+      hasUI: true,
+      ui: {
+        notify(message: string, type: string) {
+          notifications.push({ message, type });
+        },
       },
-      input: async () => undefined,
-      confirm: async () => false,
-      notify() {},
-      custom: async (factory: Function) => {
-        customCalls += 1;
-        let completed = false;
-        let result: unknown;
-        const component = await factory(
-          { requestRender() {} },
-          identityTheme,
-          {},
-          (value: unknown) => {
-            completed = true;
-            result = value;
-          },
-        );
-        for (const width of [120, 80, 60]) rendered.set(width, component.render(width));
-        component.handleInput?.('q');
-        expect(completed).toBe(true);
-        return result;
-      },
+      reload: async () => {},
     };
 
-    await command.handler('', {
-      cwd,
-      mode: 'tui',
-      hasUI: true,
-      isProjectTrusted: () => true,
-      ui,
-    });
-
-    expect(customCalls).toBe(1);
-    for (const width of [120, 80, 60]) {
-      const screen = rendered.get(width)!.join('\n');
-      expect(screen).toContain('BRIDGE LEDGER');
-      // Global-only (#62): the single Global partition is named, with no G/P browse markers.
-      expect(screen).toContain(uiText('common.scope.global'));
-      expect(screen).not.toMatch(/\bG\b/);
-      expect(screen).not.toMatch(/PROJECT|\bP\b/);
-      expect(screen).toMatch(/rev(?:ision)?\s+"?0"?/i);
-      expect(screen).toMatch(/Esc.*q|q.*Esc/i);
-    }
-  });
-
-  it('re-reads authoritative state before reopening after an action', async () => {
-    const command = captureCodexMarketplaceCommand();
-    const screens: string[][] = [];
-    let customCalls = 0;
-
-    const ui = {
-      notify() {},
-      select: async () => {
-        throw new Error('Observe action must not open the legacy flat select');
-      },
-      custom: async (factory: Function) => {
-        customCalls += 1;
-        let result: unknown;
-        let completed = false;
-        const component = await factory(
-          { requestRender() {} },
-          identityTheme,
-          {},
-          (value: unknown) => {
-            completed = true;
-            result = value;
-          },
-        );
-        screens.push(component.render(80));
-        if (customCalls === 1) {
-          component.handleInput?.('\r'); // drill into the section (single-column layout at 80)
-          component.handleInput?.('\r'); // activate the first available structured action
-          await commitBridgeState((state) => ({
-              ...state,
-              registrations: [
-                {
-                  id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-                  alias: 'after-action',
-                },
-              ],
-            }),
-            { agentDir },
-          );
-        } else {
-          component.handleInput?.('q');
-        }
-        expect(completed).toBe(true);
-        return result;
-      },
-    };
-
-    await command.handler('', {
-      cwd,
-      mode: 'tui',
-      hasUI: true,
-      isProjectTrusted: () => true,
-      ui,
-    });
-
-    expect(customCalls).toBe(2);
-    expect(screens[0]!.join('\n')).toContain(uiText('ledger.rail.revision', { revision: '"0"' }));
-    expect(screens[1]!.join('\n')).toContain(uiText('ledger.rail.revision', { revision: '"1"' }));
-    expect(screens[1]!.join('\n')).toContain(uiText('ledger.rail.registrations', { count: 1 }));
-  });
-
-  it('keeps Global mutations available while an active recovery chain exists (Barrier retired)', async () => {
-    await appendReceipt(createReceipt({
-        operation: 'Plugin Installation',
-        trigger: 'install',
-        expectedStateRevision: '0',
-        targetStateRevision: '1',
-        observedStateRevision: '1',
-        durableOutcome: 'committed',
-        runtimeOutcome: 'pending-application',
-        summary: 'Pending Application',
-      }),
-      { agentDir },
-    );
-    const command = captureCodexMarketplaceCommand();
-    let screen = '';
-
-    await command.handler('', {
-      cwd,
-      mode: 'tui',
-      hasUI: true,
-      isProjectTrusted: () => true,
-      ui: {
-        notify() {},
-        select: async () => {
-          throw new Error('Ledger workspace must not use the flat select');
-        },
-        custom: async (factory: Function) => {
-          let result: unknown;
-          const component = await factory(
-            { requestRender() {} },
-            identityTheme,
-            {},
-            (value: unknown) => {
-              result = value;
-            },
-          );
-          component.render(120);
-          component.handleInput?.('\x1b[C'); // move to the next section (wide layout)
-          screen = component.render(120).join('\n');
-          component.handleInput?.('q');
-          return result;
-        },
-      },
-    });
-
-    // No Barrier indicator anywhere; Global mutations stay available.
-    expect(screen).not.toMatch(/Global Pending Barrier|Barrier/);
-    expect(screen).toContain(`● ${uiText('ledger.availability.ready')} ${uiText('ledger.action.register-local')}`);
-    expect(screen).not.toMatch(/\[available\]|\[Unavailable\]|disabled:/);
-  });
-
-  it.each([
-    { args: '', mode: 'rpc', hasUI: false },
-    { args: 'list', mode: 'tui', hasUI: true },
-    { args: 'inspect', mode: 'tui', hasUI: true },
-  ])('keeps the non-interactive/read-only path for %o', async ({ args, mode, hasUI }) => {
-    const command = captureCodexMarketplaceCommand();
-    const notifications: string[] = [];
-    await command.handler(args, {
-      cwd,
-      mode,
-      hasUI,
-      isProjectTrusted: () => true,
-      ui: {
-        notify(message: string) {
-          notifications.push(message);
-        },
-        select: async () => {
-          throw new Error('read-only fallback must not select');
-        },
-        custom: async () => {
-          throw new Error('read-only fallback must not open custom TUI');
-        },
-      },
-    });
+    await command.handler('', ctx);
 
     expect(notifications).toHaveLength(1);
-    expect(notifications[0]).toContain('Global Scope');
-    // Global-only (#61): the project document is never read nor surfaced.
-    expect(notifications[0]).not.toContain('Project Scope');
+    expect(notifications[0].type).toBe('info');
+    expect(notifications[0].message).toContain('Marketplaces');
+    expect(notifications[0].message).toContain('Installed');
+    expect(notifications[0].message).toContain('用法：/codex-marketplace');
+  });
+
+  it('routes help output to ctx.ui.notify on help argument', async () => {
+    const command = captureCodexMarketplaceCommand();
+    const notifications: { message: string; type: string }[] = [];
+
+    const ctx = {
+      cwd,
+      mode: 'tui',
+      hasUI: true,
+      ui: {
+        notify(message: string, type: string) {
+          notifications.push({ message, type });
+        },
+      },
+      reload: async () => {},
+    };
+
+    await command.handler('help', ctx);
+
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0].message).toContain('add');
+    expect(notifications[0].message).toContain('list');
+    expect(notifications[0].message).toContain('install');
+    expect(notifications[0].message).toContain('update');
+    expect(notifications[0].message).toContain('disable');
+    expect(notifications[0].message).toContain('enable');
+    expect(notifications[0].message).toContain('remove');
+    expect(notifications[0].message).toContain('forget');
+    expect(notifications[0].message).toContain('help');
+  });
+
+  it('notifies warning notice and resets corrupted state file', async () => {
+    writeFileSync(statePath, 'INVALID JSON CONTENT', 'utf-8');
+
+    const command = captureCodexMarketplaceCommand();
+    const notifications: { message: string; type: string }[] = [];
+
+    const ctx = {
+      cwd,
+      mode: 'tui',
+      hasUI: true,
+      ui: {
+        notify(message: string, type: string) {
+          notifications.push({ message, type });
+        },
+      },
+      reload: async () => {},
+    };
+
+    await command.handler('', ctx);
+
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0].message).toMatch(/損壞|重置/);
+    expect(notifications[0].message).toContain('Marketplaces');
+  });
+
+  it('does not invoke ctx.reload when reload flag is false', async () => {
+    const command = captureCodexMarketplaceCommand();
+    let reloaded = false;
+
+    const ctx = {
+      cwd,
+      mode: 'tui',
+      hasUI: true,
+      ui: {
+        notify() {},
+      },
+      reload: async () => {
+        reloaded = true;
+      },
+    };
+
+    await command.handler('help', ctx);
+    expect(reloaded).toBe(false);
   });
 });
