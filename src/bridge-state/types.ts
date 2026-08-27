@@ -62,6 +62,8 @@ export interface Registration {
   resolvedRevision?: string;
   /** Validation Snapshot fingerprint bound to Registration Confirmation */
   validationSnapshot?: string;
+  /** Per-entry Validation Snapshot fingerprints bound to Registration Confirmation (issue #50). */
+  entrySnapshots?: Record<string, string>;
   /** Bound Compatibility Profile / Ruleset / Budget ids at confirmation time */
   snapshotBinds?: { profile?: string; ruleset?: string; budget?: string };
 }
