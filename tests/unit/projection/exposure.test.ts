@@ -293,4 +293,72 @@ describe('Runtime Skill Exposure — passive inspection only', () => {
     expect(result.exposed.map((s) => s.name)).toEqual(['local-skill']);
     expect(realpathSync(result.skillPaths[0]!)).toBe(realpathSync(join(env.marketplace, 'plugins', 'release-helper', 'skills', 'local-skill')));
   });
+
+  it('exposes skills from Claude format registrations using declared skills array paths', async () => {
+    const env = freshEnv();
+    mkdirSync(join(env.marketplace, '.claude-plugin'), { recursive: true });
+    const pluginDir = join(env.marketplace, 'plugins', 'mattpocock-skills');
+    mkdirSync(join(pluginDir, '.claude-plugin'), { recursive: true });
+    mkdirSync(join(pluginDir, 'skills', 'engineering', 'code-review'), { recursive: true });
+    writeFileSync(
+      join(pluginDir, 'skills', 'engineering', 'code-review', 'SKILL.md'),
+      '---\nname: code-review\ndescription: Review code\n---\n\nReview.\n',
+    );
+    mkdirSync(join(pluginDir, 'skills', 'interview', 'grilling'), { recursive: true });
+    writeFileSync(
+      join(pluginDir, 'skills', 'interview', 'grilling', 'SKILL.md'),
+      '---\nname: grilling\ndescription: Grill plan\n---\n\nGrill.\n',
+    );
+    writeFileSync(
+      join(pluginDir, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'mattpocock-skills', skills: ['./skills/engineering/code-review', './skills/interview/grilling'] }),
+    );
+    writeFileSync(
+      join(env.marketplace, '.claude-plugin', 'marketplace.json'),
+      JSON.stringify({
+        name: 'matt-marketplace',
+        plugins: [{ name: 'mattpocock-skills', source: './plugins/mattpocock-skills' }],
+      }),
+    );
+
+    await commitBridgeState((state) => ({
+        ...state,
+        registrations: [
+          ...state.registrations,
+          {
+            id: GLOBAL_REG,
+            alias: 'matt-local',
+            marketplaceName: 'matt-marketplace',
+            sourceKind: 'local' as const,
+            source: env.marketplace,
+            format: 'claude',
+          },
+        ],
+        installations: [
+          ...state.installations,
+          {
+            id: `${GLOBAL_REG}/matt-marketplace/mattpocock-skills`,
+            pluginId: `${GLOBAL_REG}/matt-marketplace/mattpocock-skills`,
+            installationState: 'enabled' as const,
+            registrationId: GLOBAL_REG,
+            marketplaceEntryId: `${GLOBAL_REG}/matt-marketplace/plugins/0`,
+            validationSnapshot: 'claude-local-bound-snapshot',
+            manifestName: 'mattpocock-skills',
+          },
+        ],
+      }),
+      { agentDir: env.agentDir },
+    );
+
+    const result = discoverProjectedSkillPaths({ agentDir: env.agentDir });
+    expect(result.exposed.map((s) => s.name).sort()).toEqual(['code-review', 'grilling']);
+    expect(result.skillPaths).toHaveLength(2);
+    expect(realpathSync(result.skillPaths.find((p) => p.includes('code-review'))!)).toBe(
+      realpathSync(join(pluginDir, 'skills', 'engineering', 'code-review')),
+    );
+    expect(realpathSync(result.skillPaths.find((p) => p.includes('grilling'))!)).toBe(
+      realpathSync(join(pluginDir, 'skills', 'interview', 'grilling')),
+    );
+  });
 });
+

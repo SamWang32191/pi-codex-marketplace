@@ -1578,4 +1578,115 @@ describe('Bridge Ledger transaction flow adapters', () => {
     expect(receipt.marketplaceFormat).toBe('claude');
     expect(notifications.join('\n')).toContain(marketplaceFormatText('claude'));
   });
+
+  it('runs Claude plugin installation and state toggle flows through the transaction sheet seam (#48)', async () => {
+    // 1. Setup local Claude marketplace fixture with mattpocock layout
+    const fixture = join(root, 'matt-install-fixture');
+    mkdirSync(join(fixture, '.claude-plugin'), { recursive: true });
+    const pluginRoot = join(fixture, 'plugins', 'mattpocock-skills');
+    mkdirSync(join(pluginRoot, '.claude-plugin'), { recursive: true });
+    for (const [skillDir, frontmatter] of [
+      ['skills/engineering/code-review', 'name: code-review\ndescription: Review code changes\ndisable-model-invocation: true'],
+      ['skills/interview/grilling', 'name: grilling\ndescription: Grill the plan'],
+    ] as const) {
+      mkdirSync(join(pluginRoot, ...skillDir.split('/')), { recursive: true });
+      writeFileSync(join(pluginRoot, ...skillDir.split('/'), 'SKILL.md'), `---\n${frontmatter}\n---\n\nBody.\n`);
+    }
+    writeFileSync(
+      join(pluginRoot, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'mattpocock-skills', skills: ['./skills/engineering/code-review', './skills/interview/grilling'] }),
+    );
+    writeFileSync(
+      join(fixture, '.claude-plugin', 'marketplace.json'),
+      JSON.stringify({
+        name: 'mattpocock-marketplace',
+        owner: { name: 'Matt Pocock' },
+        plugins: [{ name: 'mattpocock-skills', source: './plugins/mattpocock-skills' }],
+      }),
+    );
+
+    const inspection = inspectMarketplaceEntries({
+      id: '55555555-5555-4555-8555-555555555555',
+      sourceKind: 'local',
+      source: fixture,
+      format: 'claude',
+    });
+
+    const regId = '55555555-5555-4555-8555-555555555555';
+    await commitBridgeState((s) => ({
+      ...s,
+      registrations: [...s.registrations, {
+        id: regId,
+        alias: 'mattpocock',
+        marketplaceName: 'mattpocock-marketplace',
+        sourceKind: 'local',
+        source: fixture,
+        format: 'claude',
+        validationSnapshot: inspection.treeFingerprint ?? inspection.snapshot!.fingerprint,
+      }],
+    }), { agentDir });
+
+    const events: string[] = [];
+    const confirmationTitles: string[] = [];
+    const confirmationBodies: string[] = [];
+    const notifications: string[] = [];
+
+    const ctx = {
+      cwd,
+      mode: 'tui',
+      hasUI: true,
+      isProjectTrusted: () => true,
+      ui: {
+        select: async (_prompt: string, choices: string[]) => {
+          // Select available entry or enablement path
+          return choices.find((c) => c.includes(uiText('inst.path.enabled'))) ?? choices[0];
+        },
+        custom: async (factory: any): Promise<unknown> => new Promise((resolve) => {
+          const component = factory({ requestRender: () => {} }, theme, {}, resolve);
+          const rendered = component.render(120).join('\n');
+          const active = TRANSACTION_STEPS.find((step, index) =>
+            rendered.includes(`▸ ${index + 1} ${transactionStepLabel(step)}（${uiText('step.activeSuffix')}）`));
+          if (active) events.push(active);
+          component.handleInput?.('\r');
+        }),
+        confirm: async (title: string, message: string) => {
+          confirmationTitles.push(title);
+          confirmationBodies.push(message);
+          return true;
+        },
+        notify: (message: string) => notifications.push(message),
+      },
+    };
+
+    // 2. Run Plugin Installation Flow for Claude marketplace entry
+    await runPluginInstallationFlow(ctx as never, { registrationId: regId });
+
+    expect(events).toEqual(['Intent', 'Validation', 'Consent', 'Plan', 'Commit', 'Receipt']);
+    expect(confirmationTitles).toHaveLength(1);
+    expect(confirmationTitles[0]).toMatch(/Activation Confirmation/);
+    expect(confirmationBodies[0]).toContain('mattpocock-skills');
+    expect(confirmationBodies[0]).toContain('code-review');
+    expect(confirmationBodies[0]).toContain('grilling');
+
+    const state = await readBridgeState({ agentDir });
+    expect(state.state?.installations).toHaveLength(1);
+    const installation = state.state!.installations[0]!;
+    expect(installation.manifestName).toBe('mattpocock-skills');
+    expect(installation.installationState).toBe('enabled');
+
+    // 3. Disable Plugin via State Flow
+    events.length = 0;
+    await runPluginStateFlow(ctx as never, { installationId: installation.id, desiredState: 'disabled' });
+    const disabledState = await readBridgeState({ agentDir });
+    expect(disabledState.state?.installations[0]?.installationState).toBe('disabled');
+
+    // 4. Re-enable Plugin via State Flow
+    events.length = 0;
+    confirmationTitles.length = 0;
+    await runPluginStateFlow(ctx as never, { installationId: installation.id, desiredState: 'enabled' });
+    expect(confirmationTitles).toHaveLength(1);
+    expect(confirmationTitles[0]).toMatch(/Activation Confirmation/);
+    const reenabledState = await readBridgeState({ agentDir });
+    expect(reenabledState.state?.installations[0]?.installationState).toBe('enabled');
+  });
 });

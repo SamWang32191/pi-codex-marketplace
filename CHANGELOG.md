@@ -5,6 +5,13 @@ All notable changes to `pi-codex-marketplace` are documented here. Format follow
 ## [Unreleased]
 
 ### Added
+- **Claude 外掛完整生命週期與驗收劇本** (#48)：
+  - Claude 安裝生命週期完備：`Install Disabled` 建立 disabled 狀態（無須 Activation Confirmation）；啟用經由 `preflightPluginEnable` 重新驗證並要求 `Activation Confirmation`（Default No）。
+  - Runtime Application 與投影：安裝啟用後 `projectEffectiveState` 及 `discoverProjectedSkillPaths` 動態貢獻 Claude plugins 的宣告技能目錄，並遵循 `Pi → Global` 優先序。
+  - Runtime Skill Collision 如實裁決：本地 Pi 原生 skill 優先保留，碰撞之 Bridge 候選標示為 `unavailable-collision`，未碰撞技能正常投影，外掛分類不受影響保持 `Compatible`。
+  - Refresh 與 Update Plan：上游變更產生 format-bound `Update Candidate`；`buildUpdatePlan` 與 `applyUpdate` 遵循全有全無原子提交，要求重新 Registration Confirmation 與 Activation Confirmation。
+  - Registration Removal 連帶級聯同 registration 下所有 Claude Installations，Global Scope 其餘註冊與安裝不受波及。
+  - 驗收劇本與測試：以 mattpocock-shaped fixture 完整驗證相容外掛、技能列出、同名碰撞與 TUI transaction-flow。
 - **格式偵測接入登記與瀏覽流程（local + git）** (#47)：
   - 掃描 Marketplace Root 決定性推導 Marketplace Format（codex 優先；兩種 catalog 並存時自動採用 codex，無額外提問）。
   - 僅含 `.claude-plugin/marketplace.json` 的 repo 全程可登記：`format=claude` 固化於 Registration；兩者皆無時 CATALOG_MISSING 行為不變。

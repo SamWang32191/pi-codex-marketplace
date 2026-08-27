@@ -26,8 +26,9 @@ import { parseFrontmatter } from '@earendil-works/pi-coding-agent';
 
 import { getCacheEntriesDir, getCacheDir } from '../cache/paths.js';
 import { readBridgeStateSync } from '../bridge-state/store.js';
-import { createEmptyState, type BridgeState, type Installation, type Registration } from '../bridge-state/types.js';
-import { parseCatalog, type Catalog } from '../registration/catalog.js';
+import { createEmptyState, type BridgeState, type Installation, type MarketplaceFormat, type Registration } from '../bridge-state/types.js';
+import { catalogContractFor } from '../registration/format.js';
+import { type Catalog } from '../registration/catalog.js';
 import { BUDGET } from '../registration/budget.js';
 import { resolveContained } from '../registration/contained.js';
 import { computeEffectiveState } from './effective-state.js';
@@ -83,12 +84,17 @@ function readGlobalOrEmpty(opts: RuntimeSkillExposureOptions): BridgeState {
  * Locate one Installation's plugin directory inside a snapshot root by resolving its
  * Marketplace Entry ID through the retained catalog, then verify containment.
  */
-function resolvePluginDirInSnapshot(snapshotRoot: string, installation: Installation): string | undefined {
-  const catalogPath = join(snapshotRoot, '.agents', 'plugins', 'marketplace.json');
+function resolvePluginDirInSnapshot(
+  snapshotRoot: string,
+  installation: Installation,
+  format: MarketplaceFormat = 'codex',
+): string | undefined {
+  const contract = catalogContractFor(format);
+  const catalogPath = join(snapshotRoot, ...contract.relPath.split('/'));
   try {
     if (!existsSync(catalogPath) || statSync(catalogPath).size > BUDGET.maxCatalogBytes) return undefined;
     const parsed: unknown = JSON.parse(readFileSync(catalogPath, 'utf8'));
-    const result = parseCatalog(parsed);
+    const result = contract.parse(parsed);
     if (!result.catalog) return undefined;
     return resolveEntryPluginDir(snapshotRoot, result.catalog, installation);
   } catch {
@@ -115,7 +121,31 @@ function resolveEntryPluginDir(snapshotRoot: string, catalog: Catalog, installat
 }
 
 /** Read each skills/<dir>/SKILL.md descriptor name exactly as Pi resolves it (frontmatter name, else directory name). */
-function skillCandidates(pluginDir: string): Array<{ name: string; skillDir: string }> {
+function skillCandidates(pluginDir: string, format: MarketplaceFormat = 'codex'): Array<{ name: string; skillDir: string }> {
+  if (format === 'claude') {
+    const manifestPath = join(pluginDir, '.claude-plugin', 'plugin.json');
+    if (!existsSync(manifestPath) || !statSync(manifestPath).isFile()) return [];
+    let manifest: Record<string, unknown>;
+    try {
+      manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    } catch {
+      return [];
+    }
+    if (!Array.isArray(manifest.skills)) return [];
+    const found: Array<{ name: string; skillDir: string }> = [];
+    for (const skillDecl of manifest.skills) {
+      if (typeof skillDecl !== 'string') continue;
+      const resolved = resolveContained(pluginDir, skillDecl, 'directory');
+      if (resolved.outcome.kind !== 'ok') continue;
+      const skillDir = resolved.outcome.canonicalPath;
+      const descriptor = join(skillDir, 'SKILL.md');
+      if (!existsSync(descriptor)) continue;
+      const name = descriptorSkillName(skillDir, descriptor);
+      if (name) found.push({ name, skillDir });
+    }
+    return found;
+  }
+
   const skillsDir = join(pluginDir, 'skills');
   if (!existsSync(skillsDir) || !statSync(skillsDir).isDirectory()) return [];
   const found: Array<{ name: string; skillDir: string }> = [];
@@ -208,15 +238,17 @@ export function discoverProjectedSkillPaths(opts: RuntimeSkillExposureOptions = 
       continue;
     }
 
-    const pluginDir = resolvePluginDirInSnapshot(snapshotRoot, installation);
+    const format = registration.format ?? 'codex';
+    const pluginDir = resolvePluginDirInSnapshot(snapshotRoot, installation, format);
     if (!pluginDir) {
+      const contract = catalogContractFor(format);
       skipped.push({
         installationId: installation.id,
-        reason: existsSync(join(snapshotRoot, '.agents', 'plugins', 'marketplace.json')) ? 'entry-not-found' : 'catalog-unreadable',
+        reason: existsSync(join(snapshotRoot, ...contract.relPath.split('/'))) ? 'entry-not-found' : 'catalog-unreadable',
       });
       continue;
     }
-    const skills = skillCandidates(pluginDir);
+    const skills = skillCandidates(pluginDir, format);
     if (skills.length === 0) {
       skipped.push({ installationId: installation.id, reason: 'no-skills' });
       continue;
