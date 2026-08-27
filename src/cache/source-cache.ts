@@ -59,6 +59,7 @@ export interface CacheIndexRecord {
 
 export interface PendingUpdateRecord {
   registrationId: string;
+  entryId?: string;
   fingerprint: string;
   recordedAtMs: number;
 }
@@ -254,7 +255,7 @@ export class SourceCache {
   // ---- Pending Update Candidate registry ---------------------------------
 
   recordPendingUpdate(rec: Omit<PendingUpdateRecord, 'recordedAtMs'>): void {
-    const records = this.pendingUpdates().filter((r) => !(r.registrationId === rec.registrationId));
+    const records = this.pendingUpdates().filter((r) => !(r.registrationId === rec.registrationId && r.entryId === rec.entryId));
     records.push({ ...rec, recordedAtMs: this.now() });
     atomicWriteFile(getCachePendingPath(this.root), JSON.stringify(records));
   }

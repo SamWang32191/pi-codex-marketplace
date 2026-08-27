@@ -124,9 +124,10 @@ describe('SourceCache (Git-only, fingerprint-addressed)', () => {
 
   it('records and clears pending Update Candidate fingerprints', () => {
     cache.recordPendingUpdate({ registrationId: 'reg-1', fingerprint: FP_A });
-    cache.recordPendingUpdate({ registrationId: 'reg-1', fingerprint: FP_B }); // replaces
+    cache.recordPendingUpdate({ registrationId: 'reg-1', fingerprint: FP_B }); // replaces root
+    cache.recordPendingUpdate({ registrationId: 'reg-1', entryId: '/plugins/0', fingerprint: FP_A }); // keeps entry 0
     cache.recordPendingUpdate({ registrationId: 'reg-2', fingerprint: FP_C });
-    expect(cache.pendingUpdates().map((r) => r.fingerprint).sort()).toEqual([FP_B, FP_C].sort());
+    expect(cache.pendingUpdates().map((r) => r.fingerprint).sort()).toEqual([FP_A, FP_B, FP_C].sort());
     cache.clearPendingUpdate('reg-1');
     expect(cache.pendingUpdates().map((r) => r.fingerprint)).toEqual([FP_C]);
   });

@@ -319,8 +319,8 @@ async function refreshLocalRegistration(
         sourceKey: registration.sourceKey,
         entrySnapshots: candidateEntrySnapshots,
       };
-      for (const fp of Object.values(candidateEntrySnapshots)) {
-        cache.recordPendingUpdate({ registrationId: registration.id, fingerprint: fp });
+      for (const [entryId, fp] of Object.entries(candidateEntrySnapshots)) {
+        cache.recordPendingUpdate({ registrationId: registration.id, entryId, fingerprint: fp });
       }
       return {
         status: 'update-candidate',
@@ -518,8 +518,8 @@ async function refreshGitRegistration(
           selectorCanonical: selector.canonical,
         });
         cache.recordPendingUpdate({ registrationId: registration.id, fingerprint: snap.snapshot.fingerprint });
-        for (const fp of Object.values(candidateEntrySnapshots)) {
-          cache.recordPendingUpdate({ registrationId: registration.id, fingerprint: fp });
+        for (const [entryId, fp] of Object.entries(candidateEntrySnapshots)) {
+          cache.recordPendingUpdate({ registrationId: registration.id, entryId, fingerprint: fp });
         }
         return {
           status: 'update-candidate',
