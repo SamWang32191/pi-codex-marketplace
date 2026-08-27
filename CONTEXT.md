@@ -77,7 +77,7 @@ The format of a Marketplace Source (`codex` or `claude`), deterministically deri
 _Avoid_: Protocol version, manifest format, adaptive format
 
 **Marketplace Entry**:
-A Marketplace Catalog member that names one Plugin candidate and locates it through a local Contained Path. Other entry source kinds are recognized only as Unavailable Entries rather than recursively acquired.
+A Marketplace Catalog member that names one Plugin candidate and locates it through a local Contained Path or an external git-family locator acquired via Entry Acquisition. Other entry source kinds are recognized only as Unavailable Entries rather than recursively acquired.
 _Avoid_: Marketplace Source, Installed Plugin
 
 **Marketplace Entry ID**:
@@ -100,13 +100,21 @@ _Avoid_: Plugin source, marketplace entry
 The non-executing retrieval of a Git Marketplace Source at a Resolved Revision. It never runs repository-controlled hooks, filters, submodules, dependencies, or Plugin components.
 _Avoid_: Package installation, build, Plugin activation
 
+**Entry Acquisition**:
+The format-neutral, non-executing retrieval of an external git-family Marketplace Entry (`github`, `url`, or `git-subdir`) at its declared Entry Pin. It operates under the existing Acquisition Trust Base and Validation Budget, generates an independent per-entry Validation Snapshot, rejects embedded credentials and plaintext transports, and never executes repository-controlled hooks, scripts, build steps, or components.
+_Avoid_: Plugin installation, package download, dynamic component execution
+
 **Acquisition Trust Base**:
-The constrained host components trusted during Source Acquisition: the selected Git and SSH executables, operating-system certificate authorities, pre-established SSH known-host keys, and approved credential helper or SSH agent. The Bridge Package permits only necessary trust and credential configuration, rejects unknown or changed SSH host keys and canonical-locator-changing redirects, and never extends this trust to repository content or repository-controlled Git configuration.
+The constrained host components trusted during Source Acquisition and Entry Acquisition: the selected Git and SSH executables, operating-system certificate authorities, pre-established SSH known-host keys, and approved credential helper or SSH agent. The Bridge Package permits only necessary trust and credential configuration, rejects unknown or changed SSH host keys and canonical-locator-changing redirects, and never extends this trust to repository content or repository-controlled Git configuration.
 _Avoid_: Project Trust, Plugin trust, sandbox
 
 **Git Selector**:
 The structured `default`, `branch`, `tag`, or `commit` choice attached to a Git Marketplace Source. Branch and tag values obey Git ref-name rules and canonicalize to exact case-sensitive `refs/heads/...` or `refs/tags/...` values; commit values are complete 40- or 64-hex object names canonicalized to lowercase. Ambiguous shorthand, abbreviated object names, generic refs, `HEAD`, revision or reflog expressions, option-like values, whitespace, and control characters are not accepted; default, branch, and tag selectors are movable and every selector resolves to a full commit before confirmation.
 _Avoid_: Resolved Revision, arbitrary Git revision expression
+
+**Entry Pin**:
+The structured locator and revision constraint declared on an external Marketplace Entry, mapping `sha` to a fixed commit, `ref` to a movable branch or tag, and omitting both to the source's movable default ref. When both `sha` and `ref` are present, `sha` is the authoritative pin while `ref` is validated for syntax; movable pins participate in Marketplace Refresh to produce Update Candidates on upstream drift, while fixed commit pins do not.
+_Avoid_: Plugin version, floating tag, arbitrary revision expression
 
 **Resolved Revision**:
 The full Git commit bound to validation and confirmation for a Git Selector. It is a source attribute rather than identity, and a changed resolution requires new validation and confirmation.
@@ -203,7 +211,7 @@ _Avoid_: Marketplace entry name, Plugin path
 **Unavailable Entry**:
 A Marketplace Entry that cannot supply an activatable Plugin because it uses an unsupported source kind, cannot be resolved to a Plugin, yields an Invalid or Incompatible Plugin, or has a Plugin-level identity collision. A Runtime Skill Collision affects skill availability and does not make an otherwise activatable entry unavailable.
 _Reason categories:_
-- _Unsupported source kinds_: non-local or non-contained source forms (such as `npm`, `archive`, external `git`/`github`/`url`/`git-subdir` without entry acquisition, or permanently disqualified `command` sources).
+- _Unsupported source kinds_: non-git source forms (such as `npm`, `archive`, or permanently disqualified `command` sources) or invalid git entry declarations.
 - _Unresolvable sources_: missing sources, bare names, unsupported `metadata.pluginRoot` resolution, or non-`./` relative paths.
 - _Unsupported entry structure_: entry-defined plugins (`strict: false`) lacking an independent authoritative manifest, conflicting source declarations, or malformed entry objects.
 - _Target resolution & validation failures_: missing directory targets, manifest parse failures, Invalid Plugins (e.g., manifest schema/containment violations, duplicate skill names), Incompatible Plugins (requiring active components outside Compatibility Profile v2), or Plugin ID collisions within the snapshot.
