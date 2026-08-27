@@ -4,6 +4,8 @@ All notable changes to `pi-codex-marketplace` are documented here. Format follow
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-27
+
 ### Added
 - **R2 文件落地（ADR 0005、Entry 術語）** (#52)：
   - `CONTEXT.md` 新增 `Entry Acquisition` 與 `Entry Pin` 正典詞條，並同步更新 `Marketplace Entry`、`Acquisition Trust Base` 與 `Unavailable Entry` 描述。
@@ -152,7 +154,8 @@ Initial Bridge Package release — single `pi` extension, Pi `0.84.2` baseline.
 - **TUI management flow** (`/codex-marketplace`): single aggregated command faithful to `prototype/tui-management-flow@c9107d2` — hybrid discovery/guided, explicit scope choice per operation, Registration/Activation separated snapshot+revision bound Default No confirmations, Update Plan Checklist, partitioned Global/Project lists, skill-granular diagnostics, synchronized Findings, closed Recovery Actions, immediate-reload three-orthogonal Receipt report, Pending/Global Barrier blocking hints.
 - **Verification matrix**: synthetic / pinned `SamWang32191/codex-plugins@98e78ca` / adversarial three-tier fixtures × (unit + integration + E2E at the TUI seam) on Pi `0.84.2` / macOS / Linux / Node `>=22.19.0`; every row is a release gate (`v*` → CI full matrix green → `npm publish --provenance` `latest`/`next` channels, `0.y`/`1.0` maintenance windows).
 
-[Unreleased]: https://github.com/SamWang32191/pi-codex-marketplace/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/SamWang32191/pi-codex-marketplace/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/SamWang32191/pi-codex-marketplace/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/SamWang32191/pi-codex-marketplace/compare/v0.1.10...v0.2.0
 [0.1.10]: https://github.com/SamWang32191/pi-codex-marketplace/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/SamWang32191/pi-codex-marketplace/compare/v0.1.8...v0.1.9
