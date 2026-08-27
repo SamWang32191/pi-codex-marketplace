@@ -9,12 +9,15 @@
  * Lifecycle Operation bound to a complete Update Plan.
  */
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { readBridgeState } from '../bridge-state/store.js';
 import type { BridgeState } from '../bridge-state/types.js';
 import type { MarketplaceFormat, Registration } from '../bridge-state/types.js';
 import type { MarketplaceInspection } from '../installation/inspection.js';
 import { inspectMarketplaceEntries } from '../installation/inspection.js';
-import type { Catalog } from '../registration/catalog.js';
+import type { Catalog, MarketplaceEntry } from '../registration/catalog.js';
 import {
   CODE,
   RULE,
@@ -29,7 +32,7 @@ import {
   type GitExecutor,
 } from '../registration/git-acquisition.js';
 import { SourceCache } from '../cache/source-cache.js';
-import { detectMarketplaceFormat } from '../registration/format.js';
+import { catalogContractFor, detectMarketplaceFormat } from '../registration/format.js';
 import { normalizeGitLocator } from '../registration/git-locator.js';
 import {
   normalizeGitSelector,
@@ -41,7 +44,12 @@ import {
   buildLocalSnapshot,
   type ValidationSnapshot,
 } from '../registration/snapshot.js';
-import type { SourceKey } from '../registration/source-key.js';
+import { gitSourceKey, type SourceKey } from '../registration/source-key.js';
+import {
+  acquireGitEntry,
+  checkEntryDrift,
+  parseGitEntrySpec,
+} from '../registration/entry-acquisition.js';
 
 export interface LifecycleFlowOptions {
   agentDir?: string;
@@ -76,6 +84,8 @@ export interface UpdateCandidate {
   canonicalLocator?: string;
   resolvedRevision?: string;
   selectorCanonical?: string;
+  /** Per-entry candidate Validation Snapshot fingerprints */
+  entrySnapshots?: Record<string, string>;
 }
 
 export type RefreshOutcome =
@@ -87,6 +97,88 @@ const OPERATION = 'Marketplace Refresh';
 
 function finding(code: string, rule: string, target: ValidationFinding['target'], pointer: string, outcome: string): ValidationFinding {
   return blocking({ code, rule, target, pointer, outcome, phase: 'validation' });
+}
+
+async function refreshGitEntries(
+  entries: MarketplaceEntry[],
+  currentEntrySnapshots: Record<string, string>,
+  opts: LifecycleFlowOptions,
+  cache: SourceCache,
+): Promise<{
+  anyMoved: boolean;
+  candidateEntrySnapshots: Record<string, string>;
+  candidateEntryRoots: Map<string, string>;
+  cleanups: Array<() => void>;
+}> {
+  const candidateEntrySnapshots: Record<string, string> = {};
+  const candidateEntryRoots = new Map<string, string>();
+  const cleanups: Array<() => void> = [];
+  let anyMoved = false;
+
+  for (const entry of entries) {
+    if (entry.type !== 'git' || !entry.available) continue;
+    const parsedSpec = parseGitEntrySpec(entry.source, entry.entryId);
+    if (!parsedSpec.ok || !parsedSpec.spec) continue;
+    const spec = parsedSpec.spec;
+    const recordedFp = currentEntrySnapshots[entry.entryId];
+
+    if (spec.effectivePin === 'sha') {
+      // sha-pinned: ref movement upstream DOES NOT produce an update candidate
+      if (recordedFp) {
+        candidateEntrySnapshots[entry.entryId] = recordedFp;
+      } else {
+        const acq = await acquireGitEntry({ spec, entryId: entry.entryId, executor: opts.executor, cache });
+        if (acq.ok && acq.snapshot) {
+          candidateEntrySnapshots[entry.entryId] = acq.snapshot.fingerprint;
+          if (acq.entryRootPath) candidateEntryRoots.set(entry.entryId, acq.entryRootPath);
+          if (acq.acquiredPath && acq.createdTemp) {
+            cleanups.push(() => cleanupAcquisition(acq.acquiredPath!));
+          }
+          if (checkEntryDrift(acq.snapshot.fingerprint, recordedFp ?? '')) {
+            anyMoved = true;
+          }
+        }
+      }
+    } else {
+      // Movable ref or default selector: resolve upstream revision
+      const res = await resolveGitRevision(spec.locator, spec.selector, { executor: opts.executor });
+      if (res.ok) {
+        const resolvedSha = res.sha;
+        let needAcquire = true;
+        if (recordedFp) {
+          const hit = await cache.hitExact(recordedFp);
+          if (hit) {
+            const verified = buildGitSnapshot(hit.path, gitSourceKey(spec.locator, spec.selector), {
+              canonicalLocator: spec.locator.canonicalUrl,
+              resolvedRevision: resolvedSha,
+              selectorCanonical: spec.selector.canonical,
+            });
+            if (verified.ok && verified.snapshot!.fingerprint === recordedFp) {
+              candidateEntrySnapshots[entry.entryId] = recordedFp;
+              candidateEntryRoots.set(entry.entryId, hit.path);
+              needAcquire = false;
+            }
+          }
+        }
+
+        if (needAcquire) {
+          const acq = await acquireGitEntry({ spec, entryId: entry.entryId, executor: opts.executor, cache });
+          if (acq.ok && acq.snapshot) {
+            candidateEntrySnapshots[entry.entryId] = acq.snapshot.fingerprint;
+            if (acq.entryRootPath) candidateEntryRoots.set(entry.entryId, acq.entryRootPath);
+            if (acq.acquiredPath && acq.createdTemp) {
+              cleanups.push(() => cleanupAcquisition(acq.acquiredPath!));
+            }
+            if (!recordedFp || checkEntryDrift(acq.snapshot.fingerprint, recordedFp)) {
+              anyMoved = true;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return { anyMoved, candidateEntrySnapshots, candidateEntryRoots, cleanups };
 }
 
 function blocked(registrationId: string, revision: string, findings: ValidationFinding[], snapshot?: string): RefreshOutcome {
@@ -162,11 +254,11 @@ export async function refreshRegistration(
   return refreshLocalRegistration(registration, revision, opts);
 }
 
-function refreshLocalRegistration(
+async function refreshLocalRegistration(
   registration: Registration,
   revision: string,
   opts: LifecycleFlowOptions,
-): RefreshOutcome {
+): Promise<RefreshOutcome> {
   if (!registration.sourceKey || !registration.source) {
     return blocked(registration.id, revision, [
       finding(CODE.SOURCE_REACQUISITION_REQUIRED, RULE.SOURCE_REACQUISITION_REQUIRED, 'registration', '', 'Registration has no retained local Source Key to revalidate'),
@@ -178,50 +270,87 @@ function refreshLocalRegistration(
     return blocked(registration.id, revision, snap.findings, registration.validationSnapshot);
   }
 
-  if (!registration.validationSnapshot || snap.snapshot.fingerprint !== registration.validationSnapshot) {
-    // The candidate's own format is detected fresh from the live tree — a flipped root can only
-    // reach the Registration through this Update Candidate plus an explicit Apply Update.
-    const liveFormat = detectMarketplaceFormat(registration.source);
-    const inspection = inspectMarketplaceEntries(registration, { ignoreRecordedDrift: true, format: liveFormat ?? undefined });
-    const name = marketplaceNameOf(registration.id, inspection.marketplaceId) || registration.marketplaceName || '';
-    const candidate: UpdateCandidate = {
-      registrationId: registration.id,
-      stateRevision: revision,
-      recordedFingerprint: registration.validationSnapshot,
-      recordedResolvedRevision: registration.resolvedRevision,
-      snapshot: snap.snapshot,
-      marketplaceName: name,
-      format: liveFormat ?? undefined,
-      catalog: { name, entries: inspection.entries.map((item) => item.entry) },
-      inspection,
-      sourceKey: registration.sourceKey,
-    };
+  const liveFormat = detectMarketplaceFormat(registration.source);
+  const contract = catalogContractFor(liveFormat ?? registration.format ?? 'codex');
+  const catalogPath = join(registration.source, ...contract.relPath.split('/'));
+  let catalogRaw: string | undefined;
+  let parsedCatalog: unknown;
+  try {
+    catalogRaw = readFileSync(catalogPath, 'utf8');
+    parsedCatalog = JSON.parse(catalogRaw);
+  } catch {
+    // Handled by inspectMarketplaceEntries
+  }
+  const parsed = parsedCatalog ? contract.parse(parsedCatalog) : undefined;
+  const entries = parsed?.catalog?.entries ?? [];
+
+  const cache = opts.cache ?? new SourceCache({ agentDir: opts.agentDir });
+  const { anyMoved, candidateEntrySnapshots, candidateEntryRoots, cleanups } = await refreshGitEntries(
+    entries,
+    registration.entrySnapshots ?? {},
+    opts,
+    cache,
+  );
+
+  const rootMoved = !registration.validationSnapshot || snap.snapshot.fingerprint !== registration.validationSnapshot;
+
+  try {
+    if (rootMoved || anyMoved) {
+      // The candidate's own format is detected fresh from the live tree — a flipped root can only
+      // reach the Registration through this Update Candidate plus an explicit Apply Update.
+      const inspection = inspectMarketplaceEntries(registration, {
+        ignoreRecordedDrift: true,
+        format: liveFormat ?? undefined,
+        cache,
+        entryRoots: candidateEntryRoots,
+        entrySnapshots: candidateEntrySnapshots,
+      });
+      const name = marketplaceNameOf(registration.id, inspection.marketplaceId) || registration.marketplaceName || '';
+      const candidate: UpdateCandidate = {
+        registrationId: registration.id,
+        stateRevision: revision,
+        recordedFingerprint: registration.validationSnapshot,
+        recordedResolvedRevision: registration.resolvedRevision,
+        snapshot: snap.snapshot,
+        marketplaceName: name,
+        format: liveFormat ?? undefined,
+        catalog: { name, entries: inspection.entries.map((item) => item.entry) },
+        inspection,
+        sourceKey: registration.sourceKey,
+        entrySnapshots: candidateEntrySnapshots,
+      };
+      for (const fp of Object.values(candidateEntrySnapshots)) {
+        cache.recordPendingUpdate({ registrationId: registration.id, fingerprint: fp });
+      }
+      return {
+        status: 'update-candidate',
+        candidate,
+        receipt: createReceipt({
+          operation: OPERATION,
+          trigger: `refresh ${registration.id}`,
+          expectedStateRevision: revision,
+          validationSnapshot: snap.snapshot.fingerprint,
+          summary: 'Completed',
+          findings: inspection.findings,
+          stateChanged: false,
+        }),
+      };
+    }
+
     return {
-      status: 'update-candidate',
-      candidate,
+      status: 'no-change',
       receipt: createReceipt({
         operation: OPERATION,
         trigger: `refresh ${registration.id}`,
         expectedStateRevision: revision,
-        validationSnapshot: snap.snapshot.fingerprint,
+        validationSnapshot: registration.validationSnapshot,
         summary: 'Completed',
-        findings: inspection.findings,
         stateChanged: false,
       }),
     };
+  } finally {
+    for (const cleanup of cleanups) cleanup();
   }
-
-  return {
-    status: 'no-change',
-    receipt: createReceipt({
-      operation: OPERATION,
-      trigger: `refresh ${registration.id}`,
-      expectedStateRevision: revision,
-      validationSnapshot: registration.validationSnapshot,
-      summary: 'Completed',
-      stateChanged: false,
-    }),
-  };
 }
 
 /** Reconstruct the full Source Key for a Registration at an exact Resolved Revision. */
@@ -287,6 +416,10 @@ async function refreshGitRegistration(
 
   const resolvedRevision = resolution.sha;
 
+  let root: string | undefined;
+  let acqToCleanup: string | undefined;
+  let snap: ReturnType<typeof buildGitSnapshot> | undefined;
+
   if (resolvedRevision === registration.resolvedRevision && registration.validationSnapshot) {
     // Same Resolved Revision: exact-fingerprint cache hit avoids a full acquisition.
     const hit = await cache.hitExact(registration.validationSnapshot);
@@ -297,25 +430,112 @@ async function refreshGitRegistration(
         selectorCanonical: selector.canonical,
       });
       if (verified.ok && verified.snapshot!.fingerprint === registration.validationSnapshot) {
-        return { status: 'no-change', receipt: noChangeReceipt() };
+        root = hit.path;
+        snap = verified;
       }
-      // Tampered/evicted-in-place entry: fall through to full acquisition below.
     }
   }
 
-  // Full non-executing acquisition (clone).
-  const acq = await acquireGitSource({
-    locator,
-    selector,
-    executor: opts.executor,
-  });
-  if (!acq.ok) return blocked(registration.id, revision, acq.findings, registration.validationSnapshot);
+  if (!root) {
+    // Full non-executing acquisition (clone).
+    const acq = await acquireGitSource({
+      locator,
+      selector,
+      executor: opts.executor,
+    });
+    if (!acq.ok) return blocked(registration.id, revision, acq.findings, registration.validationSnapshot);
+    root = acq.acquiredPath!;
+    acqToCleanup = root;
+    const newSourceKey: SourceKey = { ...registration.sourceKey, resolvedRevision };
+    snap = buildGitSnapshot(root, newSourceKey, {
+      canonicalLocator: locator.canonicalUrl,
+      resolvedRevision,
+      selectorCanonical: selector.canonical,
+    });
+  }
 
   try {
-    const resolvedRevision = acq.resolvedRevision!;
-    const root = acq.acquiredPath!;
-    if (resolvedRevision === registration.resolvedRevision) {
-      // Cache the re-validated tree under its recorded fingerprint for future exact hits.
+    if (!snap || !snap.ok || !snap.snapshot) {
+      return blocked(registration.id, revision, snap?.findings ?? [], registration.validationSnapshot);
+    }
+
+    const liveFormat = detectMarketplaceFormat(root);
+    const contract = catalogContractFor(liveFormat ?? registration.format ?? 'codex');
+    const catalogPath = join(root, ...contract.relPath.split('/'));
+    let catalogRaw: string | undefined;
+    let parsedCatalog: unknown;
+    try {
+      catalogRaw = readFileSync(catalogPath, 'utf8');
+      parsedCatalog = JSON.parse(catalogRaw);
+    } catch {
+      // Handled by inspectMarketplaceEntries
+    }
+    const parsed = parsedCatalog ? contract.parse(parsedCatalog) : undefined;
+    const entries = parsed?.catalog?.entries ?? [];
+
+    const { anyMoved, candidateEntrySnapshots, candidateEntryRoots, cleanups } = await refreshGitEntries(
+      entries,
+      registration.entrySnapshots ?? {},
+      opts,
+      cache,
+    );
+
+    try {
+      const rootChanged = resolvedRevision !== registration.resolvedRevision || snap.snapshot.fingerprint !== registration.validationSnapshot;
+
+      if (rootChanged || anyMoved) {
+        const inspection = inspectMarketplaceEntries(registration, {
+          root,
+          baseSnapshot: snap.snapshot,
+          ignoreRecordedDrift: true,
+          format: liveFormat ?? undefined,
+          cache,
+          entryRoots: candidateEntryRoots,
+          entrySnapshots: candidateEntrySnapshots,
+        });
+        const name = marketplaceNameOf(registration.id, inspection.marketplaceId) || registration.marketplaceName || '';
+        const candidate: UpdateCandidate = {
+          registrationId: registration.id,
+          stateRevision: revision,
+          recordedFingerprint: registration.validationSnapshot,
+          recordedResolvedRevision: registration.resolvedRevision,
+          snapshot: snap.snapshot,
+          marketplaceName: name,
+          format: liveFormat ?? undefined,
+          catalog: { name, entries: inspection.entries.map((item) => item.entry) },
+          inspection,
+          sourceKey: { ...registration.sourceKey, resolvedRevision },
+          canonicalLocator: locator.canonicalUrl,
+          resolvedRevision,
+          selectorCanonical: selector.canonical,
+          entrySnapshots: candidateEntrySnapshots,
+        };
+        await cache.storeTree(root, snap.snapshot.fingerprint);
+        cache.recordIndex({
+          fingerprint: snap.snapshot.fingerprint,
+          resolvedRevision,
+          canonicalLocator: locator.canonicalUrl,
+          selectorCanonical: selector.canonical,
+        });
+        cache.recordPendingUpdate({ registrationId: registration.id, fingerprint: snap.snapshot.fingerprint });
+        for (const fp of Object.values(candidateEntrySnapshots)) {
+          cache.recordPendingUpdate({ registrationId: registration.id, fingerprint: fp });
+        }
+        return {
+          status: 'update-candidate',
+          candidate,
+          receipt: createReceipt({
+            operation: OPERATION,
+            trigger: `refresh ${registration.id}`,
+            expectedStateRevision: revision,
+            validationSnapshot: snap.snapshot.fingerprint,
+            summary: 'Completed',
+            findings: inspection.findings,
+            stateChanged: false,
+          }),
+        };
+      }
+
       if (registration.validationSnapshot) {
         await cache.storeTree(root, registration.validationSnapshot);
         cache.recordIndex({
@@ -327,74 +547,12 @@ async function refreshGitRegistration(
       }
       return {
         status: 'no-change',
-        receipt: createReceipt({
-          operation: OPERATION,
-          trigger: `refresh ${registration.id}`,
-          expectedStateRevision: revision,
-          validationSnapshot: registration.validationSnapshot,
-          summary: 'Completed',
-          stateChanged: false,
-        }),
+        receipt: noChangeReceipt(),
       };
+    } finally {
+      for (const cleanup of cleanups) cleanup();
     }
-
-    // Resolved Revision changed ⇒ new validation is mandatory before any confirmation.
-    const newSourceKey: SourceKey = { ...registration.sourceKey, resolvedRevision };
-    const snap = buildGitSnapshot(root, newSourceKey, {
-      canonicalLocator: locator.canonicalUrl,
-      resolvedRevision,
-      selectorCanonical: selector.canonical,
-    });
-    if (!snap.ok || !snap.snapshot) {
-      return blocked(registration.id, revision, snap.findings, registration.validationSnapshot);
-    }
-    const liveFormat = detectMarketplaceFormat(root);
-    const inspection = inspectMarketplaceEntries(registration, {
-      root,
-      baseSnapshot: snap.snapshot,
-      ignoreRecordedDrift: true,
-      format: liveFormat ?? undefined,
-    });
-    const name = marketplaceNameOf(registration.id, inspection.marketplaceId) || registration.marketplaceName || '';
-    const candidate: UpdateCandidate = {
-      registrationId: registration.id,
-      stateRevision: revision,
-      recordedFingerprint: registration.validationSnapshot,
-      recordedResolvedRevision: registration.resolvedRevision,
-      snapshot: snap.snapshot,
-      marketplaceName: name,
-      format: liveFormat ?? undefined,
-      catalog: { name, entries: inspection.entries.map((item) => item.entry) },
-      inspection,
-      sourceKey: newSourceKey,
-      canonicalLocator: locator.canonicalUrl,
-      resolvedRevision,
-      selectorCanonical: selector.canonical,
-    };
-    // Persist the candidate tree in the cache and pin its fingerprint as a pending Update
-    // Candidate — pinned entries are never evicted by LRU pruning.
-    await cache.storeTree(root, snap.snapshot!.fingerprint);
-    cache.recordIndex({
-      fingerprint: snap.snapshot!.fingerprint,
-      resolvedRevision,
-      canonicalLocator: locator.canonicalUrl,
-      selectorCanonical: selector.canonical,
-    });
-    cache.recordPendingUpdate({ registrationId: registration.id, fingerprint: snap.snapshot!.fingerprint });
-    return {
-      status: 'update-candidate',
-      candidate,
-      receipt: createReceipt({
-        operation: OPERATION,
-        trigger: `refresh ${registration.id}`,
-        expectedStateRevision: revision,
-        validationSnapshot: snap.snapshot.fingerprint,
-        summary: 'Completed',
-        findings: inspection.findings,
-        stateChanged: false,
-      }),
-    };
   } finally {
-    cleanupAcquisition(acq.acquiredPath!);
+    if (acqToCleanup) cleanupAcquisition(acqToCleanup);
   }
 }

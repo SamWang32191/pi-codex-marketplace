@@ -23,6 +23,7 @@
 import { CODE, RULE, blocking, warning, type ValidationFinding } from './findings.js';
 import { BUDGET } from './budget.js';
 import { KEBAB_NAME_RE, type Catalog, type CatalogResult, type MarketplaceEntry } from './catalog.js';
+import { parseGitEntrySpec } from './entry-acquisition.js';
 
 /**
  * Snapshot-relative location of the claude Marketplace Catalog within a Marketplace Root.
@@ -113,29 +114,12 @@ function entryFinding(
   return blocking({ code, rule, phase: 'validation', target: 'entry', pointer, outcome });
 }
 
-function unavailable(entryId: string, ordinal: number, name: string | undefined, type: MarketplaceEntry['type'], reason: string): MarketplaceEntry {
-  return { entryId, ordinal, name, type, available: false, unavailableReason: reason };
+function unavailable(entryId: string, ordinal: number, name: string | undefined, type: MarketplaceEntry['type'], reason: string, source?: unknown): MarketplaceEntry {
+  return { entryId, ordinal, name, type, source, available: false, unavailableReason: reason };
 }
 
 function isMapping(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function classifyObjectSource(source: Record<string, unknown>): { type: MarketplaceEntry['type']; reason: string } {
-  switch (source.source) {
-    case 'github':
-    case 'url':
-    case 'git-subdir':
-      return { type: 'git', reason: CLAUDE_UNAVAILABLE_REASON.gitFamily };
-    case 'npm':
-      return { type: 'unsupported', reason: CLAUDE_UNAVAILABLE_REASON.npm };
-    case 'archive':
-      return { type: 'unsupported', reason: CLAUDE_UNAVAILABLE_REASON.archive };
-    case 'command':
-      return { type: 'unsupported', reason: CLAUDE_UNAVAILABLE_REASON.command };
-    default:
-      return { type: 'unsupported', reason: CLAUDE_UNAVAILABLE_REASON.unknownKind };
-  }
 }
 
 /**
@@ -145,7 +129,8 @@ function classifyObjectSource(source: Record<string, unknown>): { type: Marketpl
 function classifySource(
   source: unknown,
   hasPluginRoot: boolean,
-): { type: MarketplaceEntry['type']; path?: string; available: boolean; reason?: string } {
+  entryId = '/plugins/0',
+): { type: MarketplaceEntry['type']; path?: string; source?: unknown; available: boolean; reason?: string; findings?: ValidationFinding[] } {
   if (source === undefined || source === null || source === '') {
     return { type: 'unsupported', available: false, reason: CLAUDE_UNAVAILABLE_REASON.noSource };
   }
@@ -163,8 +148,24 @@ function classifySource(
     return { type: 'unsupported', available: false, reason: CLAUDE_UNAVAILABLE_REASON.notLocalPath };
   }
   if (isMapping(source)) {
-    const kind = classifyObjectSource(source);
-    return { type: kind.type, available: false, reason: kind.reason };
+    const rawKind = typeof source.source === 'string' ? source.source.toLowerCase() : undefined;
+    if (rawKind === 'npm') {
+      return { type: 'unsupported', source, available: false, reason: CLAUDE_UNAVAILABLE_REASON.npm };
+    }
+    if (rawKind === 'archive') {
+      return { type: 'unsupported', source, available: false, reason: CLAUDE_UNAVAILABLE_REASON.archive };
+    }
+    if (rawKind === 'command') {
+      return { type: 'unsupported', source, available: false, reason: CLAUDE_UNAVAILABLE_REASON.command };
+    }
+    const parsed = parseGitEntrySpec(source, entryId);
+    if (parsed.isGitFamily) {
+      if (parsed.ok) {
+        return { type: 'git', source, available: true };
+      }
+      return { type: 'git', source, available: false, reason: parsed.unavailableReason ?? 'invalid git entry', findings: parsed.findings };
+    }
+    return { type: 'unsupported', source, available: false, reason: CLAUDE_UNAVAILABLE_REASON.unknownKind };
   }
   return { type: 'unsupported', available: false, reason: CLAUDE_UNAVAILABLE_REASON.unrecognizedForm };
 }
@@ -320,15 +321,18 @@ export function parseClaudeCatalog(obj: unknown): CatalogResult {
       }
     }
 
-    const resolved = classifySource(e.source, hasPluginRoot);
+    const resolved = classifySource(e.source, hasPluginRoot, entryId);
+    if (resolved.findings && resolved.findings.length > 0) {
+      findings.push(...resolved.findings);
+    }
     if (!resolved.available) {
-      entries.push(unavailable(entryId, index, name, resolved.type, resolved.reason!));
+      entries.push(unavailable(entryId, index, name, resolved.type, resolved.reason!, resolved.source));
       return;
     }
     // Manifest-backed plugins only: an entry-defined plugin (strict:false) cannot supply an
     // activatable Plugin on day 1 even when its local path resolves.
     if (e.strict === false) {
-      entries.push(unavailable(entryId, index, name, resolved.type, CLAUDE_UNAVAILABLE_REASON.strictFalse));
+      entries.push(unavailable(entryId, index, name, resolved.type, CLAUDE_UNAVAILABLE_REASON.strictFalse, resolved.source));
       return;
     }
     entries.push({
@@ -337,6 +341,7 @@ export function parseClaudeCatalog(obj: unknown): CatalogResult {
       name,
       type: resolved.type,
       path: resolved.path,
+      source: resolved.source,
       available: true,
     });
   });

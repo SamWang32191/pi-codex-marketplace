@@ -92,6 +92,7 @@ function draftNextState(state: BridgeState, plan: UpdatePlan): BridgeState {
     // disclosed Update Candidate and this explicit atomic commit (never implicitly).
     if (candidate.format) next.format = candidate.format;
     if (candidate.resolvedRevision) next.resolvedRevision = candidate.resolvedRevision;
+    if (candidate.entrySnapshots) next.entrySnapshots = candidate.entrySnapshots;
     if (plan.rebindSource) {
       next.sourceKind = plan.rebindSource.sourceKind;
       next.source = plan.rebindSource.source;
@@ -207,6 +208,19 @@ export async function applyUpdate(plan: UpdatePlan, opts: ApplyUpdateOptions = {
         plan,
         'Cached Git tree no longer hashes to the Update Candidate fingerprint (source drift); run a fresh Marketplace Refresh and rebuild the plan',
       );
+    }
+  }
+
+  if (plan.candidate.entrySnapshots) {
+    const cache = opts.cache ?? new SourceCache({ agentDir: opts.agentDir });
+    for (const [entryId, fp] of Object.entries(plan.candidate.entrySnapshots)) {
+      const hit = await cache.hitExact(fp);
+      if (!hit) {
+        return stale(
+          plan,
+          `No cached tree verifies candidate entry '${entryId}' snapshot (evicted or never retained); run a fresh Marketplace Refresh and rebuild the plan`,
+        );
+      }
     }
   }
 

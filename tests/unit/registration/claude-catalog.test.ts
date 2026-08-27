@@ -261,19 +261,19 @@ describe('Entry source-form dispatch marks non-local forms as Unavailable Entrie
       expected: { type: 'local', available: true },
     },
     {
-      label: 'github object is Unavailable (phase 2 acquisition)',
+      label: 'github object is available (Issue #50 / #51 acquisition)',
       plugin: { name: 'gh', source: { source: 'github', repo: 'owner/repo' } },
-      expected: { type: 'git', available: false, reason: REASON.gitFamily },
+      expected: { type: 'git', available: true },
     },
     {
-      label: 'url object is Unavailable (phase 2 acquisition)',
+      label: 'url object is available (Issue #50 / #51 acquisition)',
       plugin: { name: 'url', source: { source: 'url', url: 'https://example.test/r.git' } },
-      expected: { type: 'git', available: false, reason: REASON.gitFamily },
+      expected: { type: 'git', available: true },
     },
     {
-      label: 'git-subdir object is Unavailable (phase 2 acquisition)',
+      label: 'git-subdir object is available (Issue #50 / #51 acquisition)',
       plugin: { name: 'sub', source: { source: 'git-subdir', url: 'https://example.test/r.git', path: 'pkg' } },
-      expected: { type: 'git', available: false, reason: REASON.gitFamily },
+      expected: { type: 'git', available: true },
     },
     {
       label: 'npm object is Unavailable',

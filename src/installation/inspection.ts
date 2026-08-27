@@ -55,6 +55,10 @@ export interface InspectionOptions {
   format?: MarketplaceFormat;
   agentDir?: string;
   cache?: SourceCache;
+  /** Candidate entry roots from Refresh / Preflight */
+  entryRoots?: Map<string, string>;
+  /** Candidate entry snapshots from Refresh / Preflight */
+  entrySnapshots?: Record<string, string>;
 }
 
 function inspectionFinding(code: string, rule: string, target: ValidationFinding['target'], outcome: string): ValidationFinding {
@@ -167,18 +171,54 @@ export function inspectMarketplaceEntries(registration: Registration, opts: Insp
   const material = createHash('sha256');
   material.update('catalog\u001f').update(catalogRaw).update('\u001e');
   const classifications = new Map<string, ReturnType<typeof classifyPlugin>>();
+  const cache = opts.cache ?? new SourceCache({ agentDir: opts.agentDir });
+
   const draft = parsed.catalog.entries.map((entry) => {
-    if (!entry.available || entry.type !== 'local' || !entry.path) return { entry, findings: [], unavailableReason: entry.unavailableReason ?? 'unsupported source kind' };
-    const contained = resolveContained(root, entry.path, 'directory');
-    if (contained.outcome.kind !== 'ok') return { entry, findings: [], unavailableReason: 'cannot resolve Plugin' };
-    let baseClassification = classifications.get(contained.outcome.canonicalPath);
+    if (!entry.available) {
+      return { entry, findings: [], unavailableReason: entry.unavailableReason ?? 'unsupported source kind' };
+    }
+
+    let entryRoot: string | undefined;
+
+    if (entry.type === 'local') {
+      if (!entry.path) return { entry, findings: [], unavailableReason: 'cannot resolve Plugin: no path declared' };
+      const contained = resolveContained(root, entry.path, 'directory');
+      if (contained.outcome.kind !== 'ok') return { entry, findings: [], unavailableReason: 'cannot resolve Plugin' };
+      entryRoot = contained.outcome.canonicalPath;
+    } else if (entry.type === 'git') {
+      if (opts.entryRoots?.has(entry.entryId)) {
+        entryRoot = opts.entryRoots.get(entry.entryId);
+      } else {
+        const fp = opts.entrySnapshots?.[entry.entryId] ?? registration.entrySnapshots?.[entry.entryId];
+        if (!fp) {
+          return { entry, findings: [], unavailableReason: 'cannot resolve external git entry: no recorded snapshot' };
+        }
+        const hit = cache.hitExactSync(fp);
+        if (!hit) {
+          return {
+            entry,
+            findings: [],
+            unavailableReason: `Git Source Cache miss: entry snapshot '${fp.slice(0, 16)}…' is not retained in Source Cache; Marketplace Refresh or re-acquisition is required`,
+          };
+        }
+        entryRoot = hit.path;
+      }
+    } else {
+      return { entry, findings: [], unavailableReason: entry.unavailableReason ?? 'unsupported source kind' };
+    }
+
+    if (!entryRoot) {
+      return { entry, findings: [], unavailableReason: 'cannot resolve Plugin' };
+    }
+
+    let baseClassification = classifications.get(entryRoot);
     if (!baseClassification) {
-      baseClassification = classifyPlugin(contained.outcome.canonicalPath, {
+      baseClassification = classifyPlugin(entryRoot, {
         marketplaceId,
         marketplaceEntryId: `${marketplaceId}${entry.entryId}`,
         format,
       });
-      classifications.set(contained.outcome.canonicalPath, baseClassification);
+      classifications.set(entryRoot, baseClassification);
     }
     const classification = baseClassification.plugin
       ? { ...baseClassification, plugin: { ...baseClassification.plugin, marketplaceEntryId: `${marketplaceId}${entry.entryId}` } }

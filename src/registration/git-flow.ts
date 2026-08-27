@@ -15,7 +15,7 @@ import { commitBridgeState, readBridgeState } from '../bridge-state/store.js';
 import type { MarketplaceFormat, Registration } from '../bridge-state/types.js';
 import { BUDGET } from './budget.js';
 import { CODE, RULE, blocking, hasBlocking, sortFindings, type ValidationFinding } from './findings.js';
-import type { Catalog } from './catalog.js';
+import type { Catalog, MarketplaceEntry } from './catalog.js';
 import { catalogContractFor, detectMarketplaceFormat } from './format.js';
 import { resolveContained } from './contained.js';
 import { acquireAttemptFence, type AttemptFenceHandle } from './fence.js';
@@ -27,6 +27,7 @@ import { gitSourceKey, type SourceKey } from './source-key.js';
 import { normalizeGitLocator, type CanonicalGitLocator } from './git-locator.js';
 import { normalizeGitSelector, parseGitSelectorString, type GitSelectorInput, type NormalizedGitSelector } from './git-selector.js';
 import { acquireGitSource, cleanupAcquisition, type GitExecutor, type AcquisitionTrustOptions } from './git-acquisition.js';
+import { acquireGitEntries, type EntryAcquisitionRecord } from './entry-acquisition.js';
 import { SourceCache } from '../cache/source-cache.js';
 import { CODEX_MARKETPLACE_CATALOG_RELPATH as MARKETPLACE_CATALOG_RELPATH } from './format.js';
 
@@ -64,6 +65,10 @@ export interface GitRegistrationPreflight {
   /** Temp acquisition path (cleaned on cancel/confirm, not persisted) */
   acquiredPath?: string;
   createdTemp?: boolean;
+  /** Per-entry Validation Snapshot fingerprints bound to Registration Confirmation (issue #50 / #51). */
+  entrySnapshots?: Record<string, string>;
+  acquiredEntries?: Map<string, EntryAcquisitionRecord>;
+  entryCleanup?: () => void;
 }
 
 export type GitRegistrationOutcome =
@@ -342,6 +347,26 @@ export async function preflightGitRegistration(
       }
     }
 
+    // External Git entry acquisition (Issue #50 / #51)
+    const gitEntries = catalog.entries.filter((e): e is MarketplaceEntry & { source: unknown } => e.type === 'git' && e.available && e.source !== undefined);
+    let entrySnapshots: Record<string, string> | undefined;
+    let acquiredEntries: Map<string, EntryAcquisitionRecord> | undefined;
+    let entryCleanup: (() => void) | undefined;
+    if (gitEntries.length > 0) {
+      const batchRes = await acquireGitEntries(gitEntries, {
+        trust: opts.trust,
+        executor: opts.executor,
+        cache: opts.cache,
+      });
+      if (!batchRes.ok) {
+        if (acquiredPath) cleanupAcquisition(acquiredPath);
+        return blockedResult(locatorInput, selCanonical, expectedRevision, sortFindings([...findings, ...batchRes.findings]), handle, opts, undefined, detectedFormat);
+      }
+      entrySnapshots = batchRes.entrySnapshots;
+      acquiredEntries = batchRes.entries;
+      entryCleanup = batchRes.cleanup;
+    }
+
     const snapshotResult = buildGitSnapshot(acquiredPath, sourceKey, {
       canonicalLocator: locator.canonicalUrl,
       resolvedRevision,
@@ -351,6 +376,7 @@ export async function preflightGitRegistration(
 
     const sorted = sortFindings(findings);
     if (hasBlocking(sorted)) {
+      entryCleanup?.();
       cleanupAcquisition(acquiredPath);
       return blockedResult(locatorInput, selCanonical, expectedRevision, sorted, handle, opts);
     }
@@ -394,6 +420,9 @@ export async function preflightGitRegistration(
       terminal: false,
       acquiredPath,
       createdTemp,
+      entrySnapshots,
+      acquiredEntries,
+      entryCleanup,
     };
     return { ok: true, preflight };
   } catch (e) {
@@ -449,6 +478,7 @@ export async function confirmGitRegistration(
   const release = () => {
     fence.release();
     if (preflight.acquiredPath) cleanupAcquisition(preflight.acquiredPath);
+    preflight.entryCleanup?.();
   };
 
   if (!yes) {
@@ -546,6 +576,7 @@ export async function confirmGitRegistration(
     gitSelector: { kind: preflight.selector.kind, canonical: preflight.selector.canonical, raw: preflight.selector.raw },
     resolvedRevision: preflight.resolvedRevision,
     validationSnapshot: preflight.snapshot.fingerprint,
+    entrySnapshots: preflight.entrySnapshots,
     snapshotBinds: snapshotBinds(preflight.snapshot),
   };
 
@@ -606,6 +637,7 @@ export function cancelGitRegistration(preflight: GitRegistrationPreflight): void
   preflight.terminal = true;
   preflight.fence.release();
   if (preflight.acquiredPath) cleanupAcquisition(preflight.acquiredPath);
+  preflight.entryCleanup?.();
 }
 
 export function disclosureSummaryGit(preflight: GitRegistrationPreflight): string {

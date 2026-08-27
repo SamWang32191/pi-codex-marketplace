@@ -24,7 +24,7 @@ import {
   sortFindings,
   type ValidationFinding,
 } from './findings.js';
-import { parseCatalog, type Catalog } from './catalog.js';
+import { parseCatalog, type Catalog, type MarketplaceEntry } from './catalog.js';
 import { catalogContractFor, detectMarketplaceFormat } from './format.js';
 import { resolveContained } from './contained.js';
 import { acquireAttemptFence, type AttemptFenceHandle } from './fence.js';
@@ -47,11 +47,18 @@ import type { SourceKey } from './source-key.js';
 export const MARKETPLACE_CATALOG_RELPATH = CODEX_RELPATH;
 import { CODEX_MARKETPLACE_CATALOG_RELPATH as CODEX_RELPATH } from './format.js';
 
+import { acquireGitEntries, type EntryAcquisitionRecord } from './entry-acquisition.js';
+import type { GitExecutor, AcquisitionTrustOptions } from './git-acquisition.js';
+import { SourceCache } from '../cache/source-cache.js';
+
 export interface RegistrationFlowOptions {
   agentDir?: string;
   /** Deterministic Registration ID for tests; otherwise UUIDv4 allocated before preflight. */
   preallocatedId?: string;
   fenceTimeoutMs?: number;
+  executor?: GitExecutor;
+  trust?: AcquisitionTrustOptions;
+  cache?: SourceCache;
 }
 
 export interface LocalRegistrationPreflight {
@@ -72,6 +79,10 @@ export interface LocalRegistrationPreflight {
   fence: AttemptFenceHandle;
   /** True once confirm/cancel reached a terminal outcome (single terminal per preflight). */
   terminal: boolean;
+  /** Per-entry Validation Snapshot fingerprints bound to Registration Confirmation (issue #50 / #51). */
+  entrySnapshots?: Record<string, string>;
+  acquiredEntries?: Map<string, EntryAcquisitionRecord>;
+  entryCleanup?: () => void;
 }
 
 export type RegistrationOutcome =
@@ -302,18 +313,40 @@ export async function preflightLocalRegistration(
       }
     }
 
+    // External Git entry acquisition (Issue #50 / #51)
+    const gitEntries = catalog.entries.filter((e): e is MarketplaceEntry & { source: unknown } => e.type === 'git' && e.available && e.source !== undefined);
+    let entrySnapshots: Record<string, string> | undefined;
+    let acquiredEntries: Map<string, EntryAcquisitionRecord> | undefined;
+    let entryCleanup: (() => void) | undefined;
+    if (gitEntries.length > 0) {
+      const cache = opts.cache ?? new SourceCache({ agentDir: opts.agentDir });
+      const batchRes = await acquireGitEntries(gitEntries, {
+        trust: opts.trust,
+        executor: opts.executor,
+        cache,
+      });
+      if (!batchRes.ok) {
+        return blockedResult(rootPath, expectedRevision, sortFindings([...findings, ...batchRes.findings]), handle, opts, undefined, detectedFormat);
+      }
+      entrySnapshots = batchRes.entrySnapshots;
+      acquiredEntries = batchRes.entries;
+      entryCleanup = batchRes.cleanup;
+    }
+
     // Validation Snapshot (complete tree + binds)
     const snapshotResult = buildLocalSnapshot(canonicalPath, sourceKey);
     findings.push(...snapshotResult.findings);
 
     const sorted = sortFindings(findings);
     if (hasBlocking(sorted)) {
+      entryCleanup?.();
       return blockedResult(rootPath, expectedRevision, sorted, handle, opts);
     }
 
     // Duplicate detection (same kind + identical Source Key); directs to the existing Registration.
     const dup = findDuplicateRegistration(sourceKey, registrations);
     if (dup.duplicate) {
+      entryCleanup?.();
       return blockedResult(rootPath, expectedRevision, [dup.finding!], handle, opts, dup.existing);
     }
 
@@ -336,6 +369,9 @@ export async function preflightLocalRegistration(
       stateRevision: expectedRevision,
       fence: handle,
       terminal: false,
+      entrySnapshots,
+      acquiredEntries,
+      entryCleanup,
     };
     return { ok: true, preflight };
   } catch (e) {
@@ -405,6 +441,7 @@ export async function confirmLocalRegistration(
     });
     await appendReceipt(receipt, opts);
     release();
+    preflight.entryCleanup?.();
     return { status: 'declined', receipt };
   }
 
@@ -431,6 +468,7 @@ export async function confirmLocalRegistration(
     });
     await appendReceipt(receipt, opts);
     release();
+    preflight.entryCleanup?.();
     return { status: 'persistence-failed', receipt, isIndeterminate: true };
   }
   const currentRevision = fresh.state!.stateRevision;
@@ -457,6 +495,7 @@ export async function confirmLocalRegistration(
     });
     await appendReceipt(receipt, opts);
     release();
+    preflight.entryCleanup?.();
     return { status: 'rejected-as-stale', receipt };
   }
 
@@ -474,6 +513,7 @@ export async function confirmLocalRegistration(
     });
     await appendReceipt(receipt, opts);
     release();
+    preflight.entryCleanup?.();
     return { status: 'blocked', findings: [dup.finding!], receipt, existing: dup.existing };
   }
 
@@ -502,6 +542,7 @@ export async function confirmLocalRegistration(
     });
     await appendReceipt(receipt, opts);
     release();
+    preflight.entryCleanup?.();
     return { status: 'rejected-as-stale', receipt };
   }
 
@@ -514,6 +555,7 @@ export async function confirmLocalRegistration(
     source: preflight.canonicalPath,
     sourceKey: preflight.sourceKey,
     validationSnapshot: preflight.snapshot.fingerprint,
+    entrySnapshots: preflight.entrySnapshots,
     snapshotBinds: snapshotBinds(preflight.snapshot),
   };
 
@@ -547,6 +589,7 @@ export async function confirmLocalRegistration(
     });
     await appendReceipt(receipt, opts);
     release();
+    preflight.entryCleanup?.();
     return { status: 'persistence-failed', receipt, isIndeterminate: write.isIndeterminate ?? false };
   }
 
@@ -566,6 +609,7 @@ export async function confirmLocalRegistration(
   });
   await appendReceipt(receipt, opts);
   release();
+  preflight.entryCleanup?.();
   return { status: 'completed', registration, receipt, newRevision: targetRevision };
 }
 
@@ -574,6 +618,7 @@ export function cancelLocalRegistration(preflight: LocalRegistrationPreflight): 
   if (preflight.terminal) return;
   preflight.terminal = true;
   preflight.fence.release();
+  preflight.entryCleanup?.();
 }
 
 /**
