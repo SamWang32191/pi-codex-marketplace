@@ -5,6 +5,20 @@ All notable changes to `pi-codex-marketplace` are documented here. Format follow
 ## [Unreleased]
 
 ### Added
+- **R2 文件落地（ADR 0005、Entry 術語）** (#52)：
+  - `CONTEXT.md` 新增 `Entry Acquisition` 與 `Entry Pin` 正典詞條，並同步更新 `Marketplace Entry`、`Acquisition Trust Base` 與 `Unavailable Entry` 描述。
+  - 新增架構決策記錄：`ADR 0005`（`0005-entry-acquisition-trust-boundary.md`），詳述 Entry 級取得之信任邊界（重用既有 Acquisition Trust Base）、零執行安全承諾、`command` 來源永久不合格理由、HTTPS shorthand 正規化、Pin 矩陣映射與漂移更新語意。
+- **Entry Acquisition 接入雙格式與 Refresh 流程** (#51)：
+  - 接合 Claude marketplace `github`/`url`/`git-subdir` 與 Codex git-kind 條目取得。
+  - 於 Registration Confirmation 持久化每項 entry 的 `entrySnapshots` 獨立快照。
+  - 整合 Marketplace Refresh：可動 ref 在上游漂移時產生 Update Candidate，sha-pinned 條目不產生 candidate；Update Plan 與 Apply Update 實施原子處置與快取 pin 保留。
+  - `npm`、`archive` 與 `command` 來源一致披露為 Unavailable Entry。
+- **Entry Acquisition 引擎（git 家族 entry）** (#50)：
+  - 實作格式中立的 Entry 級取得引擎（`src/registration/entry-acquisition.ts`）。
+  - 支援 `github`（含 owner/repo shorthand 展開為 canonical HTTPS 定位器）、`url`、`git-subdir`（含子目錄 containment 驗證）。
+  - Selector 映射與 Pin 矩陣：`sha`→commit、`ref`→branch/tag、皆無→可動 default；並存時 `sha` 為有效 pin、`ref` 僅作格式檢驗。
+  - 嚴格 Acquisition Trust Base（`StrictHostKeyChecking=yes`、`core.hooksPath=/dev/null`、`GIT_LFS_SKIP_SMUDGE=1`）與 Validation Budget fail-closed 約束。
+  - 批次取得原子性：任一 entry 失敗或超限即整批 fail-closed 並自動清理暫存目錄。
 - **R1 文件落地（CONTEXT.md、ADR×2、README）** (#49)：
   - `CONTEXT.md` 術語修訂與新增：`Marketplace Catalog` 收編 `.claude-plugin/marketplace.json`、`Compatibility Profile` 改述 v2 雙格式契約、`Marketplace` 與 `Plugin` 去除 Codex-format 限定、`Unavailable Entry` 擴充結構化原因分類表、`Skill Agent Profile` 明示 Codex 專屬（Claude 下視為一般 Skill Resource）、新增 `Marketplace Format` 正典詞條。
   - 新增架構決策記錄：`ADR 0003`（雙格式偵測與 codex 優先）與 `ADR 0004`（統一 Compatibility Profile v2 取代凍結 v1）。
