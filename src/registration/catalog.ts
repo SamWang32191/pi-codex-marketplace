@@ -10,6 +10,7 @@
 
 import { CODE, RULE, blocking, type ValidationFinding } from './findings.js';
 import { BUDGET } from './budget.js';
+import { parseGitEntrySpec } from './entry-acquisition.js';
 
 export type EntryType = 'local' | 'git' | 'unsupported';
 
@@ -30,6 +31,8 @@ export interface MarketplaceEntry {
   type: EntryType;
   /** Declared `./`-relative Contained Path for local entries. */
   path?: string;
+  /** Declared raw source object/string for git entries. */
+  source?: unknown;
   /** Whether this entry can supply an activatable plugin (else Unavailable). */
   available: boolean;
   /** Human reason when unavailable. */
@@ -176,12 +179,43 @@ export function parseCatalog(obj: unknown): CatalogResult {
     const path = nestedSource ? nestedPath : flatPath;
 
     if (kind.type !== 'local') {
-      // Recognized only as an Unavailable Entry (never recursively acquired). Disclosed, not a finding.
+      const rawSource = nestedSource ?? e.source ?? e;
+      const parsedGit = parseGitEntrySpec(rawSource, entryId);
+      if (parsedGit.isGitFamily) {
+        if (parsedGit.ok) {
+          entries.push({
+            entryId,
+            ordinal: index,
+            name,
+            type: 'git',
+            source: rawSource,
+            path,
+            available: true,
+          });
+          return;
+        }
+        if (parsedGit.findings.length > 0) {
+          findings.push(...parsedGit.findings);
+        }
+        entries.push({
+          entryId,
+          ordinal: index,
+          name,
+          type: 'git',
+          source: rawSource,
+          path,
+          available: false,
+          unavailableReason: parsedGit.unavailableReason ?? 'invalid git entry',
+        });
+        return;
+      }
+      // Recognized only as an Unavailable Entry. Disclosed, not a finding.
       entries.push({
         entryId,
         ordinal: index,
         name,
         type: kind.type,
+        source: rawSource,
         path,
         available: false,
         unavailableReason: 'unsupported source kind',
