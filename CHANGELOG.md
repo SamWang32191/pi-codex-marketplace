@@ -5,6 +5,10 @@ All notable changes to `pi-codex-marketplace` are documented here. Format follow
 ## [Unreleased]
 
 ### Added
+- **R1 文件落地（CONTEXT.md、ADR×2、README）** (#49)：
+  - `CONTEXT.md` 術語修訂與新增：`Marketplace Catalog` 收編 `.claude-plugin/marketplace.json`、`Compatibility Profile` 改述 v2 雙格式契約、`Marketplace` 與 `Plugin` 去除 Codex-format 限定、`Unavailable Entry` 擴充結構化原因分類表、`Skill Agent Profile` 明示 Codex 專屬（Claude 下視為一般 Skill Resource）、新增 `Marketplace Format` 正典詞條。
+  - 新增架構決策記錄：`ADR 0003`（雙格式偵測與 codex 優先）與 `ADR 0004`（統一 Compatibility Profile v2 取代凍結 v1）。
+  - `README.md` 與 `package.json` 描述全面更新反映 Codex 與 Claude 雙格式支援（套件名稱與 `/codex-marketplace` 指令維持不變）。
 - **Claude 外掛完整生命週期與驗收劇本** (#48)：
   - Claude 安裝生命週期完備：`Install Disabled` 建立 disabled 狀態（無須 Activation Confirmation）；啟用經由 `preflightPluginEnable` 重新驗證並要求 `Activation Confirmation`（Default No）。
   - Runtime Application 與投影：安裝啟用後 `projectEffectiveState` 及 `discoverProjectedSkillPaths` 動態貢獻 Claude plugins 的宣告技能目錄，並遵循 `Pi → Global` 優先序。
@@ -18,6 +22,14 @@ All notable changes to `pi-codex-marketplace` are documented here. Format follow
   - 驗證披露、Registration Confirmation 畫面與 Attempt Receipt（Transaction Sheet、Receipt Journal、Attempt Summary 通知）顯示 Marketplace Format。
   - 瀏覽（Bridge Ledger / 安裝選單）讀經註冊格式：Compatible entry 顯示外掛與技能清單，不合格 entry 顯示 Unavailable 原因；上游格式翻轉不被靜默採用，僅經 Marketplace Refresh 產生的 Update Candidate 加上明確 Apply Update 變更。
   - transaction-flow 測試以 mock Git executor 完整登記仿 mattpocock 夾具成功。
+- **Claude catalog 結構解析器** (#46)：
+  - 實作 `.claude-plugin/marketplace.json` 結構解析器與 fail-closed 欄位政策。
+  - 雙格式 Marketplace Entry ID 一致收斂為 `/plugins/<zero-based ordinal>`。
+  - 第一天本地相對路徑（`./` 開頭）分流為 locatable entry，非 git 家族、entry-defined (`strict:false`)、bare name/pluginRoot 與外部 git 來源產生結構化 Unavailable Entry 原因，`command` 來源永久不合格。
+- **Compatibility Profile v2** (#45)：
+  - 推出單一統一 Compatibility Profile v2 與 Validation Ruleset v2，收斂 Codex 與 Claude 雙格式外掛契約。
+  - Manifest 欄位三分法：未知欄位 fail-closed Blocking、主動元件 Blocking、已知慣性呈現欄位 Validation Warning；Claude entry `metadata` 物件視為 Inert Metadata。
+  - `SKILL.md` frontmatter 實施白名單（僅允許 `name`, `description`, `disable-model-invocation`）。
 
 ### Changed
 - **Bridge State Schema v3 + format 屬性遷移** (#44)：`schemaVersion` 升為 `3`。
