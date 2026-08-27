@@ -1,6 +1,6 @@
-# Codex Marketplace Compatibility
+# Marketplace Compatibility
 
-This context describes how Codex marketplaces and plugins become usable in Pi while retaining their Codex-facing identity and an explicit compatibility boundary.
+This context describes how Codex and Claude marketplaces and plugins become usable in Pi while retaining their source-facing identity and an explicit compatibility boundary.
 
 ## Language
 
@@ -10,7 +10,7 @@ _Avoid_: Pi plugin, importer, converter
 
 **Bridge Extension**:
 The runtime portion of the Bridge Package that presents marketplace and plugin capabilities inside Pi.
-_Avoid_: Bridge Package, Codex plugin
+_Avoid_: Bridge Package, Codex plugin, Claude plugin
 
 **Bridge State**:
 The Bridge-owned durable desired state stored in a single Global Scope document. It contains a schema version and Registration and Installation records; source-derived catalogs, compatibility results, effective precedence, and diagnostics are recomputed.
@@ -65,12 +65,16 @@ The computed view of Global Scope Bridge State. Only enabled Installations parti
 _Avoid_: Bridge State, persisted merged state
 
 **Marketplace**:
-A Codex-format catalog that identifies plugins available from a source.
+A catalog that identifies plugins available from a source.
 _Avoid_: Package registry, plugin directory
 
 **Marketplace Catalog**:
-The canonical `.agents/plugins/marketplace.json` object within a Marketplace Root, declaring its validated lowercase kebab-case name and Plugin entries. Legacy and Antigravity marketplace-shaped files do not participate in Bridge ingestion.
-_Avoid_: `.claude-plugin/marketplace.json`, `.agents/plugins.json`
+The canonical `.agents/plugins/marketplace.json` or `.claude-plugin/marketplace.json` object within a Marketplace Root, declaring its validated lowercase kebab-case name and Plugin entries. Legacy and Antigravity marketplace-shaped files do not participate in Bridge ingestion.
+_Avoid_: `.agents/plugins.json`
+
+**Marketplace Format**:
+The format of a Marketplace Source (`codex` or `claude`), deterministically derived from its Marketplace Catalog and fixed to the Marketplace Registration upon confirmation.
+_Avoid_: Protocol version, manifest format, adaptive format
 
 **Marketplace Entry**:
 A Marketplace Catalog member that names one Plugin candidate and locates it through a local Contained Path. Other entry source kinds are recognized only as Unavailable Entries rather than recursively acquired.
@@ -189,7 +193,7 @@ An optional, human-readable handle for a Marketplace Registration, initially der
 _Avoid_: Registration ID, Marketplace name
 
 **Plugin**:
-A Codex-format bundle whose `.codex-plugin/plugin.json` manifest describes its identity and constituent components. The manifest name, rather than the Marketplace entry name or directory path, is the authoritative Plugin name.
+A bundle whose `.codex-plugin/plugin.json` or `.claude-plugin/plugin.json` manifest describes its identity and constituent components. The manifest name, rather than the Marketplace entry name or directory path, is the authoritative Plugin name.
 _Avoid_: Pi package, Pi extension
 
 **Plugin ID**:
@@ -198,6 +202,11 @@ _Avoid_: Marketplace entry name, Plugin path
 
 **Unavailable Entry**:
 A Marketplace Entry that cannot supply an activatable Plugin because it uses an unsupported source kind, cannot be resolved to a Plugin, yields an Invalid or Incompatible Plugin, or has a Plugin-level identity collision. A Runtime Skill Collision affects skill availability and does not make an otherwise activatable entry unavailable.
+_Reason categories:_
+- _Unsupported source kinds_: non-local or non-contained source forms (such as `npm`, `archive`, external `git`/`github`/`url`/`git-subdir` without entry acquisition, or permanently disqualified `command` sources).
+- _Unresolvable sources_: missing sources, bare names, unsupported `metadata.pluginRoot` resolution, or non-`./` relative paths.
+- _Unsupported entry structure_: entry-defined plugins (`strict: false`) lacking an independent authoritative manifest, conflicting source declarations, or malformed entry objects.
+- _Target resolution & validation failures_: missing directory targets, manifest parse failures, Invalid Plugins (e.g., manifest schema/containment violations, duplicate skill names), Incompatible Plugins (requiring active components outside Compatibility Profile v2), or Plugin ID collisions within the snapshot.
 _Avoid_: Silently skipped entry, partially compatible Plugin
 
 **Skill Descriptor**:
@@ -205,7 +214,7 @@ The explicit YAML frontmatter at the start of a Plugin skill's `SKILL.md`, conta
 _Avoid_: Directory-name fallback, Skill Body
 
 **Skill Body**:
-The Markdown instructions after a Skill Descriptor. Compatibility Profile v1 treats it as an opaque prompt under Pi's native newline and whitespace normalization.
+The Markdown instructions after a Skill Descriptor. Compatibility Profile v2 treats it as an opaque prompt under Pi's native newline and whitespace normalization.
 _Avoid_: Executable template, dynamic command
 
 **Skill ID**:
@@ -217,8 +226,8 @@ A conflict in Pi's flat skill namespace when different Skill IDs, or a Plugin sk
 _Avoid_: Skill ID collision, canonical-path duplicate
 
 **Skill Agent Profile**:
-The optional `agents/openai.yaml` companion to a Plugin skill, containing presentation metadata and declarations about invocation or external dependencies.
-_Avoid_: Skill Descriptor, required manifest
+The optional `agents/openai.yaml` companion to a Codex Plugin skill, containing presentation metadata and declarations about invocation or external dependencies. In Claude plugins, this file is treated as an opaque Skill Resource and does not define invocation policies.
+_Avoid_: Skill Descriptor, required manifest, Claude invocation manifest
 
 **Invocation Policy**:
 The canonical declaration of whether a Plugin skill participates in implicit model discovery or is available only through explicit invocation.
@@ -237,7 +246,7 @@ Optional descriptive or presentation data that does not change a Plugin's runtim
 _Avoid_: Active Component, required behaviour
 
 **Compatibility Profile**:
-A versioned, Bridge-owned contract declaring the Codex component types and semantic behaviours the Bridge Package supports. Compatibility Profile v1 classifies a Plugin atomically and contains Pi-native skill semantics only.
+A versioned, Bridge-owned contract declaring the component types and semantic behaviours the Bridge Package supports across Codex and Claude formats. Compatibility Profile v2 classifies a Plugin atomically and contains Pi-native skill semantics only.
 _Avoid_: Best-effort compatibility, silent fallback
 
 **Compatible Plugin**:

@@ -1,13 +1,14 @@
 {
   "name": "pi-codex-marketplace",
   "version": "0.2.0",
-  "description": "Bridge Package for Codex Marketplace compatibility in Pi — Global Bridge State, atomic persistence, and /codex-marketplace TUI",
+  "description": "Bridge Package for Codex and Claude Marketplace compatibility in Pi — Global Bridge State, atomic persistence, and /codex-marketplace TUI",
   "type": "module",
   "keywords": [
     "pi-package",
     "pi",
     "pi-coding-agent",
     "codex",
+    "claude",
     "marketplace"
   ],
   "license": "MIT",
