@@ -9,6 +9,10 @@ import {
   confirmLocalRegistration,
 } from '../../src/registration/flow.js';
 import {
+  preflightGitRegistration,
+  confirmGitRegistration,
+} from '../../src/registration/git-flow.js';
+import {
   preflightPluginInstallation,
   confirmPluginInstallation,
 } from '../../src/installation/flow.js';
@@ -388,5 +392,45 @@ describe('Entry Acquisition Wiring Integration Tests (#51)', () => {
     expect(state.registrations).toHaveLength(1);
     expect(state.installations).toHaveLength(1);
     expect(state.installations[0].manifestName).toBe('agg-gh-plugin');
+  });
+
+  it('preflightGitRegistration without opts.cache initializes SourceCache fallback and stores entry trees', async () => {
+    const gitMarketplaceFixture = join(tmpRoot, 'fixtures', 'remote-git-marketplace');
+    mkdirSync(join(gitMarketplaceFixture, '.claude-plugin'), { recursive: true });
+    writeFileSync(
+      join(gitMarketplaceFixture, '.claude-plugin', 'marketplace.json'),
+      JSON.stringify({
+        name: 'remote-hub',
+        owner: { name: 'Acme' },
+        plugins: [
+          { name: 'gh-tool', source: { source: 'github', repo: 'samwang/gh-tool' } },
+        ],
+      }),
+    );
+
+    const fixtures = {
+      'remote-hub.git': { root: gitMarketplaceFixture, sha: '8888888888888888888888888888888888888888' },
+      'samwang/gh-tool': { root: ghFixtureRoot, sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
+    };
+    const executor = makeMockGitExecutor(fixtures);
+
+    // Call preflightGitRegistration WITHOUT opts.cache — must initialize fallback cache from agentDir
+    const preRes = await preflightGitRegistration('https://github.com/example/remote-hub.git', 'refs/heads/main', {
+      agentDir,
+      executor,
+    });
+    expect(preRes.ok).toBe(true);
+    if (!preRes.ok) throw new Error('git pre failed');
+    expect(preRes.preflight.entrySnapshots).toHaveProperty('/plugins/0');
+
+    const confRes = await confirmGitRegistration(preRes.preflight, true, { agentDir });
+    expect(confRes.status).toBe('completed');
+    if (confRes.status !== 'completed') throw new Error('git conf failed');
+
+    // Inspect marketplace using a new SourceCache instance with the same agentDir — entry snapshot must hit!
+    const inspectCache = new SourceCache({ agentDir });
+    const inspection = inspectMarketplaceEntries(confRes.registration, { agentDir, cache: inspectCache });
+    expect(inspection.entries[0].entry.available).toBe(true);
+    expect(inspection.entries[0].plugin?.manifestName).toBe('gh-plugin');
   });
 });

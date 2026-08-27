@@ -353,10 +353,11 @@ export async function preflightGitRegistration(
     let acquiredEntries: Map<string, EntryAcquisitionRecord> | undefined;
     let entryCleanup: (() => void) | undefined;
     if (gitEntries.length > 0) {
+      const cache = opts.cache ?? new SourceCache({ agentDir: opts.agentDir });
       const batchRes = await acquireGitEntries(gitEntries, {
         trust: opts.trust,
         executor: opts.executor,
-        cache: opts.cache,
+        cache,
       });
       if (!batchRes.ok) {
         if (acquiredPath) cleanupAcquisition(acquiredPath);
