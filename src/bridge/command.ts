@@ -530,7 +530,19 @@ export async function runCommand(
     rawArgs.shift();
   }
 
-  const { state, wasReset, resetReason } = readMinimalBridgeState(opts);
+  let state: MinimalBridgeState;
+  let wasReset = false;
+  let resetReason: string | undefined;
+  try {
+    const read = readMinimalBridgeState(opts);
+    state = read.state;
+    wasReset = read.wasReset;
+    resetReason = read.resetReason;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const messages = [`錯誤：讀取 Bridge State 失敗：${msg}`];
+    return { messages, lines: messages, output: messages.join('\n\n'), reload: false, stateReset: false };
+  }
 
   const messages: string[] = [];
   if (wasReset) {
