@@ -24,11 +24,20 @@ import { resolveContained } from '../registration/contained.js';
 import { GIT_FAMILY_UNAVAILABLE_REASON, type Catalog, type MarketplaceEntry } from '../registration/catalog.js';
 import type { MarketplaceFormat } from '../bridge-state/types.js';
 import type { ValidationFinding } from '../registration/findings.js';
+import { normalizeGitLocator } from '../registration/git-locator.js';
+import type { NormalizedGitSelector } from '../registration/git-selector.js';
+import { acquireGitSource, cleanupAcquisition, type GitExecutor } from '../registration/git-acquisition.js';
+import { gitSourceKey } from '../registration/source-key.js';
+import { buildGitSnapshot } from '../registration/snapshot.js';
+import { SourceCache } from '../cache/source-cache.js';
+import { getCacheDir, getCacheEntriesDir } from '../cache/paths.js';
 
 export interface CommandOptions {
   statePath?: string;
   agentDir?: string;
   cwd?: string;
+  /** Git executor seam for tests — mocks `git` invocations (ls-remote/clone/checkout). */
+  gitExecutor?: GitExecutor;
 }
 
 export interface CommandResult {
@@ -57,6 +66,45 @@ const HELP_TEXT = [
 ].join('\n');
 
 const KEBAB_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+
+// ---- Git marketplace helpers (#92) ----
+
+const OWNER_REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(\.git)?$/;
+
+function isGitCandidate(input: string): boolean {
+  const t = input.trim();
+  if (OWNER_REPO_RE.test(t) && !t.includes('://') && !t.includes('@')) return true;
+  if (t.includes('://')) return true;
+  if (/^[^@\s]+@[^:\s]+:[^\s]+$/.test(t)) return true;
+  return false;
+}
+
+function expandOwnerRepo(input: string): string {
+  return `https://github.com/${input.trim()}`;
+}
+
+function catalogRootForReg(
+  reg: MinimalBridgeState['registrations'][number],
+  opts: CommandOptions,
+): string | undefined {
+  if (reg.sourceKind === 'git') {
+    const snap = (reg as unknown as { snapshot?: string }).snapshot;
+    if (!snap || !/^[0-9a-f]{64}$/.test(snap)) return undefined;
+    const entriesDir = getCacheEntriesDir(getCacheDir(opts.agentDir));
+    const p = join(entriesDir, snap);
+    if (!existsSync(p)) return undefined;
+    return p;
+  }
+  return reg.source;
+}
+
+function sourceRootForReg(
+  reg: MinimalBridgeState['registrations'][number],
+  opts: CommandOptions,
+): string | undefined {
+  if (reg.sourceKind === 'git') return catalogRootForReg(reg, opts);
+  return reg.source;
+}
 
 function padRight(str: string, length: number): string {
   return str.length >= length ? str : str + ' '.repeat(length - str.length);
@@ -201,12 +249,22 @@ interface Enumeration {
   catalogErrors: Array<{ marketplace: string; error: string }>;
 }
 
-function enumeratePlugins(state: MinimalBridgeState): Enumeration {
+function enumeratePlugins(state: MinimalBridgeState, opts: CommandOptions = {}): Enumeration {
   const result: EnumeratedPlugin[] = [];
   const catalogErrors: Enumeration['catalogErrors'] = [];
   let counter = 1;
   for (const reg of state.registrations) {
-    const read = readCatalogForReg(reg.source, reg.format ?? 'codex');
+    const catalogRoot = catalogRootForReg(reg, opts);
+    if (!catalogRoot) {
+      const isGit = reg.sourceKind === 'git';
+      const snap = (reg as unknown as { snapshot?: string }).snapshot;
+      const reason = isGit
+        ? (!snap ? 'git marketplace 缺少 cache 指紋' : `cache 快照缺失（${snap.slice(0, 12)}…）`)
+        : 'catalog 根路徑無法解析';
+      catalogErrors.push({ marketplace: reg.marketplaceName || reg.alias || reg.id, error: reason });
+      continue;
+    }
+    const read = readCatalogForReg(catalogRoot, reg.format ?? 'codex');
     if (read.error) {
       // Disclosed read failure (#91): the error line is shown and the marketplace contributes
       // no entries — a broken catalog never yields installable plugins.
@@ -233,8 +291,8 @@ function enumeratePlugins(state: MinimalBridgeState): Enumeration {
   return { plugins: result, catalogErrors };
 }
 
-function formatPluginListLines(state: MinimalBridgeState, filter?: string): string[] {
-  const { plugins: enumeration, catalogErrors } = enumeratePlugins(state);
+function formatPluginListLines(state: MinimalBridgeState, filter?: string, opts: CommandOptions = {}): string[] {
+  const { plugins: enumeration, catalogErrors } = enumeratePlugins(state, opts);
   const errorLines = catalogErrors.map((e) => `⚠ marketplace [${e.marketplace}] ${e.error}`);
   if (enumeration.length === 0) {
     // No plugins at all (e.g., empty catalog, no registrations, or unreadable catalogs):
@@ -405,85 +463,205 @@ export async function runCommand(
           messages.push('用法：/codex-marketplace add <路徑|網址>');
         } else {
           const input = subargs[0];
-          // Resolve input path against cwd for relative paths
-          const cwd = opts.cwd ?? process.cwd();
-          const absoluteInput = isAbsolute(input) ? input : resolve(cwd, input);
-
-          // 1) Resolve Source Key (local realpath)
-          const skRes = localSourceKey(absoluteInput);
-          if (!skRes.ok) {
-            const reason = skRes.error || '無法解析路徑';
-            messages.push(`錯誤：無法解析 marketplace 路徑 "${input}"：${reason}`);
-            break;
-          }
-          const canonicalPath = skRes.sourceKey!.canonicalPath!;
-          const sourceKeyStr = skRes.sourceKey!.key;
-
-          // 2) Duplicate detection (same realpath)
-          const duplicate = state.registrations.find(
-            (r) => r.sourceKind === 'local' && r.source === canonicalPath,
-          );
-          // Also check via key equality in case stored source differs in slash style; canonicalPath comparison is primary.
-          if (duplicate) {
-            void sourceKeyStr; // keep for future git distinctness
-            messages.push(
-              `已註冊過相同來源 "${canonicalPath}"，想更新？\`update\`；想換？先 \`remove\` 再 \`add\``,
-            );
-            break;
-          }
-
-          // 3) Format detection (codex prioritized)
-          const detectedFormat = detectMarketplaceFormat(canonicalPath);
-          if (!detectedFormat) {
-            messages.push(
-              `錯誤：找不到 marketplace catalog（${CODEX_MARKETPLACE_CATALOG_RELPATH} 或 ${CLAUDE_MARKETPLACE_CATALOG_RELPATH}）— catalog 缺失，請確認 marketplace 根目錄包含正確的 catalog 檔案`,
-            );
-            break;
-          }
-
-          // 4) Budget-bounded read + format-bound parse (the single catalog reader)
-          const catalogResult = readCatalogForReg(canonicalPath, detectedFormat);
-          if (catalogResult.error || !catalogResult.catalog) {
-            messages.push(`錯誤：${catalogResult.error ?? 'catalog 解析失敗'}`);
-            if (catalogResult.findings.length > 0) {
-              const detail = formatCatalogError(catalogResult.findings as any);
-              messages.push(
-                `錯誤：catalog 解析失敗：${detail} — catalog malformed`,
-              );
-              // Also surface first findings for diagnosability
-              const extra = catalogResult.findings
-                .slice(0, 3)
-                .map((f) => `${f.code} ${f.outcome}`)
-                .join('；');
-              if (extra) messages.push(`詳細：${extra}`);
+          // ---- Git candidate detection (#92): owner/repo shorthand or URL ----
+          if (isGitCandidate(input)) {
+            let locatorInput = input.trim();
+            if (OWNER_REPO_RE.test(locatorInput) && !locatorInput.includes('://') && !locatorInput.includes('@')) {
+              locatorInput = expandOwnerRepo(locatorInput);
             }
-            break;
+            const locRes = normalizeGitLocator(locatorInput);
+            if (!locRes.ok) {
+              const outcome = locRes.findings[0]?.outcome ?? 'Git 網址格式不正確';
+              const allOutcomes = locRes.findings.map((f) => f.outcome).join('；');
+              messages.push(`錯誤：Git 網址不合法 — ${outcome}`);
+              if (allOutcomes && allOutcomes !== outcome) messages.push(`詳細：${allOutcomes}`);
+              break;
+            }
+            const locator = locRes.locator!;
+            const canonicalUrl = locator.canonicalUrl;
+
+            const duplicateGit = state.registrations.find((r) => r.sourceKind === 'git' && r.source === canonicalUrl);
+            if (duplicateGit) {
+              messages.push(`已註冊過相同來源 "${canonicalUrl}"，想更新？\`update\`；想換？先 \`remove\` 再 \`add\``);
+              break;
+            }
+
+            const selectorDefault: NormalizedGitSelector = { kind: 'default', canonical: 'default', raw: 'default' };
+            let acquireResult;
+            try {
+              acquireResult = await acquireGitSource({
+                locator,
+                selector: selectorDefault,
+                executor: opts.gitExecutor,
+              });
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : String(e);
+              messages.push(`錯誤：git 取得失敗 — ${msg}`);
+              break;
+            }
+            if (!acquireResult.ok) {
+              const outcome = acquireResult.findings[0]?.outcome ?? acquireResult.stderr ?? 'git 取得失敗';
+              messages.push(`錯誤：git 取得失敗 — ${outcome}`);
+              if (acquireResult.findings.length > 1) {
+                const extra = acquireResult.findings.slice(1, 3).map((f) => f.outcome).join('；');
+                if (extra) messages.push(`詳細：${extra}`);
+              }
+              if (acquireResult.acquiredPath && acquireResult.createdTemp) {
+                try { cleanupAcquisition(acquireResult.acquiredPath); } catch {}
+              }
+              break;
+            }
+
+            const acquiredPath = acquireResult.acquiredPath!;
+            const resolvedRevision = acquireResult.resolvedRevision!;
+            const createdTemp = acquireResult.createdTemp ?? false;
+            const cleanupOnFail = (): void => {
+              if (createdTemp) {
+                try { cleanupAcquisition(acquiredPath); } catch {}
+              }
+            };
+
+            const detectedFormat = detectMarketplaceFormat(acquiredPath);
+            if (!detectedFormat) {
+              messages.push(
+                `錯誤：找不到 marketplace catalog（${CODEX_MARKETPLACE_CATALOG_RELPATH} 或 ${CLAUDE_MARKETPLACE_CATALOG_RELPATH}）— catalog 缺失，請確認 marketplace 根目錄包含正確的 catalog 檔案`,
+              );
+              cleanupOnFail();
+              break;
+            }
+
+            const catalogResult = readCatalogForReg(acquiredPath, detectedFormat);
+            if (catalogResult.error || !catalogResult.catalog) {
+              messages.push(`錯誤：${catalogResult.error ?? 'catalog 解析失敗'}`);
+              if (catalogResult.findings.length > 0) {
+                const detail = formatCatalogError(catalogResult.findings as any);
+                messages.push(`錯誤：catalog 解析失敗：${detail} — catalog malformed`);
+                const extra = catalogResult.findings.slice(0, 3).map((f) => `${f.code} ${f.outcome}`).join('；');
+                if (extra) messages.push(`詳細：${extra}`);
+              }
+              cleanupOnFail();
+              break;
+            }
+
+            const catalog = catalogResult.catalog;
+
+            const sourceKey = gitSourceKey(locator, selectorDefault);
+            (sourceKey as unknown as { resolvedRevision?: string }).resolvedRevision = resolvedRevision;
+            const snapRes = buildGitSnapshot(acquiredPath, sourceKey, {
+              canonicalLocator: canonicalUrl,
+              resolvedRevision,
+              selectorCanonical: selectorDefault.canonical,
+            });
+            if (!snapRes.ok || !snapRes.snapshot) {
+              const outcome = snapRes.findings[0]?.outcome ?? 'snapshot 建立失敗';
+              messages.push(`錯誤：snapshot 建立失敗 — ${outcome}`);
+              if (snapRes.findings.length > 1) {
+                const extra = snapRes.findings.slice(0, 3).map((f) => `${f.code} ${f.outcome}`).join('；');
+                if (extra) messages.push(`詳細：${extra}`);
+              }
+              cleanupOnFail();
+              break;
+            }
+            const fingerprint = snapRes.snapshot.fingerprint;
+
+            const cache = new SourceCache({ agentDir: opts.agentDir });
+            try {
+              await cache.storeTree(acquiredPath, fingerprint);
+              cache.recordIndex({
+                fingerprint,
+                resolvedRevision,
+                canonicalLocator: canonicalUrl,
+                selectorCanonical: selectorDefault.canonical,
+              });
+            } catch {}
+            if (createdTemp) {
+              try { cleanupAcquisition(acquiredPath); } catch {}
+            }
+
+            const newReg = {
+              id: randomUUID(),
+              marketplaceName: catalog.name,
+              format: detectedFormat,
+              sourceKind: 'git' as const,
+              source: canonicalUrl,
+              snapshot: fingerprint,
+            };
+
+            state.registrations.push(newReg);
+            try {
+              writeMinimalBridgeState(state, opts);
+            } catch (e) {
+              state.registrations.pop();
+              const msg = e instanceof Error ? e.message : String(e);
+              messages.push(`錯誤：寫入 Bridge State 失敗：${msg}`);
+              break;
+            }
+
+            messages.push(`偵測：${detectedFormat} marketplace · ${catalog.entries.length} plugins`);
+            messages.push(`已註冊 "${catalog.name}"`);
+          } else {
+            const cwd = opts.cwd ?? process.cwd();
+            const absoluteInput = isAbsolute(input) ? input : resolve(cwd, input);
+
+            const skRes = localSourceKey(absoluteInput);
+            if (!skRes.ok) {
+              const reason = skRes.error || '無法解析路徑';
+              messages.push(`錯誤：無法解析 marketplace 路徑 "${input}"：${reason}`);
+              break;
+            }
+            const canonicalPath = skRes.sourceKey!.canonicalPath!;
+            const sourceKeyStr = skRes.sourceKey!.key;
+
+            const duplicate = state.registrations.find((r) => r.sourceKind === 'local' && r.source === canonicalPath);
+            if (duplicate) {
+              void sourceKeyStr;
+              messages.push(`已註冊過相同來源 "${canonicalPath}"，想更新？\`update\`；想換？先 \`remove\` 再 \`add\``);
+              break;
+            }
+
+            const detectedFormat = detectMarketplaceFormat(canonicalPath);
+            if (!detectedFormat) {
+              messages.push(
+                `錯誤：找不到 marketplace catalog（${CODEX_MARKETPLACE_CATALOG_RELPATH} 或 ${CLAUDE_MARKETPLACE_CATALOG_RELPATH}）— catalog 缺失，請確認 marketplace 根目錄包含正確的 catalog 檔案`,
+              );
+              break;
+            }
+
+            const catalogResult = readCatalogForReg(canonicalPath, detectedFormat);
+            if (catalogResult.error || !catalogResult.catalog) {
+              messages.push(`錯誤：${catalogResult.error ?? 'catalog 解析失敗'}`);
+              if (catalogResult.findings.length > 0) {
+                const detail = formatCatalogError(catalogResult.findings as any);
+                messages.push(`錯誤：catalog 解析失敗：${detail} — catalog malformed`);
+                const extra = catalogResult.findings.slice(0, 3).map((f) => `${f.code} ${f.outcome}`).join('；');
+                if (extra) messages.push(`詳細：${extra}`);
+              }
+              break;
+            }
+
+            const catalog = catalogResult.catalog;
+
+            const newReg = {
+              id: randomUUID(),
+              marketplaceName: catalog.name,
+              format: detectedFormat,
+              sourceKind: 'local' as const,
+              source: canonicalPath,
+            };
+
+            state.registrations.push(newReg);
+            try {
+              writeMinimalBridgeState(state, opts);
+            } catch (e) {
+              state.registrations.pop();
+              const msg = e instanceof Error ? e.message : String(e);
+              messages.push(`錯誤：寫入 Bridge State 失敗：${msg}`);
+              break;
+            }
+
+            messages.push(`偵測：${detectedFormat} marketplace · ${catalog.entries.length} plugins`);
+            messages.push(`已註冊 "${catalog.name}"`);
           }
-
-          const catalog = catalogResult.catalog;
-
-          // 5) Persist registration
-          const newReg = {
-            id: randomUUID(),
-            marketplaceName: catalog.name,
-            format: detectedFormat,
-            sourceKind: 'local' as const,
-            source: canonicalPath,
-          };
-
-          state.registrations.push(newReg);
-          try {
-            writeMinimalBridgeState(state, opts);
-          } catch (e) {
-            // Rollback on write failure
-            state.registrations.pop();
-            const msg = e instanceof Error ? e.message : String(e);
-            messages.push(`錯誤：寫入 Bridge State 失敗：${msg}`);
-            break;
-          }
-
-          messages.push(`偵測：${detectedFormat} marketplace · ${catalog.entries.length} plugins`);
-          messages.push(`已註冊 "${catalog.name}"`);
         }
         break;
       }
@@ -499,7 +677,7 @@ export async function runCommand(
             messages.push(`找不到 marketplace "${filter}"`);
             // Still show all for discoverability
             messages.push(...formatOverview(state));
-            const pluginLines = formatPluginListLines(state);
+            const pluginLines = formatPluginListLines(state, undefined, opts);
             if (pluginLines.length > 0) messages.push(pluginLines.join('\n'));
           } else if (filteredRegs.length > 0) {
             // Show filtered overview (reuse format but only filtered regs)
@@ -509,7 +687,7 @@ export async function runCommand(
               installations: state.installations.filter((inst) => filteredRegs.some((r) => r.id === inst.registrationId)),
             };
             messages.push(...formatOverview(filteredState));
-            const pluginLines = formatPluginListLines(state, filter);
+            const pluginLines = formatPluginListLines(state, filter, opts);
             if (pluginLines.length > 0) messages.push(pluginLines.join('\n'));
           } else {
             // No registrations at all
@@ -522,7 +700,7 @@ export async function runCommand(
             messages.push(USAGE_LINE);
           } else {
             messages.push(...formatOverview(state));
-            const pluginLines = formatPluginListLines(state);
+            const pluginLines = formatPluginListLines(state, undefined, opts);
             if (pluginLines.length > 0) messages.push(pluginLines.join('\n'));
           }
         }
@@ -538,7 +716,7 @@ export async function runCommand(
             messages.push('錯誤：尚未註冊任何 marketplace，請先使用 `/codex-marketplace add <路徑>` 註冊');
             break;
           }
-          const { plugins: enumeration, catalogErrors } = enumeratePlugins(state);
+          const { plugins: enumeration, catalogErrors } = enumeratePlugins(state, opts);
           const pushCatalogErrors = (): void => {
             for (const e of catalogErrors) messages.push(`⚠ marketplace [${e.marketplace}] ${e.error}`);
           };
@@ -586,7 +764,16 @@ export async function runCommand(
             );
             break;
           }
-          const contained = resolveContained(targetReg.source, targetEntry.path!, 'directory');
+          const sourceRoot = sourceRootForReg(targetReg, opts);
+          if (!sourceRoot) {
+            const snap = (targetReg as unknown as { snapshot?: string }).snapshot;
+            const reason = targetReg.sourceKind === 'git'
+              ? (!snap ? 'git cache 指紋缺失' : `cache 快照缺失（${snap.slice(0, 12)}…）請先重新 add`)
+              : 'marketplace 根路徑無法解析';
+            messages.push(`錯誤：無法解析 marketplace 根 — ${reason}`);
+            break;
+          }
+          const contained = resolveContained(sourceRoot, targetEntry.path!, 'directory');
           if (contained.outcome.kind === 'blocking') {
             messages.push(`錯誤：plugin 路徑檢查失敗（Contained Path 違規）— ${contained.outcome.reason}`);
             break;
@@ -648,15 +835,16 @@ export async function runCommand(
           const isUpdate = existingIdx >= 0;
           const installationId = isUpdate ? state.installations[existingIdx].id : manifestName; // use manifestName as stable id for simplicity, or UUID? Use manifestName to be stable across reinstalls
           // To keep stable id for e2e expectations, use manifestName as id if not update, else preserve.
-          const newInstallation = {
+          const newInstallation: MinimalBridgeState['installations'][number] = {
             id: installationId,
             pluginId: manifestName,
             enabled: true,
             installationState: 'enabled' as const,
             registrationId: targetReg.id,
             manifestName,
-            sourceKind: 'local' as const,
+            sourceKind: targetReg.sourceKind as 'local' | 'git',
             source: targetReg.source,
+            snapshot: targetReg.sourceKind === 'git' ? (targetReg as unknown as { snapshot?: string }).snapshot : undefined,
             skills: skillNames,
           };
 
