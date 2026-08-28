@@ -21,7 +21,9 @@ import {
   CLAUDE_MARKETPLACE_CATALOG_RELPATH,
 } from '../registration/format.js';
 import { resolveContained } from '../registration/contained.js';
-import type { MarketplaceEntry } from '../registration/catalog.js';
+import { GIT_FAMILY_UNAVAILABLE_REASON, type Catalog, type MarketplaceEntry } from '../registration/catalog.js';
+import type { MarketplaceFormat } from '../bridge-state/types.js';
+import type { ValidationFinding } from '../registration/findings.js';
 
 export interface CommandOptions {
   statePath?: string;
@@ -112,74 +114,144 @@ function formatCatalogError(findings: { code?: string; outcome?: string; rule?: 
   return detail;
 }
 
-// ---- Plugin enumeration helpers (#90) ----
+// ---- Plugin enumeration helpers (#90, #91) ----
 
 interface EnumeratedPlugin {
   number: number;
   reg: MinimalBridgeState['registrations'][number];
   entry: MarketplaceEntry;
   pluginName: string;
-  status: '可安裝' | '已裝啟用' | '已裝停用';
+  status: '可安裝' | '已裝啟用' | '已裝停用' | 'unavailable';
+  unavailableReason?: string;
 }
 
-function getCatalogEntriesForReg(reg: MinimalBridgeState['registrations'][number]): MarketplaceEntry[] {
-  const format = reg.format ?? 'codex';
-  const contract = catalogContractFor(format as any);
-  const catalogPath = join(reg.source, ...contract.relPath.split('/'));
+/**
+ * Whether an entry can supply a locally installable plugin on the command surface. Git-family
+ * and unsupported source kinds are Unavailable Entries (#91): disclosed with a reason, never
+ * silently skipped and never installable.
+ */
+function entryLocallyInstallable(entry: MarketplaceEntry): boolean {
+  return (
+    entry.type === 'local' && entry.available === true && typeof entry.path === 'string' && entry.path.length > 0
+  );
+}
+
+function entryUnavailableReason(entry: MarketplaceEntry): string {
+  if (entry.type === 'git' && entry.available !== false) return GIT_FAMILY_UNAVAILABLE_REASON;
+  return entry.unavailableReason ?? 'unsupported source kind';
+}
+
+interface CatalogReadResult {
+  /** Parsed catalog on success (name + entries); also present for some parse failures. */
+  catalog?: Catalog;
+  /** Structural findings from the format-bound parser (present for parse failures too). */
+  findings: ValidationFinding[];
+  /** Disclosed read failure (catalog 缺失／超上限／malformed); never silently skipped. */
+  error?: string;
+}
+
+/**
+ * The single catalog reader for the command surface: budget-bounded read + format-bound parse.
+ * Read failures produce a disclosed `error` instead of silently skipping (#91).
+ */
+function readCatalogForReg(root: string, format: MarketplaceFormat): CatalogReadResult {
+  const contract = catalogContractFor(format);
+  const catalogPath = join(root, ...contract.relPath.split('/'));
+  let raw: string;
   try {
-    if (!existsSync(catalogPath)) return [];
-    if (statSync(catalogPath).size > BUDGET.maxCatalogBytes) return [];
-    const raw = readFileSync(catalogPath, 'utf-8');
-    if (!raw.trim()) return [];
-    const parsed = JSON.parse(raw);
-    const res = contract.parse(parsed);
-    if (res.catalog) return res.catalog.entries;
-    // Even if not ok, return entries if present (e.g., partial)
-    if ((res as any).catalog?.entries) return (res as any).catalog.entries;
-    return [];
-  } catch {
-    return [];
+    if (!existsSync(catalogPath)) {
+      return { findings: [], error: `catalog 缺失（${contract.relPath}）` };
+    }
+    const size = statSync(catalogPath).size;
+    if (size > BUDGET.maxCatalogBytes) {
+      return {
+        findings: [],
+        error: `catalog 檔案過大（${size} bytes > ${BUDGET.maxCatalogBytes}）— 超過 Validation Budget 上限，catalog 無法解析`,
+      };
+    }
+    raw = readFileSync(catalogPath, 'utf-8');
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { findings: [], error: `catalog 無法讀取：${msg}` };
   }
+  if (!raw.trim()) {
+    return { findings: [], error: `catalog 解析失敗：檔案為空 — catalog malformed` };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { findings: [], error: `catalog 解析失敗：${msg} — catalog malformed` };
+  }
+  const res = contract.parse(parsed);
+  if (!res.ok) {
+    const codes = res.findings.map((f) => f.code).join(', ');
+    return {
+      catalog: res.catalog,
+      findings: res.findings,
+      error: `catalog 解析失敗${codes ? ` (${codes})` : ''} — catalog malformed`,
+    };
+  }
+  return { catalog: res.catalog, findings: res.findings };
 }
 
-function enumeratePlugins(state: MinimalBridgeState): EnumeratedPlugin[] {
+interface Enumeration {
+  plugins: EnumeratedPlugin[];
+  catalogErrors: Array<{ marketplace: string; error: string }>;
+}
+
+function enumeratePlugins(state: MinimalBridgeState): Enumeration {
   const result: EnumeratedPlugin[] = [];
+  const catalogErrors: Enumeration['catalogErrors'] = [];
   let counter = 1;
   for (const reg of state.registrations) {
-    const entries = getCatalogEntriesForReg(reg);
-    for (const entry of entries) {
-      // Only count entries that can supply a plugin? For #90 we include all local entries; but we include all entries for numbering
-      // To keep numbers stable, include every entry regardless of availability? However unavailable entries should still be listed as unavailable?
-      // For now, include all entries; status will reflect可安裝 even if unavailable? But we will include all.
+    const read = readCatalogForReg(reg.source, reg.format ?? 'codex');
+    if (read.error) {
+      // Disclosed read failure (#91): the error line is shown and the marketplace contributes
+      // no entries — a broken catalog never yields installable plugins.
+      catalogErrors.push({ marketplace: reg.marketplaceName || reg.alias || reg.id, error: read.error });
+      continue;
+    }
+    for (const entry of read.catalog?.entries ?? []) {
       const pluginName = entry.name ?? (entry.path ? basename(entry.path) : `plugin-${entry.ordinal}`);
       const inst = state.installations.find(
         (i) => i.registrationId === reg.id && (i.manifestName === pluginName || i.pluginId === pluginName),
       );
       let status: EnumeratedPlugin['status'];
-      if (!inst) status = '可安裝';
+      let unavailableReason: string | undefined;
+      if (!entryLocallyInstallable(entry)) {
+        status = 'unavailable';
+        unavailableReason = entryUnavailableReason(entry);
+      } else if (!inst) status = '可安裝';
       else if (inst.enabled !== false && inst.installationState !== 'disabled') status = '已裝啟用';
       else status = '已裝停用';
-      result.push({ number: counter, reg, entry, pluginName, status });
+      result.push({ number: counter, reg, entry, pluginName, status, unavailableReason });
       counter++;
     }
   }
-  return result;
+  return { plugins: result, catalogErrors };
 }
 
 function formatPluginListLines(state: MinimalBridgeState, filter?: string): string[] {
-  const enumeration = enumeratePlugins(state);
+  const { plugins: enumeration, catalogErrors } = enumeratePlugins(state);
+  const errorLines = catalogErrors.map((e) => `⚠ marketplace [${e.marketplace}] ${e.error}`);
+  if (enumeration.length === 0) {
+    // No plugins at all (e.g., empty catalog, no registrations, or unreadable catalogs):
+    // read failures are disclosed, never silently skipped (#91).
+    return errorLines;
+  }
   let filtered = enumeration;
   if (filter) {
     filtered = enumeration.filter(
       (e) => e.reg.marketplaceName === filter || e.reg.alias === filter || e.reg.id === filter,
     );
-  }
-  if (enumeration.length === 0) {
-    // No plugins at all (e.g., empty catalog or no registrations)
-    return [];
-  }
-  if (filter && filtered.length === 0) {
-    return [`找不到 marketplace "${filter}"`];
+    if (filtered.length === 0) {
+      return [
+        `找不到 marketplace "${filter}"`,
+        ...errorLines.filter((l) => l.includes(`[${filter}]`)),
+      ];
+    }
   }
   const lines: string[] = ['Plugins（編號／所屬 marketplace／狀態）'];
   const show = filter ? filtered : enumeration;
@@ -187,9 +259,10 @@ function formatPluginListLines(state: MinimalBridgeState, filter?: string): stri
     const num = padRight(` ${e.number}`, 4);
     const name = padRight(e.pluginName, 18);
     const mkt = padRight(`[${e.reg.marketplaceName || e.reg.alias || e.reg.id}]`, 20);
-    const status = e.status;
+    const status = e.status === 'unavailable' ? `unavailable（${e.unavailableReason ?? 'unavailable'}）` : e.status;
     lines.push(`${num}${name}${mkt}${status}`);
   }
+  lines.push(...errorLines);
   return lines;
 }
 
@@ -368,59 +441,16 @@ export async function runCommand(
             break;
           }
 
-          const contract = catalogContractFor(detectedFormat);
-          const catalogPath = join(canonicalPath, ...contract.relPath.split('/'));
-
-          // 4) Budget + read catalog file
-          let catalogBytes = 0;
-          try {
-            catalogBytes = statSync(catalogPath).size;
-          } catch (e) {
-            const msg = e instanceof Error ? e.message : String(e);
-            messages.push(
-              `錯誤：找不到 marketplace catalog（${contract.relPath}）：${msg} — catalog 缺失`,
-            );
-            break;
-          }
-          if (catalogBytes > BUDGET.maxCatalogBytes) {
-            messages.push(
-              `錯誤：catalog 檔案過大（${catalogBytes} bytes > ${BUDGET.maxCatalogBytes}）— 超過 Validation Budget 上限，catalog 無法解析`,
-            );
-            break;
-          }
-
-          let raw: string;
-          try {
-            raw = readFileSync(catalogPath, 'utf-8');
-          } catch (e) {
-            const msg = e instanceof Error ? e.message : String(e);
-            messages.push(`錯誤：無法讀取 catalog（${contract.relPath}）：${msg}`);
-            break;
-          }
-
-          if (raw.trim().length === 0) {
-            messages.push(`錯誤：catalog 解析失敗（${contract.relPath}）：檔案為空 — catalog malformed`);
-            break;
-          }
-
-          let parsed: unknown;
-          try {
-            parsed = JSON.parse(raw);
-          } catch (e) {
-            const msg = e instanceof Error ? e.message : String(e);
-            messages.push(`錯誤：catalog 解析失敗（${contract.relPath}）：${msg} — catalog malformed，無法解析 JSON`);
-            break;
-          }
-
-          const catalogResult = contract.parse(parsed);
-          if (!catalogResult.ok) {
-            const detail = formatCatalogError(catalogResult.findings as any);
-            const codes = catalogResult.findings.map((f) => f.code).join(', ');
-            messages.push(
-              `錯誤：catalog 解析失敗（${contract.relPath}）：${detail} — catalog malformed${codes ? ` (${codes})` : ''}`,
-            );
-            // Also surface first finding outcome for test diagnosability
+          // 4) Budget-bounded read + format-bound parse (the single catalog reader)
+          const catalogResult = readCatalogForReg(canonicalPath, detectedFormat);
+          if (catalogResult.error || !catalogResult.catalog) {
+            messages.push(`錯誤：${catalogResult.error ?? 'catalog 解析失敗'}`);
             if (catalogResult.findings.length > 0) {
+              const detail = formatCatalogError(catalogResult.findings as any);
+              messages.push(
+                `錯誤：catalog 解析失敗：${detail} — catalog malformed`,
+              );
+              // Also surface first findings for diagnosability
               const extra = catalogResult.findings
                 .slice(0, 3)
                 .map((f) => `${f.code} ${f.outcome}`)
@@ -430,7 +460,7 @@ export async function runCommand(
             break;
           }
 
-          const catalog = catalogResult.catalog!;
+          const catalog = catalogResult.catalog;
 
           // 5) Persist registration
           const newReg = {
@@ -508,9 +538,13 @@ export async function runCommand(
             messages.push('錯誤：尚未註冊任何 marketplace，請先使用 `/codex-marketplace add <路徑>` 註冊');
             break;
           }
-          const enumeration = enumeratePlugins(state);
+          const { plugins: enumeration, catalogErrors } = enumeratePlugins(state);
+          const pushCatalogErrors = (): void => {
+            for (const e of catalogErrors) messages.push(`⚠ marketplace [${e.marketplace}] ${e.error}`);
+          };
           if (enumeration.length === 0) {
             messages.push('錯誤：目前沒有可安裝的 plugin（marketplace 內無可用 entry）');
+            pushCatalogErrors();
             break;
           }
 
@@ -521,6 +555,7 @@ export async function runCommand(
             target = enumeration.find((e) => e.number === num);
             if (!target) {
               messages.push(`錯誤：找不到編號 ${num} 對應的 plugin（可用編號 1–${enumeration.length}）`);
+              pushCatalogErrors();
               break;
             }
           } else {
@@ -529,6 +564,7 @@ export async function runCommand(
             if (candidates.length === 0) {
               // Also try to match manifestName of already installed? But enumeration already covers all catalog entries.
               messages.push(`錯誤：找不到名稱 "${arg}" 對應的 plugin`);
+              pushCatalogErrors();
               break;
             }
             if (candidates.length > 1) {
@@ -543,12 +579,14 @@ export async function runCommand(
           const targetReg = target.reg;
           const targetEntry = target.entry;
 
-          // ---- Step 1: contained path check ----
-          if (!targetEntry.path) {
-            messages.push(`錯誤：plugin "${target.pluginName}" 沒有可解析的本地路徑，無法安裝（unsupported source kind）`);
+          // ---- Step 1: Unavailable Entry refusal (#91) + contained path check ----
+          if (!entryLocallyInstallable(targetEntry)) {
+            messages.push(
+              `錯誤：plugin "${target.pluginName}" unavailable，無法安裝：${entryUnavailableReason(targetEntry)}`,
+            );
             break;
           }
-          const contained = resolveContained(targetReg.source, targetEntry.path, 'directory');
+          const contained = resolveContained(targetReg.source, targetEntry.path!, 'directory');
           if (contained.outcome.kind === 'blocking') {
             messages.push(`錯誤：plugin 路徑檢查失敗（Contained Path 違規）— ${contained.outcome.reason}`);
             break;

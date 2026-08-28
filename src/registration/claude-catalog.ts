@@ -13,16 +13,25 @@
  * become Unavailable Entries with stable reasons; command sources are permanently disqualified.
  * No remote content is fetched anywhere in this module.
  *
- * Fail-closed field policy: every object this parser structurally interprets has a closed member
- * set. Unknown top-level/entry fields are Blocking; known Inert Metadata produces Validation
- * Warnings; named active-component declarations are Unsupported Blocking Findings. The sole
- * exception is the entry-level free-form `metadata` object, which Claude Code documents as
- * unread presentation data and which is therefore inert as a whole.
+ * Open field policy (#87 §7 / #91): unknown fields are always ignored and never block —
+ * including officially released claude fields such as `renames` and inert presentation metadata.
+ * Only the members this parser structurally interprets (`name`, `owner` identity, `metadata`
+ * shape, `plugins`, per-entry `source`/`strict`) are read; everything else is discarded. The
+ * v2 closed-field checks (unknown-field Blocking, inert-field Warnings, named active-component
+ * Blocking) have retired: the minimal install path records and projects skills only and never
+ * executes declared components, so they can neither deny Registration nor mark an entry
+ * Unavailable.
  */
 
-import { CODE, RULE, blocking, warning, type ValidationFinding } from './findings.js';
+import { CODE, RULE, blocking, type ValidationFinding } from './findings.js';
 import { BUDGET } from './budget.js';
-import { KEBAB_NAME_RE, type Catalog, type CatalogResult, type MarketplaceEntry } from './catalog.js';
+import {
+  KEBAB_NAME_RE,
+  GIT_FAMILY_UNAVAILABLE_REASON,
+  type Catalog,
+  type CatalogResult,
+  type MarketplaceEntry,
+} from './catalog.js';
 import { parseGitEntrySpec } from './entry-acquisition.js';
 
 /**
@@ -47,54 +56,13 @@ export const CLAUDE_UNAVAILABLE_REASON = {
   noSource: 'no source declared',
   unrecognizedForm: 'unrecognized source form',
   unknownKind: 'unknown entry source kind',
-  gitFamily: 'external git-family entry sources (github/url/git-subdir) are not supported yet',
+  gitFamily: GIT_FAMILY_UNAVAILABLE_REASON,
   npm: 'npm source entries are not supported',
   archive: 'archive source entries are not supported',
   command: 'command source entries are permanently disqualified',
   strictFalse: 'entry-defined plugin (strict: false) is not supported',
   malformedEntry: 'malformed entry',
 } as const;
-
-/** Closed top-level field set beyond the required name/owner/plugins. */
-const TOP_INERT_FIELDS = new Set(['$schema', 'description', 'version']);
-/** Structural objects descended into by this parser (closed member sets below). */
-const TOP_STRUCTURAL_FIELDS = new Set(['name', 'owner', 'plugins', 'metadata']);
-const METADATA_KNOWN_FIELDS = new Set(['pluginRoot', 'description', 'version']);
-const OWNER_KNOWN_FIELDS = new Set(['name', 'email', 'url']);
-
-/**
- * Entry-level fields that declare active behaviour (component configuration, archive credential
- * execution, or install-time enablement). Named Unsupported Active Components under Profile v2.
- */
-const ENTRY_ACTIVE_FIELDS = new Set([
-  'commands',
-  'agents',
-  'hooks',
-  'mcpServers',
-  'lspServers',
-  'skills',
-  'headers',
-  'headersHelper',
-  'defaultEnabled',
-]);
-
-/** Known inert entry-level presentation metadata (Validation Warning when present). */
-const ENTRY_INERT_FIELDS = new Set([
-  'displayName',
-  'description',
-  'version',
-  'author',
-  'homepage',
-  'repository',
-  'license',
-  'keywords',
-  'category',
-  'tags',
-  'relevance',
-  'metadata',
-]);
-/** Entry fields interpreted by this parser rather than classified as inert/active. */
-const ENTRY_INTERPRETED_FIELDS = new Set(['name', 'source', 'strict']);
 
 function catalogFinding(
   code: string,
@@ -203,13 +171,6 @@ export function parseClaudeCatalog(obj: unknown): CatalogResult {
       catalogFinding(CODE.CATALOG_OWNER_INVALID, RULE.CATALOG_OWNER_INVALID, '/owner', 'declared owner is missing or not an object'),
     );
   } else {
-    for (const key of Object.keys(o.owner)) {
-      if (!OWNER_KNOWN_FIELDS.has(key)) {
-        findings.push(
-          catalogFinding(CODE.CATALOG_UNKNOWN_FIELD, RULE.CATALOG_UNKNOWN_FIELD, `/owner/${key}`, `Unknown owner field '${key}' is fail-closed`),
-        );
-      }
-    }
     if (typeof o.owner.name !== 'string' || o.owner.name.trim().length === 0) {
       findings.push(
         catalogFinding(CODE.CATALOG_OWNER_INVALID, RULE.CATALOG_OWNER_INVALID, '/owner/name', 'owner requires a non-empty name'),
@@ -224,46 +185,9 @@ export function parseClaudeCatalog(obj: unknown): CatalogResult {
         catalogFinding(CODE.CATALOG_MALFORMED, RULE.CATALOG_MALFORMED, '/metadata', 'metadata must be an object when declared'),
       );
     } else {
-      for (const key of Object.keys(o.metadata).sort((a, b) => a.localeCompare(b))) {
-        if (!METADATA_KNOWN_FIELDS.has(key)) {
-          findings.push(
-            catalogFinding(CODE.CATALOG_UNKNOWN_FIELD, RULE.CATALOG_UNKNOWN_FIELD, `/metadata/${key}`, `Unknown metadata field '${key}' is fail-closed`),
-          );
-        } else if (key !== 'pluginRoot') {
-          findings.push(
-            warning({
-              code: CODE.INERT_METADATA_IGNORED,
-              rule: RULE.INERT_METADATA_IGNORED,
-              phase: 'validation',
-              target: 'catalog',
-              pointer: `/metadata/${key}`,
-              outcome: `Ignored Inert Metadata 'metadata.${key}' does not change catalog parsing`,
-            }),
-          );
-        }
-      }
+      // Open policy: only pluginRoot changes parsing; every other member is ignored.
       hasPluginRoot = typeof o.metadata.pluginRoot === 'string' && o.metadata.pluginRoot.length > 0;
     }
-  }
-
-  for (const key of Object.keys(o).sort((a, b) => a.localeCompare(b))) {
-    if (TOP_STRUCTURAL_FIELDS.has(key)) continue;
-    if (TOP_INERT_FIELDS.has(key)) {
-      findings.push(
-        warning({
-          code: CODE.INERT_METADATA_IGNORED,
-          rule: RULE.INERT_METADATA_IGNORED,
-          phase: 'validation',
-          target: 'catalog',
-          pointer: `/${key}`,
-          outcome: `Ignored Inert Metadata '${key}' does not change catalog parsing`,
-        }),
-      );
-      continue;
-    }
-    findings.push(
-      catalogFinding(CODE.CATALOG_UNKNOWN_FIELD, RULE.CATALOG_UNKNOWN_FIELD, `/${key}`, `Unknown catalog field '${key}' is fail-closed`),
-    );
   }
 
   if (!Array.isArray(o.plugins)) {
@@ -294,32 +218,6 @@ export function parseClaudeCatalog(obj: unknown): CatalogResult {
     }
     const e = entryRaw;
     const name = typeof e.name === 'string' ? e.name : undefined;
-
-    // Closed-field policy per entry: active components block, unknown fields block, known inert
-    // fields warn. `strict` is interpreted separately below.
-    for (const key of Object.keys(e).sort((a, b) => a.localeCompare(b))) {
-      if (ENTRY_INTERPRETED_FIELDS.has(key)) continue;
-      if (ENTRY_ACTIVE_FIELDS.has(key)) {
-        findings.push(
-          entryFinding(CODE.UNSUPPORTED_ACTIVE_COMPONENT, RULE.UNSUPPORTED_ACTIVE_COMPONENT, `${entryId}/${key}`, `Compatibility Profile v2 does not support active entry component '${key}'`),
-        );
-      } else if (ENTRY_INERT_FIELDS.has(key)) {
-        findings.push(
-          warning({
-            code: CODE.INERT_METADATA_IGNORED,
-            rule: RULE.INERT_METADATA_IGNORED,
-            phase: 'validation',
-            target: 'entry',
-            pointer: `${entryId}/${key}`,
-            outcome: `Ignored Inert Metadata '${key}' does not change entry availability`,
-          }),
-        );
-      } else {
-        findings.push(
-          entryFinding(CODE.CATALOG_UNKNOWN_FIELD, RULE.CATALOG_UNKNOWN_FIELD, `${entryId}/${key}`, `Unknown entry field '${key}' is fail-closed`),
-        );
-      }
-    }
 
     const resolved = classifySource(e.source, hasPluginRoot, entryId);
     if (resolved.findings && resolved.findings.length > 0) {

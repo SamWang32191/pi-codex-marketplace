@@ -111,72 +111,58 @@ describe('Claude catalog required fields fail closed (Blocking)', () => {
   }
 });
 
-describe('Unknown catalog fields are fail-closed Blocking', () => {
-  it('blocks unknown top-level fields (including documented-but-unreviewed lifecycle features)', () => {
-    for (const field of ['renames', 'allowCrossMarketplaceDependenciesOn', 'totally-unknown']) {
-      const res = parseClaudeCatalog(validCatalog({ extraTopLevel: { [field]: {} } }));
-      expect(res.ok).toBe(false);
-      expect(res.findings).toEqual([
-        expect.objectContaining({
-          code: 'CATALOG_UNKNOWN_FIELD',
-          classification: 'blocking',
-          phase: 'validation',
-          target: 'catalog',
-          pointer: `/${field}`,
-          rule: 'CAT-05',
-        }),
-      ]);
+describe('Unknown catalog fields are ignored under the open policy (#91)', () => {
+  it('ignores unknown top-level fields including the officially released claude renames field', () => {
+    const fields: Array<[string, unknown]> = [
+      ['renames', { 'old-name': 'new-name' }],
+      ['allowCrossMarketplaceDependenciesOn', true],
+      ['totally-unknown', { nested: { deep: true } }],
+    ];
+    for (const [field, value] of fields) {
+      const res = parseClaudeCatalog(validCatalog({ extraTopLevel: { [field]: value } }));
+      expect(res.ok).toBe(true);
+      expect(res.findings).toEqual([]);
+      expect(res.catalog!.entries[0]).toMatchObject({ available: true, path: './plugins/alpha' });
     }
   });
 
-  it('blocks unknown members inside the structural metadata object', () => {
+  it('ignores unknown members inside the structural metadata object while keeping pluginRoot interpretation', () => {
     const res = parseClaudeCatalog(
-      validCatalog({ extraTopLevel: { metadata: { pluginRoot: './plugins', rogue: true } } }),
-    );
-    expect(res.ok).toBe(false);
-    expect(res.findings).toEqual([
-      expect.objectContaining({
-        code: 'CATALOG_UNKNOWN_FIELD',
-        classification: 'blocking',
-        pointer: '/metadata/rogue',
+      validCatalog({
+        plugins: [
+          { name: 'direct', source: './plugins/direct' },
+          { name: 'bare', source: 'bare' },
+        ],
+        extraTopLevel: { metadata: { pluginRoot: './plugins', rogue: true } },
       }),
-    ]);
+    );
+    expect(res.ok).toBe(true);
+    expect(res.findings).toEqual([]);
+    expect(res.catalog!.entries[1]).toMatchObject({ available: false, unavailableReason: REASON.pluginRoot });
   });
 
-  it('blocks unknown members inside the owner object', () => {
+  it('ignores unknown members inside the owner object', () => {
     const res = parseClaudeCatalog({
       name: 'acme-claude',
       owner: { name: 'Acme', sponsorLink: 'https://example.test' },
       plugins: [],
     });
-    expect(res.ok).toBe(false);
-    expect(res.findings).toEqual([
-      expect.objectContaining({
-        code: 'CATALOG_UNKNOWN_FIELD',
-        classification: 'blocking',
-        pointer: '/owner/sponsorLink',
-      }),
-    ]);
+    expect(res.ok).toBe(true);
+    expect(res.findings).toEqual([]);
   });
 
-  it('blocks unknown entry-level fields', () => {
+  it('ignores unknown entry-level fields', () => {
     const res = parseClaudeCatalog(
-      validCatalog({ plugins: [{ name: 'alpha', source: './a', defaultBranch: 'main' }] }),
+      validCatalog({ plugins: [{ name: 'alpha', source: './a', defaultBranch: 'main', preview: true }] }),
     );
-    expect(res.ok).toBe(false);
-    expect(res.findings).toEqual([
-      expect.objectContaining({
-        code: 'CATALOG_UNKNOWN_FIELD',
-        classification: 'blocking',
-        target: 'entry',
-        pointer: '/plugins/0/defaultBranch',
-      }),
-    ]);
+    expect(res.ok).toBe(true);
+    expect(res.findings).toEqual([]);
+    expect(res.catalog!.entries[0]).toMatchObject({ available: true, path: './a' });
   });
 });
 
-describe('Known Inert Metadata produces Validation Warnings only', () => {
-  it('warns on inert top-level presentation fields and stays non-blocking', () => {
+describe('Known inert fields are silently ignored under the open policy (#91)', () => {
+  it('ignores inert top-level presentation fields without findings', () => {
     const res = parseClaudeCatalog(
       validCatalog({
         extraTopLevel: {
@@ -187,11 +173,10 @@ describe('Known Inert Metadata produces Validation Warnings only', () => {
       }),
     );
     expect(res.ok).toBe(true);
-    expect(res.findings.map((f) => f.code)).toEqual(['INERT_METADATA_IGNORED', 'INERT_METADATA_IGNORED', 'INERT_METADATA_IGNORED']);
-    expect(res.findings.every((f) => f.classification === 'warning')).toBe(true);
+    expect(res.findings).toEqual([]);
   });
 
-  it('warns on inert entry fields (including free-form entry metadata) and stays non-blocking', () => {
+  it('ignores inert entry fields (including free-form entry metadata) without findings', () => {
     const res = parseClaudeCatalog(
       validCatalog({
         plugins: [
@@ -215,36 +200,38 @@ describe('Known Inert Metadata produces Validation Warnings only', () => {
       }),
     );
     expect(res.ok).toBe(true);
-    expect(res.findings.length).toBeGreaterThan(0);
-    expect(res.findings.every((f) => f.code === 'INERT_METADATA_IGNORED' && f.classification === 'warning')).toBe(true);
+    expect(res.findings).toEqual([]);
     expect(res.catalog!.entries[0].available).toBe(true);
   });
 
-  it('does not warn when a claude catalog carries only required fields', () => {
+  it('produces no findings when a claude catalog carries only required fields', () => {
     const res = parseClaudeCatalog(validCatalog());
+    expect(res.ok).toBe(true);
+    expect(res.findings).toEqual([]);
+  });
+
+  it('treats metadata.description/version as ignored backward-compat members', () => {
+    const res = parseClaudeCatalog(
+      validCatalog({ extraTopLevel: { metadata: { description: 'd', version: '2.0.0' } } }),
+    );
     expect(res.ok).toBe(true);
     expect(res.findings).toEqual([]);
   });
 });
 
-describe('Entry active-component declarations are Unsupported Blocking Findings', () => {
+describe('Entry active-component declarations are ignored under the open policy (#91)', () => {
+  // Minimal bridge installs only record and project skills; nothing executes, so entry-level
+  // component declarations neither block Registration nor mark the entry Unavailable.
   const components = ['commands', 'agents', 'hooks', 'mcpServers', 'lspServers', 'skills', 'headers', 'headersHelper', 'defaultEnabled'];
 
   for (const component of components) {
-    it(`blocks entry component '${component}'`, () => {
+    it(`ignores entry component '${component}' and keeps the entry available`, () => {
       const res = parseClaudeCatalog(
         validCatalog({ plugins: [{ name: 'alpha', source: './a', [component]: ['./x'] }] }),
       );
-      expect(res.ok).toBe(false);
-      expect(res.findings).toEqual([
-        expect.objectContaining({
-          code: 'UNSUPPORTED_ACTIVE_COMPONENT',
-          classification: 'blocking',
-          target: 'entry',
-          pointer: `/plugins/0/${component}`,
-          rule: 'COMP-03',
-        }),
-      ]);
+      expect(res.ok).toBe(true);
+      expect(res.findings).toEqual([]);
+      expect(res.catalog!.entries[0]).toMatchObject({ available: true, path: './a' });
     });
   }
 });

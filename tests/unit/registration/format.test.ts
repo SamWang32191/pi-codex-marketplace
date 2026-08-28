@@ -80,11 +80,11 @@ describe('Marketplace Format detection', () => {
     const claude = catalogContractFor('claude');
     expect(claude.relPath).toBe(CLAUDE_MARKETPLACE_CATALOG_RELPATH);
 
-    // The parser dispatch honors the closed field policy of each shape.
+    // The parser dispatch honors the open field policy of each shape (#91): unknown fields never block.
     const claudeParsed = claude.parse({ name: 'acme', owner: { name: 'o' }, plugins: [] });
     expect(claudeParsed.ok).toBe(true);
     const claudeUnknown = claude.parse({ name: 'acme', owner: { name: 'o' }, plugins: [], rogue: 1 });
-    expect(claudeUnknown.ok).toBe(false);
+    expect(claudeUnknown.ok).toBe(true);
 
     const codexParsed = codex.parse({ name: 'acme', plugins: [] });
     expect(codexParsed.ok).toBe(true);

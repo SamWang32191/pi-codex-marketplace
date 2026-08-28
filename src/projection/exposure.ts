@@ -124,27 +124,30 @@ function resolveEntryPluginDir(snapshotRoot: string, catalog: Catalog, installat
 /** Read each skills/<dir>/SKILL.md descriptor name exactly as Pi resolves it (frontmatter name, else directory name). */
 function skillCandidates(pluginDir: string, format: MarketplaceFormat = 'codex'): Array<{ name: string; skillDir: string }> {
   if (format === 'claude') {
+    // Declared manifest paths win; when absent or yielding nothing, fall through to the shared
+    // skills/ directory scan so convention-structured claude plugins project too (#91).
     const manifestPath = join(pluginDir, '.claude-plugin', 'plugin.json');
-    if (!existsSync(manifestPath) || !statSync(manifestPath).isFile()) return [];
-    let manifest: Record<string, unknown>;
-    try {
-      manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-    } catch {
-      return [];
+    if (existsSync(manifestPath) && statSync(manifestPath).isFile()) {
+      try {
+        const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, unknown>;
+        if (Array.isArray(manifest.skills)) {
+          const found: Array<{ name: string; skillDir: string }> = [];
+          for (const skillDecl of manifest.skills) {
+            if (typeof skillDecl !== 'string') continue;
+            const resolved = resolveContained(pluginDir, skillDecl, 'directory');
+            if (resolved.outcome.kind !== 'ok') continue;
+            const skillDir = resolved.outcome.canonicalPath;
+            const descriptor = join(skillDir, 'SKILL.md');
+            if (!existsSync(descriptor)) continue;
+            const name = descriptorSkillName(skillDir, descriptor);
+            if (name) found.push({ name, skillDir });
+          }
+          if (found.length > 0) return found;
+        }
+      } catch {
+        // fall through to directory scan
+      }
     }
-    if (!Array.isArray(manifest.skills)) return [];
-    const found: Array<{ name: string; skillDir: string }> = [];
-    for (const skillDecl of manifest.skills) {
-      if (typeof skillDecl !== 'string') continue;
-      const resolved = resolveContained(pluginDir, skillDecl, 'directory');
-      if (resolved.outcome.kind !== 'ok') continue;
-      const skillDir = resolved.outcome.canonicalPath;
-      const descriptor = join(skillDir, 'SKILL.md');
-      if (!existsSync(descriptor)) continue;
-      const name = descriptorSkillName(skillDir, descriptor);
-      if (name) found.push({ name, skillDir });
-    }
-    return found;
   }
 
   const skillsDir = join(pluginDir, 'skills');
