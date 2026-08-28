@@ -393,8 +393,8 @@ describe('Marketplace Format detection wiring — local registration', () => {
     if (outcome.status !== 'completed') return;
     expect(outcome.registration.format).toBe('claude');
     expect(outcome.receipt.marketplaceFormat).toBe('claude');
-    // inert entry metadata (description) is disclosed as a Validation Warning
-    expect(outcome.receipt.summary).toBe('Completed with diagnostics');
+    // open policy (#91): inert entry metadata (description) no longer produces a warning
+    expect(outcome.receipt.summary).toBe('Completed');
 
     const state = await readBridgeState({ agentDir: env.agentDir });
     expect(state.state!.registrations[0].format).toBe('claude');
@@ -429,7 +429,7 @@ describe('Marketplace Format detection wiring — local registration', () => {
     expect(res.outcome.findings[0].code).toBe('CATALOG_MISSING');
   });
 
-  it('parses claude catalogs under their fail-closed field policy when format=claude', async () => {
+  it('ignores unknown claude catalog fields under the open policy when format=claude (#91)', async () => {
     makeClaudeMarketplace(root);
     writeFileSync(
       join(root, '.claude-plugin', 'marketplace.json'),
@@ -440,10 +440,9 @@ describe('Marketplace Format detection wiring — local registration', () => {
       }),
     );
     const res = await preflightLocalRegistration(root, opts(env));
-    expect(res.ok).toBe(false);
-    if (res.ok) return;
-    expect(res.outcome.status).toBe('blocked');
-    if (res.outcome.status !== 'blocked') return;
-    expect(res.outcome.findings.some((f) => f.code === 'CATALOG_UNKNOWN_FIELD')).toBe(true);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.preflight.format).toBe('claude');
+    cancelLocalRegistration(res.preflight);
   });
 });

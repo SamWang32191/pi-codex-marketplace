@@ -12,6 +12,15 @@ import { CODE, RULE, blocking, type ValidationFinding } from './findings.js';
 import { BUDGET } from './budget.js';
 import { parseGitEntrySpec } from './entry-acquisition.js';
 
+/**
+ * The disclosed Unavailable reason for git-family entries on the command surface: the minimal
+ * bridge performs no Entry Acquisition (spec #87 Out of Scope), so github/url/git-subdir entries
+ * are never locally installable. Single literal shared by both format contracts and the command
+ * surface (list display + install refusal).
+ */
+export const GIT_FAMILY_UNAVAILABLE_REASON =
+  'external git-family entry sources (github/url/git-subdir) are not supported yet';
+
 export type EntryType = 'local' | 'git' | 'unsupported';
 
 const LOCAL_KINDS = new Set(['local', 'directory', 'dir', 'file', 'path', 'src']);
