@@ -287,19 +287,37 @@ export function discoverProjectedSkillPaths(opts: RuntimeSkillExposureOptions = 
       const key = `${inst.registrationId ?? ''}:${(inst as any).manifestName ?? inst.pluginId}`;
       if (legacyKeys.has(key)) continue;
       const reg: any = minimal.registrations.find((r: any) => r.id === inst.registrationId);
-      if (!reg || !reg.source || !existsSync(reg.source)) {
+      if (!reg || !reg.source) {
         skipped.push({ installationId: inst.id, reason: 'entry-not-found' });
         continue;
       }
       let snapshotRoot: string | undefined;
-      try {
-        snapshotRoot = realpathSync.native(reg.source);
-      } catch {
-        snapshotRoot = reg.source;
-      }
-      if (!snapshotRoot || !existsSync(snapshotRoot)) {
-        skipped.push({ installationId: inst.id, reason: 'catalog-unreadable' });
-        continue;
+      if (reg.sourceKind === 'git') {
+        const snap = (reg as any).snapshot ?? (inst as any).snapshot;
+        if (!snap || !safeFingerprint(snap)) {
+          skipped.push({ installationId: inst.id, reason: 'missing-snapshot' });
+          continue;
+        }
+        const dir = join(getCacheEntriesDir(getCacheDir(opts.agentDir)), snap);
+        if (!existsSync(dir)) {
+          skipped.push({ installationId: inst.id, reason: 'missing-cache-entry' });
+          continue;
+        }
+        snapshotRoot = dir;
+      } else {
+        if (!existsSync(reg.source)) {
+          skipped.push({ installationId: inst.id, reason: 'entry-not-found' });
+          continue;
+        }
+        try {
+          snapshotRoot = realpathSync.native(reg.source);
+        } catch {
+          snapshotRoot = reg.source;
+        }
+        if (!snapshotRoot || !existsSync(snapshotRoot)) {
+          skipped.push({ installationId: inst.id, reason: 'catalog-unreadable' });
+          continue;
+        }
       }
       const format: MarketplaceFormat = (reg.format ?? 'codex') as MarketplaceFormat;
       // Resolve plugin dir via catalog entry matching manifestName
