@@ -33,6 +33,7 @@ import { BUDGET } from '../registration/budget.js';
 import { resolveContained } from '../registration/contained.js';
 import { computeEffectiveState } from './effective-state.js';
 import { resolveRuntimeSkillCollisions, type SkillCandidate } from './collision.js';
+import { readMinimalBridgeState } from '../bridge/state.js';
 
 export interface RuntimeSkillExposureOptions {
   /** Pi agent dir; defaults to getAgentDir(). */
@@ -263,6 +264,97 @@ export function discoverProjectedSkillPaths(opts: RuntimeSkillExposureOptions = 
         skillDir: skill.skillDir,
       });
     }
+  }
+
+  // ---- Minimal Bridge State (極簡) augmentation (#90) ----
+  // Merge enabled installations from MinimalBridgeState (schemaVersion 1, Global-only) into the same
+  // collision domain so that local-codex installs via runCommand are visible to resources_discover.
+  // This keeps the legacy BridgeState path untouched while making minimal installs e2e-visible.
+  try {
+    const minimalRead = readMinimalBridgeState({ agentDir: opts.agentDir });
+    const minimal = minimalRead.state;
+    // Build quick lookup to avoid duplicating installations already covered by the legacy effective state
+    const legacyIds = new Set(effective.installations.map((i) => i.id));
+    // Also dedupe by manifestName+registrationId for minimal vs legacy overlap (e.g., same plugin installed via both paths in tests)
+    const legacyKeys = new Set(effective.installations.map((i) => `${i.registrationId ?? ''}:${i.manifestName ?? i.pluginId}`));
+    for (const inst of minimal.installations) {
+      const isEnabled = (inst as any).enabled !== false && (inst as any).installationState !== 'disabled';
+      if (!isEnabled) continue;
+      if (legacyIds.has(inst.id)) continue;
+      const key = `${inst.registrationId ?? ''}:${(inst as any).manifestName ?? inst.pluginId}`;
+      if (legacyKeys.has(key)) continue;
+      const reg: any = minimal.registrations.find((r: any) => r.id === inst.registrationId);
+      if (!reg || !reg.source || !existsSync(reg.source)) {
+        skipped.push({ installationId: inst.id, reason: 'entry-not-found' });
+        continue;
+      }
+      let snapshotRoot: string | undefined;
+      try {
+        snapshotRoot = realpathSync.native(reg.source);
+      } catch {
+        snapshotRoot = reg.source;
+      }
+      if (!snapshotRoot || !existsSync(snapshotRoot)) {
+        skipped.push({ installationId: inst.id, reason: 'catalog-unreadable' });
+        continue;
+      }
+      const format: MarketplaceFormat = (reg.format ?? 'codex') as MarketplaceFormat;
+      // Resolve plugin dir via catalog entry matching manifestName
+      const contract = catalogContractFor(format);
+      const catalogPath = join(snapshotRoot, ...contract.relPath.split('/'));
+      let catalog: Catalog | undefined;
+      try {
+        if (!existsSync(catalogPath) || statSync(catalogPath).size > BUDGET.maxCatalogBytes) {
+          skipped.push({ installationId: inst.id, reason: 'catalog-unreadable' });
+          continue;
+        }
+        const parsed: unknown = JSON.parse(readFileSync(catalogPath, 'utf8'));
+        const res = contract.parse(parsed);
+        if (!res.catalog) {
+          skipped.push({ installationId: inst.id, reason: 'catalog-unreadable' });
+          continue;
+        }
+        catalog = res.catalog;
+      } catch {
+        skipped.push({ installationId: inst.id, reason: 'catalog-unreadable' });
+        continue;
+      }
+      const manifestName = (inst as any).manifestName ?? inst.pluginId;
+      let entry = catalog.entries.find((e) => e.name === manifestName && e.type === 'local' && e.available && e.path);
+      if (!entry && manifestName) {
+        entry = catalog.entries.find((e) => e.name === manifestName && e.type === 'local' && e.path);
+      }
+      if (!entry && manifestName) {
+        entry = catalog.entries.find((e) => e.path && basename(e.path) === manifestName && e.type === 'local');
+      }
+      if (!entry || !entry.path) {
+        skipped.push({ installationId: inst.id, reason: 'entry-not-found' });
+        continue;
+      }
+      const contained = resolveContained(snapshotRoot, entry.path, 'directory');
+      if (contained.outcome.kind !== 'ok') {
+        skipped.push({ installationId: inst.id, reason: 'entry-not-found' });
+        continue;
+      }
+      const pluginDir = contained.outcome.canonicalPath;
+      const skills = skillCandidates(pluginDir, format);
+      if (skills.length === 0) {
+        skipped.push({ installationId: inst.id, reason: 'no-skills' });
+        continue;
+      }
+      for (const skill of skills) {
+        candidates.push({
+          layer: 'global',
+          name: skill.name,
+          skillId: `${inst.pluginId}/${skill.name}`,
+          pluginId: inst.pluginId,
+          installationId: inst.id,
+          skillDir: skill.skillDir,
+        });
+      }
+    }
+  } catch {
+    // Minimal augmentation is best-effort; never fails the host's resource pass
   }
 
   // Only collision survivors are contributed; layering is Pi → Global.
