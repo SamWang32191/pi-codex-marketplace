@@ -903,7 +903,31 @@ export async function runCommand(
         if (subargs.length === 0) {
           messages.push('用法：/codex-marketplace disable <名稱>');
         } else {
-          messages.push(`停用 "${subargs[0]}"（骨架建立中，功能即將推出）`);
+          const name = subargs[0];
+          const idx = state.installations.findIndex(
+            (i) => i.manifestName === name || i.pluginId === name || i.id === name,
+          );
+          if (idx === -1) {
+            messages.push(`錯誤：找不到已安裝的 plugin "${name}"`);
+          } else {
+            const inst = state.installations[idx];
+            const isDisabled = inst.enabled === false || inst.installationState === 'disabled';
+            if (isDisabled) {
+              messages.push(`"${name}" 已是停用狀態`);
+            } else {
+              const backup = { ...inst };
+              (inst as any).enabled = false;
+              (inst as any).installationState = 'disabled';
+              try {
+                writeMinimalBridgeState(state, opts);
+                messages.push(`已停用 "${name}"`);
+              } catch (e) {
+                state.installations[idx] = backup as any;
+                const msg = e instanceof Error ? e.message : String(e);
+                messages.push(`錯誤：寫入 Bridge State 失敗：${msg}`);
+              }
+            }
+          }
         }
         break;
       }
@@ -911,7 +935,77 @@ export async function runCommand(
         if (subargs.length === 0) {
           messages.push('用法：/codex-marketplace enable <名稱>');
         } else {
-          messages.push(`啟用 "${subargs[0]}"（骨架建立中，功能即將推出）`);
+          const name = subargs[0];
+          const idx = state.installations.findIndex(
+            (i) => i.manifestName === name || i.pluginId === name || i.id === name,
+          );
+          if (idx === -1) {
+            messages.push(`錯誤：找不到已安裝的 plugin "${name}"`);
+          } else {
+            const inst = state.installations[idx];
+            const isEnabled = inst.enabled !== false && inst.installationState !== 'disabled';
+            if (isEnabled) {
+              messages.push(`"${name}" 已是啟用狀態`);
+            } else {
+              const reg = state.registrations.find((r) => r.id === inst.registrationId);
+              let refreshedSkills: string[] | undefined;
+              if (reg) {
+                const sourceRoot = sourceRootForReg(reg, opts);
+                if (sourceRoot) {
+                  try {
+                    const catalogRoot = catalogRootForReg(reg, opts);
+                    if (catalogRoot) {
+                      const read = readCatalogForReg(catalogRoot, reg.format ?? 'codex');
+                      if (!read.error && read.catalog) {
+                        const entry =
+                          read.catalog.entries.find((e) => e.name === inst.manifestName && e.type === 'local' && e.path) ??
+                          read.catalog.entries.find((e) => e.name === inst.manifestName && e.path);
+                        if (entry && entry.path) {
+                          const contained = resolveContained(sourceRoot, entry.path, 'directory');
+                          if (contained.outcome.kind === 'ok') {
+                            const pluginDir = contained.outcome.canonicalPath;
+                            const fmt = (reg.format ?? 'codex') as 'codex' | 'claude';
+                            refreshedSkills = collectSkillNames(pluginDir, fmt);
+                          }
+                        }
+                      }
+                    }
+                  } catch {
+                    // best-effort refresh
+                  }
+                }
+              }
+              const backup = { ...inst };
+              (inst as any).enabled = true;
+              (inst as any).installationState = 'enabled';
+              if (refreshedSkills) (inst as any).skills = refreshedSkills;
+              const skillList = (refreshedSkills ?? inst.skills ?? []) as string[];
+              const existing = new Map<string, number>();
+              for (const other of state.installations) {
+                if (other === inst) continue;
+                const otherEnabled = (other as any).enabled !== false && (other as any).installationState !== 'disabled';
+                if (!otherEnabled) continue;
+                for (const s of (other as any).skills ?? []) existing.set(s, (existing.get(s) ?? 0) + 1);
+              }
+              const colliding = skillList.filter((s) => existing.has(s));
+              try {
+                writeMinimalBridgeState(state, opts);
+                reload = true;
+                if (skillList.length === 0) {
+                  messages.push(`已啟用 "${name}"（0 skills）· 已重新載入生效`);
+                } else {
+                  messages.push(`已啟用 "${name}"（${skillList.length} skills：${skillList.join(', ')}）· 已重新載入生效`);
+                }
+                for (const c of [...new Set(colliding)].sort((a, b) => a.localeCompare(b))) {
+                  messages.push(`⚠ skill "${c}" 與既有同名，未投影（名稱衝突）`);
+                }
+              } catch (e) {
+                state.installations[idx] = backup as any;
+                const msg = e instanceof Error ? e.message : String(e);
+                messages.push(`錯誤：寫入 Bridge State 失敗：${msg}`);
+              }
+            }
+          }
         }
         break;
       }
@@ -919,7 +1013,29 @@ export async function runCommand(
         if (subargs.length === 0) {
           messages.push('用法：/codex-marketplace remove <名稱>');
         } else {
-          messages.push(`移除 "${subargs[0]}"（骨架建立中，功能即將推出）`);
+          const name = subargs[0];
+          const matches = state.installations.filter(
+            (i) => i.manifestName === name || i.pluginId === name || i.id === name,
+          );
+          if (matches.length === 0) {
+            messages.push(`錯誤：找不到已安裝的 plugin "${name}"`);
+          } else if (matches.length > 1) {
+            const list = matches.map((m) => `${m.manifestName}[${m.registrationId}]`).join('、');
+            messages.push(`錯誤：名稱 "${name}" 對應多個已安裝 plugin（${list}），請改用更精確的識別`);
+          } else {
+            const target = matches[0];
+            const idx = state.installations.indexOf(target);
+            const backup = state.installations.slice();
+            state.installations.splice(idx, 1);
+            try {
+              writeMinimalBridgeState(state, opts);
+              messages.push(`已移除 "${name}"`);
+            } catch (e) {
+              state.installations = backup as any;
+              const msg = e instanceof Error ? e.message : String(e);
+              messages.push(`錯誤：寫入 Bridge State 失敗：${msg}`);
+            }
+          }
         }
         break;
       }
@@ -927,7 +1043,33 @@ export async function runCommand(
         if (subargs.length === 0) {
           messages.push('用法：/codex-marketplace forget <名稱>');
         } else {
-          messages.push(`移除 marketplace "${subargs[0]}"（骨架建立中，功能即將推出）`);
+          const name = subargs[0];
+          const regIdx = state.registrations.findIndex(
+            (r) => r.marketplaceName === name || r.alias === name || r.id === name,
+          );
+          if (regIdx === -1) {
+            messages.push(`錯誤：找不到 marketplace "${name}"`);
+          } else {
+            const reg = state.registrations[regIdx];
+            const relatedCount = state.installations.filter((i) => i.registrationId === reg.id).length;
+            const backupRegs = state.registrations.slice();
+            const backupInsts = state.installations.slice();
+            state.registrations.splice(regIdx, 1);
+            state.installations = state.installations.filter((i) => i.registrationId !== reg.id);
+            try {
+              writeMinimalBridgeState(state, opts);
+              if (relatedCount > 0) {
+                messages.push(`已移除 marketplace "${name}"（含 ${relatedCount} 個安裝）`);
+              } else {
+                messages.push(`已移除 marketplace "${name}"`);
+              }
+            } catch (e) {
+              state.registrations = backupRegs as any;
+              state.installations = backupInsts as any;
+              const msg = e instanceof Error ? e.message : String(e);
+              messages.push(`錯誤：寫入 Bridge State 失敗：${msg}`);
+            }
+          }
         }
         break;
       }
