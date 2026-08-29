@@ -10,7 +10,7 @@ Bridge 擴展至支援 Claude Code 外掛生態系（`.claude-plugin/marketplace
 - **codex 格式優先（Fixed Precedence）**：當兩種 catalog 檔案並存於同一 repo 時，固定自動採用 `codex`，不向使用者提問、不猜測、亦不提供動態覆寫參數，維持自動判定之可預測性。
 - **格式固化於 Registration（Fixed at Registration）**：格式（`format: 'codex' | 'claude'`）於註冊確認（Registration Confirmation）時寫入 Bridge State Registration 紀錄，成為不可變屬性。
 - **格式翻轉僅經由明確 `update`（No Silent Format Flip）**：上游來源格式變更（如 codex catalog 被刪除改為 claude）在平日讀取或 reload 時絕不自動翻轉；必須經由明確的 `update` 重抓最新並重讀重裝後才生效。
-- **Entry ID 結構一致**：雙格式皆採 `/plugins/<zero-based ordinal>` 作為 Marketplace Entry ID，維持快照範圍內一致的識別與 TUI 綁定能力。
+- **Entry ID 結構一致**：雙格式皆採 `/plugins/<zero-based ordinal>` 作為 Marketplace Entry ID，維持快照範圍內一致的識別。
 
 ## Considered Options（拒絕）
 

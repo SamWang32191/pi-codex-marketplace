@@ -9,7 +9,7 @@ Bridge 記錄了 Installation、也能唯讀投影 Effective State，但沒有�
 - **發現時只做存在性檢查**：指紋在 snapshot 建立與 cache 寫入時驗證；discovery 是被動檢查，不是 activation admission（見 CONTEXT.md「Runtime Skill Exposure」）。
 - **安裝／啟用後由指令層要求 reload**：reload 是唯一生效動作，由 `install`／`enable`／`update` 指令層觸發；輸出只宣稱「已重新載入生效」，不斷言 skills 在 runtime 可見（與既有 `Skill Availability` 定義一致）。
 - **只貢獻 collision 存活者**：沿用 Runtime Skill Collision 的 `Pi → Global Scope` 兩層 layering。
-- **explicit-only Invocation Policy 照常貢獻**：政策僅由 SKILL.md frontmatter 的 `disable-model-invocation` 定義（Agent Profile 解析已隨 v2 儀式退場，見 ADR 0004）；Pi 目前沒有 policy 攔截點，投影照常貢獻。
+- **不解析 invocation policy**：投影只讀 SKILL.md frontmatter 的 `name`／`description`（見 CONTEXT.md「Skill Descriptor」），不讀取任何政策金鑰；Agent Profile 解析已隨 v2 儀式退場（見 ADR 0004），Pi 目前沒有 policy 攔截點，投影照常貢獻。
 
 ## Considered Options（拒絕）
 
