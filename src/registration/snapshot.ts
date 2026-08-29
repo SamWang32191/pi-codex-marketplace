@@ -6,6 +6,11 @@
  * content hashes. Binds the Source Key; for Git, also binds Canonical Git Locator and
  * Resolved Revision. The fingerprint is the cache-addressing key (fingerprint-addressed
  * entries directory) and must never be replaced by another identity.
+ *
+ * v2 ritual retired (#87 §7, #96): profile / ruleset / budget version strings no longer
+ * participate in the fingerprint. Stale-cache invalidation is by content hash only; a
+ * validation-logic change that tightens containment/catalog rules will be caught at next
+ * snapshot build (Blocking Finding), not via fingerprint versioning. This is intentional.
  */
 
 import { createHash } from 'node:crypto';

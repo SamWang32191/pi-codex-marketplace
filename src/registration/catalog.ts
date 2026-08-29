@@ -25,7 +25,7 @@ export const GIT_FAMILY_UNAVAILABLE_REASON =
 export type EntryType = 'local' | 'git' | 'unsupported';
 
 const LOCAL_KINDS = new Set(['local', 'directory', 'dir', 'file', 'path', 'src']);
-const NONLOCAL_KINDS = new Set(['git', 'github', 'repo', 'url', 'remote', 'http', 'https']);
+const NONLOCAL_KINDS = new Set(['git', 'github', 'repo', 'url', 'remote', 'http', 'https', 'git-subdir']);
 
 /** Matches lowercase kebab-case names (Codex marketplace declared name). */
 export const KEBAB_NAME_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;

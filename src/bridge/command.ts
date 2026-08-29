@@ -724,11 +724,10 @@ export async function runCommand(
             const catalog = catalogResult.catalog;
 
             const sourceKey = gitSourceKey(locator, 'default');
-            (sourceKey as unknown as { resolvedRevision?: string }).resolvedRevision = resolvedRevision;
             const snapRes = buildGitSnapshot(acquiredPath, sourceKey, {
               canonicalLocator: canonicalUrl,
               resolvedRevision,
-              selectorCanonical: 'default',
+              selectorCanonical: sourceKey.selector ?? 'default',
             });
             if (!snapRes.ok || !snapRes.snapshot) {
               const outcome = snapRes.findings[0]?.outcome ?? 'snapshot 建立失敗';
@@ -749,7 +748,7 @@ export async function runCommand(
                 fingerprint,
                 resolvedRevision,
                 canonicalLocator: canonicalUrl,
-                selectorCanonical: 'default',
+                selectorCanonical: sourceKey.selector ?? 'default',
               });
             } catch {}
             if (createdTemp) {
@@ -1119,11 +1118,10 @@ export async function runCommand(
             };
 
             const sourceKey = gitSourceKey(locRes.locator!, 'default');
-            (sourceKey as unknown as { resolvedRevision?: string }).resolvedRevision = resolvedRevision;
             const snapRes = buildGitSnapshot(acquiredPath, sourceKey, {
               canonicalLocator: reg.source,
               resolvedRevision,
-              selectorCanonical: 'default',
+              selectorCanonical: sourceKey.selector ?? 'default',
             });
             if (!snapRes.ok || !snapRes.snapshot) {
               cleanupAcquired();
@@ -1147,7 +1145,7 @@ export async function runCommand(
                 fingerprint,
                 resolvedRevision,
                 canonicalLocator: reg.source,
-                selectorCanonical: 'default',
+                selectorCanonical: sourceKey.selector ?? 'default',
               });
             } catch (e) {
               cleanupAcquired();
