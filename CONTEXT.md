@@ -61,15 +61,19 @@ The non-executing retrieval of a Git Marketplace Source at its current Resolved 
 _Avoid_: Package installation, build, Plugin activation
 
 **Acquisition Trust Base**:
-The constrained host components trusted during Source Acquisition: the selected Git and SSH executables, operating-system certificate authorities, pre-established SSH known-host keys, and approved credential helper or SSH agent. The Bridge Package permits only necessary trust and credential configuration, rejects unknown or changed SSH host keys and canonical-locator-changing redirects, and never extends this trust to repository content or repository-controlled Git configuration.
+The constrained host components trusted during Source Acquisition: the selected Git and SSH executables, operating-system certificate authorities, pre-established SSH known-host keys, and approved credential helper or SSH agent. HTTPS credential helper approval is per invocation (via `PI_CODEX_MARKETPLACE_CREDENTIAL_HELPERS`) and never persisted; credentials never enter the Canonical Git Locator, Validation Snapshot, or cache identity. The Bridge Package permits only necessary trust and credential configuration, rejects unknown or changed SSH host keys and canonical-locator-changing redirects, and never extends this trust to repository content or repository-controlled Git configuration.
 _Avoid_: Project Trust, Plugin trust, sandbox
+
+**Credentialed Acquisition**:
+A Source Acquisition mode in which approved credential helpers may supply credentials while fetching an otherwise credential-free Canonical Git Locator. It is opt-in per invocation, never persisted, and leaves the locator, Validation Snapshot, and cached identity unchanged; the default mode remains credential-free (no helpers approved).
+_Avoid_: embedded credentials, per-source credentials, plaintext token
 
 **Resolved Revision**:
 The full Git commit at which a Git Marketplace Source was acquired. Git acquisition always resolves HEAD; there is no branch, tag, or commit selector. It is a source attribute rather than identity; a changed resolution means the latest material differs, which an explicit `update` re-fetches.
 _Avoid_: Plugin version
 
 **Canonical Git Locator**:
-A credential-free HTTPS or SSH repository locator that preserves identity-relevant transport, host, port, path, and SSH user. Plaintext or local transports, embedded credentials, query, fragment, and ambiguous encoding are not accepted.
+A credential-free HTTPS or SSH repository locator that preserves identity-relevant transport, host, port, path, and SSH user. Plaintext or local transports, embedded credentials, query, fragment, and ambiguous encoding are not accepted; credentials may only reach the fetch through a Credentialed Acquisition approval, never through the locator.
 _Avoid_: Raw clone URL, Source Key, credential string
 
 **Contained Path**:
