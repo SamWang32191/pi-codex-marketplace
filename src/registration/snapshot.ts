@@ -214,7 +214,14 @@ function walkTree(
   return { fileCount, totalBytes, budgetBlocked };
 }
 
-function checkSymlinkContainment(canonicalRoot: string, entries: SnapshotEntry[], findings: ValidationFinding[]): void {
+function checkSymlinkContainment(root: string, entries: SnapshotEntry[], findings: ValidationFinding[]): void {
+  // Canonicalize the owning root once before building the prefix — the raw root may itself
+  // contain symlink components (macOS TMPDIR: /var → /private/var), which would make every
+  // realpath'd target look like it escapes (same pattern as resolveContained in contained.ts).
+  let canonicalRoot = root;
+  try {
+    canonicalRoot = realpathSync.native(root);
+  } catch {}
   for (const e of entries) {
     if (e.type !== 'symlink') continue;
     const abs = join(canonicalRoot, ...e.relPath.split('/'));
@@ -244,6 +251,28 @@ function checkSymlinkContainment(canonicalRoot: string, entries: SnapshotEntry[]
           pointer: e.relPath,
           rule: RULE.CONTAINED_SYMLINK_VIOLATION,
           outcome: `symlink target '${canonical}' escapes owning root`,
+        }),
+      );
+      continue;
+    }
+    // CONTEXT: Contained Symlink — canonical target must be a regular file or directory;
+    // special-file targets (FIFO/socket/device) are Blocking Findings (same rule as
+    // resolveContained in contained.ts). statSync follows the symlink.
+    let st: ReturnType<typeof statSync> | undefined;
+    try {
+      st = statSync(abs);
+    } catch {
+      continue; // vanished between walk and check; broken/looping already handled above
+    }
+    if (!st.isFile() && !st.isDirectory()) {
+      findings.push(
+        blocking({
+          code: CODE.CONTAINED_SYMLINK_VIOLATION,
+          phase: 'validation',
+          target: 'source',
+          pointer: e.relPath,
+          rule: RULE.CONTAINED_SYMLINK_VIOLATION,
+          outcome: `contained symlink target is a special file: '${canonical}' (${st.isFIFO() ? 'fifo' : 'other'})`,
         }),
       );
     }
