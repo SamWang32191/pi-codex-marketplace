@@ -25,10 +25,10 @@ export function containedPathSyntax(p: string): PathSyntax {
   if (p.includes('\\')) return { ok: false, reason: 'backslash' };
   if (isAbsolute(p)) return { ok: false, reason: 'absolute path' };
   if (!p.startsWith('./')) return { ok: false, reason: 'not ./ relative' };
-  const segments = p.split('/');
-  // "./x" -> segments ['', '.', 'x']; a bare "." or ".." component anywhere is rejected
-  const rest = segments.slice(1);
-  for (const seg of rest) {
+  if (p === './') return { ok: true };
+  // The mandatory "./" prefix is not a path component; validate only the declared remainder.
+  const segments = p.slice(2).split('/');
+  for (const seg of segments) {
     if (seg === '' || seg === '.' || seg === '..') {
       return { ok: false, reason: `dot or parent segment '${seg}'` };
     }
