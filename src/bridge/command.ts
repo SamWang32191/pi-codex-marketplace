@@ -380,10 +380,7 @@ function tryRefreshSkills(
     return undefined;
   }
   if (read.error || !read.catalog) return undefined;
-  const entry =
-    read.catalog.entries.find((e) => e.name === inst.manifestName && e.type === 'local' && e.path) ??
-    read.catalog.entries.find((e) => e.name === inst.manifestName && e.path) ??
-    read.catalog.entries.find((e) => e.path && basename(e.path) === inst.manifestName && e.type === 'local');
+  const entry = findEntryByManifestName(read.catalog, inst.manifestName);
   if (!entry?.path) return undefined;
   const contained = resolveContained(sourceRoot, entry.path, 'directory');
   if (contained.outcome.kind !== 'ok') return undefined;
@@ -407,6 +404,90 @@ function detectCollidingSkills(
     for (const s of (other as any).skills ?? []) existing.set(s, (existing.get(s) ?? 0) + 1);
   }
   return [...new Set(skillList.filter((s) => existing.has(s)))].sort((a, b) => a.localeCompare(b));
+}
+
+function findEntryByManifestName(catalog: Catalog, manifestName: string): MarketplaceEntry | undefined {
+  return (
+    catalog.entries.find((e) => e.name === manifestName && e.type === 'local' && e.path) ??
+    catalog.entries.find((e) => e.name === manifestName && e.path) ??
+    catalog.entries.find((e) => e.path && basename(e.path) === manifestName && e.type === 'local')
+  );
+}
+
+interface PluginRefreshOutcome {
+  ok: boolean;
+  manifestName: string;
+  skillNames: string[];
+  /** true when the latest material differs from the installation record（有變化） */
+  changed: boolean;
+  colliding: string[];
+  error?: string;
+}
+
+/**
+ * 重裝＝更新（#94）：對已安裝 plugin 在最新材料root（本機 live 路徑或 git 新 cache entry）重讀
+ * catalog → 重解析 manifest＋skills，回傳刷新結果由呼叫端套用。純邏輯分支不拋；
+ * 僅 I/O（readCatalogForReg／readManifestName／collectSkillNames）由各函式內部 try/catch 守護。
+ */
+function refreshInstalledPlugin(
+  root: string,
+  format: 'codex' | 'claude',
+  inst: MinimalBridgeState['installations'][number],
+  installations: MinimalBridgeState['installations'],
+): PluginRefreshOutcome {
+  const read = readCatalogForReg(root, format);
+  if (read.error || !read.catalog) {
+    return {
+      ok: false,
+      manifestName: inst.manifestName,
+      skillNames: [],
+      changed: false,
+      colliding: [],
+      error: read.error ?? 'catalog 讀取失敗',
+    };
+  }
+  const entry = findEntryByManifestName(read.catalog, inst.manifestName);
+  if (!entry?.path) {
+    return {
+      ok: false,
+      manifestName: inst.manifestName,
+      skillNames: [],
+      changed: false,
+      colliding: [],
+      error: '找不到對應 catalog entry（已從 marketplace 移除？）',
+    };
+  }
+  const contained = resolveContained(root, entry.path, 'directory');
+  if (contained.outcome.kind !== 'ok') {
+    const reason =
+      contained.outcome.kind === 'blocking' ? contained.outcome.reason : `plugin 目錄不存在（${entry.path}）`;
+    return {
+      ok: false,
+      manifestName: inst.manifestName,
+      skillNames: [],
+      changed: false,
+      colliding: [],
+      error: reason,
+    };
+  }
+  const pluginDir = contained.outcome.canonicalPath;
+  const manifestRes = readManifestName(pluginDir);
+  if (manifestRes.error || !manifestRes.name) {
+    return {
+      ok: false,
+      manifestName: inst.manifestName,
+      skillNames: [],
+      changed: false,
+      colliding: [],
+      error: manifestRes.error ?? 'manifest 讀取失敗',
+    };
+  }
+  const skillNames = collectSkillNames(pluginDir, format);
+  const oldSkills = [...(inst.skills ?? [])].sort((a, b) => a.localeCompare(b));
+  const newSkills = [...skillNames].sort((a, b) => a.localeCompare(b));
+  const changed = manifestRes.name !== inst.manifestName || JSON.stringify(oldSkills) !== JSON.stringify(newSkills);
+  const colliding = detectCollidingSkills(skillNames, installations, (other) => other.id === inst.id);
+  return { ok: true, manifestName: manifestRes.name, skillNames, changed, colliding };
 }
 
 function tryWriteState(state: MinimalBridgeState, opts: CommandOptions): string | undefined {
@@ -984,11 +1065,200 @@ export async function runCommand(
         break;
       }
       case 'update': {
+        // #94：對全部已註冊 marketplace 重抓「當下最新」（本機重讀、git 重抓），
+        // 有變化的 plugin 升到最新（重裝＝更新，不引入更新計畫機械），無變化各自顯示「無變化」。
         if (state.registrations.length === 0) {
           messages.push('尚無已註冊的 marketplace。');
-        } else {
-          messages.push('更新 marketplace（骨架建立中，功能即將推出）');
+          break;
         }
+        // 整包 deep backup：任一 marketplace 失敗不影響其他；最後一次寫入，寫失敗即回滾全部。
+        const stateBackup = JSON.parse(JSON.stringify(state)) as MinimalBridgeState;
+        const updateLines: string[] = [];
+        let anyChanged = false;   // 有 plugin 實際升到最新 → reload＋結尾「已重新載入生效」
+        let gitAdvanced = false; // git registration 已推進到新 fingerprint → 需持久化（即使無已安裝 plugin）
+
+        for (const reg of state.registrations) {
+          const display = reg.marketplaceName || reg.alias || reg.id;
+          const format = (reg.format ?? 'codex') as 'codex' | 'claude';
+          const insts = state.installations.filter((i) => i.registrationId === reg.id);
+          const upgraded: string[] = [];
+          const failures: string[] = [];
+
+          if (reg.sourceKind === 'git') {
+            // ---- git 重抓（當下最新）：ls-remote → clone → checkout → snapshot fingerprint ----
+            if (!reg.snapshot || !/^[0-9a-f]{64}$/.test(reg.snapshot)) {
+              updateLines.push(`⚠ marketplace [${display}] git cache 指紋缺失，無法重抓（請先重新 add）`);
+              continue;
+            }
+            const locRes = normalizeGitLocator(reg.source);
+            if (!locRes.ok) {
+              updateLines.push(`⚠ marketplace [${display}] Git 網址不合法：${locRes.findings[0]?.outcome ?? '未知錯誤'}`);
+              continue;
+            }
+            const selectorDefault: NormalizedGitSelector = { kind: 'default', canonical: 'default', raw: 'default' };
+            let acquireResult;
+            try {
+              acquireResult = await acquireGitSource({
+                locator: locRes.locator!,
+                selector: selectorDefault,
+                executor: opts.gitExecutor,
+              });
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : String(e);
+              updateLines.push(`錯誤：git 重抓失敗 — ${msg}`);
+              continue;
+            }
+            if (!acquireResult.ok) {
+              const outcome = acquireResult.findings[0]?.outcome ?? acquireResult.stderr ?? 'git 重抓失敗';
+              updateLines.push(`錯誤：git 重抓失敗 — ${outcome}`);
+              if (acquireResult.findings.length > 1) {
+                const extra = acquireResult.findings.slice(1, 3).map((f) => f.outcome).join('；');
+                if (extra) updateLines.push(`詳細：${extra}`);
+              }
+              if (acquireResult.acquiredPath && acquireResult.createdTemp) {
+                try { cleanupAcquisition(acquireResult.acquiredPath); } catch {}
+              }
+              continue;
+            }
+
+            const acquiredPath = acquireResult.acquiredPath!;
+            const resolvedRevision = acquireResult.resolvedRevision!;
+            const createdTemp = acquireResult.createdTemp ?? false;
+            const cleanupAcquired = (): void => {
+              if (createdTemp) {
+                try { cleanupAcquisition(acquiredPath); } catch {}
+              }
+            };
+
+            const sourceKey = gitSourceKey(locRes.locator!, selectorDefault);
+            (sourceKey as unknown as { resolvedRevision?: string }).resolvedRevision = resolvedRevision;
+            const snapRes = buildGitSnapshot(acquiredPath, sourceKey, {
+              canonicalLocator: reg.source,
+              resolvedRevision,
+              selectorCanonical: selectorDefault.canonical,
+            });
+            if (!snapRes.ok || !snapRes.snapshot) {
+              cleanupAcquired();
+              updateLines.push(`⚠ marketplace [${display}] snapshot 建立失敗 — ${snapRes.findings[0]?.outcome ?? '未知錯誤'}`);
+              continue;
+            }
+            const fingerprint = snapRes.snapshot.fingerprint;
+
+            if (fingerprint === reg.snapshot) {
+              // 當下最新與上次相同 → 無變化
+              cleanupAcquired();
+              updateLines.push(`${display}  重新抓取… 無變化`);
+              continue;
+            }
+
+            // 有新版本：寫入 fingerprint 位址化的新 cache entry，registration 指向新材料
+            const cache = new SourceCache({ agentDir: opts.agentDir });
+            try {
+              await cache.storeTree(acquiredPath, fingerprint);
+              cache.recordIndex({
+                fingerprint,
+                resolvedRevision,
+                canonicalLocator: reg.source,
+                selectorCanonical: selectorDefault.canonical,
+              });
+            } catch (e) {
+              cleanupAcquired();
+              const msg = e instanceof Error ? e.message : String(e);
+              updateLines.push(`錯誤：cache 寫入失敗（fingerprint ${fingerprint.slice(0, 12)}…）：${msg}`);
+              continue;
+            }
+            cleanupAcquired();
+            reg.snapshot = fingerprint;
+            gitAdvanced = true;
+
+            // 重裝＝更新：從最新 cache 材料重裝全部已安裝 plugin（投影直讀新位址）
+            const cacheRoot = catalogRootForReg(reg, opts);
+            if (cacheRoot) {
+              for (const inst of insts) {
+                const outcome = refreshInstalledPlugin(cacheRoot, format, inst, state.installations);
+                if (!outcome.ok) {
+                  failures.push(`${inst.manifestName} 更新失敗：${outcome.error}`);
+                  continue;
+                }
+                inst.manifestName = outcome.manifestName;
+                inst.pluginId = outcome.manifestName;
+                inst.skills = outcome.skillNames;
+                inst.snapshot = fingerprint;
+                upgraded.push(outcome.manifestName);
+                for (const c of outcome.colliding) {
+                  updateLines.push(`⚠ skill "${c}" 與既有同名，未投影（名稱衝突）`);
+                }
+              }
+            } else {
+              for (const inst of insts) failures.push(`${inst.manifestName} 更新失敗：cache 材料無法解析`);
+            }
+
+            for (const f of failures) updateLines.push(`⚠ marketplace [${display}] ${f}`);
+            if (upgraded.length > 0) {
+              updateLines.push(`${display}  重新抓取… ${upgraded.join(', ')} 有新版本`);
+              anyChanged = true;
+            } else if (insts.length === 0) {
+              // upstream 移動但沒有已安裝 plugin：registration 已指向最新，下次 install 即用最新
+              updateLines.push(`${display}  重新抓取… 有新版本`);
+            }
+          } else {
+            // ---- 本機重讀（live 路徑）----
+            if (!reg.source || !existsSync(reg.source)) {
+              updateLines.push(`⚠ marketplace [${display}] 本機路徑不存在（${reg.source ?? '未記錄'}）`);
+              continue;
+            }
+            // 先 probe catalog：不可讀時不能聲稱「無變化」，必須明示（不靜默略過）
+            const probe = readCatalogForReg(reg.source, format);
+            if (probe.error) {
+              updateLines.push(`⚠ marketplace [${display}] ${probe.error}`);
+              continue;
+            }
+            if (insts.length === 0) {
+              updateLines.push(`${display}  重新抓取… 無變化`);
+              continue;
+            }
+            let changed = false;
+            for (const inst of insts) {
+              const outcome = refreshInstalledPlugin(reg.source, format, inst, state.installations);
+              if (!outcome.ok) {
+                failures.push(`${inst.manifestName} 更新失敗：${outcome.error}`);
+                continue;
+              }
+              inst.manifestName = outcome.manifestName;
+              inst.pluginId = outcome.manifestName;
+              inst.skills = outcome.skillNames;
+              changed = changed || outcome.changed;
+              upgraded.push(outcome.manifestName);
+              for (const c of outcome.colliding) {
+                updateLines.push(`⚠ skill "${c}" 與既有同名，未投影（名稱衝突）`);
+              }
+            }
+            for (const f of failures) updateLines.push(`⚠ marketplace [${display}] ${f}`);
+            if (upgraded.length === 0) continue; // 全部失敗，⚠ 已明示
+            if (changed) {
+              updateLines.push(`${display}  重新抓取… ${upgraded.join(', ')} 有新版本`);
+              anyChanged = true;
+            } else {
+              updateLines.push(`${display}  重新抓取… 無變化`);
+            }
+          }
+        }
+
+        if (gitAdvanced || anyChanged) {
+          try {
+            writeMinimalBridgeState(state, opts);
+          } catch (e) {
+            // 寫入失敗 → 回滾全部已套用的更新（registration snapshot 與安裝記錄）
+            state.registrations = stateBackup.registrations;
+            state.installations = stateBackup.installations;
+            const msg = e instanceof Error ? e.message : String(e);
+            messages.push(`錯誤：寫入 Bridge State 失敗：${msg}`);
+            break;
+          }
+          if (anyChanged) reload = true;
+        }
+        messages.push(...updateLines);
+        if (anyChanged) messages.push('已重新載入生效');
         break;
       }
       case 'disable': {
