@@ -2,6 +2,11 @@
 
 All notable changes to `pi-codex-marketplace` are documented here. Format follows Keep a Changelog and SemVer (starting at `0.1.0`; Git tags `v*` mirror npm versions).
 
+## [0.6.1] - 2026-08-29
+
+### Fixed
+- **Git snapshot contained symlink** (#117)：canonicalize 暫存來源根目錄後再檢查 symlink containment，避免 macOS `/var` → `/private/var` 導致 root 內 symlink 被誤判為逸出；同時封鎖指向 FIFO 等 special file 的 contained symlink。
+
 ## [0.6.0] - 2026-08-29
 
 ### Added
