@@ -225,6 +225,34 @@ describe('update #94 全部重抓最新（本機重讀／git 重抓）', () => {
     expect(readMinimalBridgeState({ agentDir }).state.registrations[0].snapshot).toBe(newFp);
   });
 
+  it('git 重抓：upstream 升級但無已安裝 plugin → reg.snapshot 仍推進並持久化（投影指向最新材料），不 reload', async () => {
+    makeCodexMarketplace(gitRepo, 'git-mkt', [{ name: 'gp1', path: './plugins/gp1', skills: ['g1'] }]);
+    const shaA = 'a'.repeat(40);
+    await runCommand(['add', 'https://github.com/acme/git-mkt'], { agentDir, gitExecutor: makeGitExecutor(gitRepo, shaA) });
+    const oldFp = readMinimalBridgeState({ agentDir }).state.registrations[0].snapshot!;
+
+    // upstream bump：新 sha 且新 tree，但沒有任何安裝 → 沒有可升級的 plugin
+    const shaB = 'b'.repeat(40);
+    makeCodexMarketplace(gitRepo2, 'git-mkt', [{ name: 'gp1', path: './plugins/gp1', skills: ['g1', 'g2'] }]);
+    const newExecutor = makeGitExecutor(gitRepo2, shaB);
+
+    const res = await runCommand(['update'], { agentDir, gitExecutor: newExecutor });
+    expect(res.output).toContain('git-mkt  重新抓取… 有新版本');
+    expect(res.output).not.toContain('已重新載入生效');
+    expect(res.reload).toBe(false);
+
+    // reg.snapshot 推進已持久化（重抓最新不因無 plugin 而丟失）；cache 新 entry 存在
+    const st = readMinimalBridgeState({ agentDir });
+    const newFp = st.state.registrations[0].snapshot!;
+    expect(newFp).not.toBe(oldFp);
+    expect(existsSync(join(getCacheEntriesDir(getCacheDir(agentDir)), newFp))).toBe(true);
+
+    // 再 update 一次（同新版本）→ 無變化
+    const again = await runCommand(['update'], { agentDir, gitExecutor: newExecutor });
+    expect(again.output).toContain('git-mkt  重新抓取… 無變化');
+    expect(again.reload).toBe(false);
+  });
+
   it('git 重抓失敗（ls-remote 失敗）→ 明示錯誤、不 reload、state 不變', async () => {
     makeCodexMarketplace(gitRepo, 'git-mkt', [{ name: 'gp1', path: './plugins/gp1', skills: ['g1'] }]);
     const sha = 'a'.repeat(40);
