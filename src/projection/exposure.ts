@@ -23,9 +23,15 @@ import { basename, join } from 'node:path';
 import { parseFrontmatter } from '@earendil-works/pi-coding-agent';
 
 import { getCacheEntriesDir, getCacheDir } from '../cache/paths.js';
-import { readMinimalBridgeState, type MarketplaceFormat, type MinimalBridgeState } from '../bridge/state.js';
+import {
+  isInstallationEnabled,
+  readMinimalBridgeStatePassive,
+  createEmptyMinimalState,
+  type MarketplaceFormat,
+  type MinimalBridgeState,
+} from '../bridge/state.js';
 import { catalogContractFor } from '../registration/format.js';
-import { type Catalog } from '../registration/catalog.js';
+import { findEntryByManifestName, type Catalog } from '../registration/catalog.js';
 import { BUDGET } from '../registration/budget.js';
 import { resolveContained } from '../registration/contained.js';
 import { resolveRuntimeSkillCollisions, type SkillCandidate } from './collision.js';
@@ -73,9 +79,9 @@ function safeFingerprint(fp: string | undefined): fp is string {
 /** Passive fail-reset read allowed by the fail-reset contract: corrupted state contributes nothing. */
 function readGlobalOrEmpty(opts: RuntimeSkillExposureOptions): MinimalBridgeState {
   try {
-    return readMinimalBridgeState({ agentDir: opts.agentDir }).state;
+    return readMinimalBridgeStatePassive({ agentDir: opts.agentDir });
   } catch {
-    return { schemaVersion: 1, registrations: [], installations: [] };
+    return createEmptyMinimalState();
   }
 }
 
@@ -103,15 +109,7 @@ function resolvePluginDirInSnapshot(
 }
 
 function resolveEntryPluginDir(snapshotRoot: string, catalog: Catalog, manifestName: string): string | undefined {
-  let entry = manifestName
-    ? catalog.entries.find((item) => item.name === manifestName && item.type === 'local' && item.available && item.path)
-    : undefined;
-  if (!entry && manifestName) {
-    entry = catalog.entries.find((item) => item.name === manifestName && item.type === 'local' && item.path);
-  }
-  if (!entry && manifestName) {
-    entry = catalog.entries.find((item) => item.path && basename(item.path) === manifestName && item.type === 'local');
-  }
+  const entry = manifestName ? findEntryByManifestName(catalog, manifestName) : undefined;
   if (!entry) return undefined;
   const contained = resolveContained(snapshotRoot, entry.path!, 'directory');
   return contained.outcome.kind === 'ok' ? contained.outcome.canonicalPath : undefined;
@@ -187,9 +185,7 @@ function descriptorSkillName(skillDir: string, descriptorPath: string): string |
  */
 export function discoverProjectedSkillPaths(opts: RuntimeSkillExposureOptions = {}): ExposureResult {
   const globalState = readGlobalOrEmpty(opts);
-  const installations = globalState.installations.filter(
-    (inst) => (inst as { enabled?: boolean }).enabled !== false && inst.installationState !== 'disabled',
-  );
+  const installations = globalState.installations.filter(isInstallationEnabled);
   const registrationsById = new Map(globalState.registrations.map((registration) => [registration.id, registration]));
   const entriesRoot = getCacheEntriesDir(getCacheDir(opts.agentDir));
 

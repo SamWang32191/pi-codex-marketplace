@@ -10,15 +10,12 @@ import {
   treeBytes,
 } from '../../../src/cache/source-cache.js';
 import { writeMinimalBridgeState, type MinimalBridgeState } from '../../../src/bridge/state.js';
+import { getGlobalStatePath } from '../../../src/bridge-state/paths.js';
 
 const FP_A = 'a'.repeat(64);
 const FP_B = 'b'.repeat(64);
 const FP_C = 'c'.repeat(64);
 const FP_PINNED = 'd'.repeat(64);
-
-function statePathForCache(cacheRoot: string): string {
-  return join(cacheRoot, '..', 'state.json');
-}
 
 function makeTree(root: string, marker = 'one'): string {
   mkdirSync(join(root, 'sub'), { recursive: true });
@@ -67,26 +64,30 @@ describe('SourceCache (Git-only, fingerprint-addressed)', () => {
     const mk = (fp: string) => makeTree(join(root, `src-${fp.slice(0, 4)}`), marker);
     // Budget sized so exactly one LRU eviction occurs among three equal trees.
     const probe = treeBytes(mk(FP_A));
-    cache = new SourceCache({ root, budgetBytes: Math.floor(probe * 2.5), clock: () => (tick += 10) });
 
-    await cache.storeTree(mk(FP_A), FP_A); // oldest
-    await cache.storeTree(mk(FP_B), FP_B);
     // A Minimal Bridge State referenced fingerprint is pinned (not itself stored here).
+    // The state document lives in a per-test agent dir following the production layout
+    // (<agentDir>/codex-marketplace/state.json next to <agentDir>/codex-marketplace/cache),
+    // so it is cleaned up with this test's own temp root — never the shared OS tmpdir.
+    const agentDir = join(root, 'agent');
+    const layoutCache = new SourceCache({ root: join(agentDir, 'codex-marketplace', 'cache'), budgetBytes: Math.floor(probe * 2.5), clock: () => (tick += 10) });
     writeMinimalBridgeState(
       {
         schemaVersion: 1,
         registrations: [{ id: 'r1', marketplaceName: 'm', format: 'codex', sourceKind: 'git', source: 'https://example.com/m.git', snapshot: FP_PINNED }],
         installations: [],
       } satisfies MinimalBridgeState,
-      { statePath: statePathForCache(root) },
+      { statePath: getGlobalStatePath(agentDir) },
     );
-    await cache.storeTree(mk(FP_C), FP_C);
-    await cache.prune();
+    await layoutCache.storeTree(mk(FP_A), FP_A); // oldest
+    await layoutCache.storeTree(mk(FP_B), FP_B);
+    await layoutCache.storeTree(mk(FP_C), FP_C);
+    await layoutCache.prune();
 
-    // FP_A (oldest unpinned) must be evicted; newer entries remain.
-    expect(existsSync(cache.entryPath(FP_A))).toBe(false);
-    expect(existsSync(cache.entryPath(FP_B))).toBe(true);
-    expect(existsSync(cache.entryPath(FP_C))).toBe(true);
+    // FP_A (oldest unpinned in the layout cache) must be evicted; newer entries remain.
+    expect(existsSync(layoutCache.entryPath(FP_A))).toBe(false);
+    expect(existsSync(layoutCache.entryPath(FP_B))).toBe(true);
+    expect(existsSync(layoutCache.entryPath(FP_C))).toBe(true);
   });
 
   it('never evicts in-flight entries even over budget', async () => {
@@ -146,17 +147,19 @@ describe('SourceCache (Git-only, fingerprint-addressed)', () => {
   });
 
   it('pins fingerprints referenced by Minimal Bridge State (registrations and installations)', async () => {
+    const agentDir = join(root, 'agent');
+    const layoutCache = new SourceCache({ root: join(agentDir, 'codex-marketplace', 'cache'), clock: () => (tick += 10) });
     const src = makeTree(join(root, 'src'));
-    await cache.storeTree(src, FP_A);
+    await layoutCache.storeTree(src, FP_A);
     writeMinimalBridgeState(
       {
         schemaVersion: 1,
         registrations: [{ id: 'r1', marketplaceName: 'm', format: 'codex', sourceKind: 'git', source: 'https://example.com/m.git', snapshot: FP_A }],
         installations: [{ id: 'i1', pluginId: 'p1', enabled: true, registrationId: 'r1', manifestName: 'p1', sourceKind: 'git', source: 'https://example.com/m.git', snapshot: FP_A }],
       } satisfies MinimalBridgeState,
-      { statePath: statePathForCache(root) },
+      { statePath: getGlobalStatePath(agentDir) },
     );
-    const pinned = await cache.statePinnedFingerprints();
+    const pinned = await layoutCache.statePinnedFingerprints();
     expect(pinned).toEqual(new Set([FP_A]));
   });
 

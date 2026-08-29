@@ -8,6 +8,8 @@
  * Entries rather than recursively acquired.
  */
 
+import { basename } from 'node:path';
+
 import { CODE, RULE, blocking, type ValidationFinding } from './findings.js';
 import { BUDGET } from './budget.js';
 import { parseGitEntrySpec } from './entry-spec.js';
@@ -258,4 +260,20 @@ export function parseCatalog(obj: unknown): CatalogResult {
     };
   }
   return { ok: false, catalog: { name: typeof o.name === 'string' ? o.name.trim() : '', entries }, findings };
+}
+
+/**
+ * Resolve an installed Plugin's entry in a catalog by its authoritative manifest name,
+ * then by entry name, then by entry path basename. Shared by the command surface (update/
+ * enable re-read) and Runtime Skill Exposure so both resolve the same entry for one catalog.
+ * All branches require a local, path-bearing entry. `available` wins on the exact name match;
+ * unavailability falls back to the looser name/path matches so an Unavailable Entry that is
+ * structurally local still resolves for read-time purposes (install itself refuses it earlier).
+ */
+export function findEntryByManifestName(catalog: Catalog, manifestName: string): MarketplaceEntry | undefined {
+  return (
+    catalog.entries.find((e) => e.name === manifestName && e.type === 'local' && e.available && e.path) ??
+    catalog.entries.find((e) => e.name === manifestName && e.type === 'local' && e.path) ??
+    catalog.entries.find((e) => e.path && basename(e.path) === manifestName && e.type === 'local')
+  );
 }

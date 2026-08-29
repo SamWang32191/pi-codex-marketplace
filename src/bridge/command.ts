@@ -11,7 +11,13 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 
 import { parseFrontmatter } from '@earendil-works/pi-coding-agent';
 
-import { readMinimalBridgeState, writeMinimalBridgeState, type MinimalBridgeState, type MarketplaceFormat } from './state.js';
+import {
+  isInstallationEnabled,
+  readMinimalBridgeState,
+  writeMinimalBridgeState,
+  type MinimalBridgeState,
+  type MarketplaceFormat,
+} from './state.js';
 import { BUDGET } from '../registration/budget.js';
 import { localSourceKey } from '../registration/source-key.js';
 import {
@@ -21,7 +27,7 @@ import {
   CLAUDE_MARKETPLACE_CATALOG_RELPATH,
 } from '../registration/format.js';
 import { resolveContained } from '../registration/contained.js';
-import { GIT_FAMILY_UNAVAILABLE_REASON, type Catalog, type MarketplaceEntry } from '../registration/catalog.js';
+import { findEntryByManifestName, GIT_FAMILY_UNAVAILABLE_REASON, type Catalog, type MarketplaceEntry } from '../registration/catalog.js';
 import type { ValidationFinding } from '../registration/findings.js';
 import { normalizeGitLocator } from '../registration/git-locator.js';
 import type { NormalizedGitSelector } from '../registration/git-selector.js';
@@ -325,10 +331,6 @@ function formatPluginListLines(state: MinimalBridgeState, filter?: string, opts:
 
 // ---- Lifecycle helpers (#93 maintainability, P0/P1) ----
 
-function isInstallationEnabled(inst: MinimalBridgeState['installations'][number]): boolean {
-  return (inst as any).enabled !== false && (inst as any).installationState !== 'disabled';
-}
-
 function setInstallationEnabled(inst: MinimalBridgeState['installations'][number], enabled: boolean): void {
   (inst as any).enabled = enabled;
   (inst as any).installationState = enabled ? 'enabled' : 'disabled';
@@ -403,14 +405,6 @@ function detectCollidingSkills(
     for (const s of (other as any).skills ?? []) existing.set(s, (existing.get(s) ?? 0) + 1);
   }
   return [...new Set(skillList.filter((s) => existing.has(s)))].sort((a, b) => a.localeCompare(b));
-}
-
-function findEntryByManifestName(catalog: Catalog, manifestName: string): MarketplaceEntry | undefined {
-  return (
-    catalog.entries.find((e) => e.name === manifestName && e.type === 'local' && e.path) ??
-    catalog.entries.find((e) => e.name === manifestName && e.path) ??
-    catalog.entries.find((e) => e.path && basename(e.path) === manifestName && e.type === 'local')
-  );
 }
 
 interface PluginRereadOutcome {

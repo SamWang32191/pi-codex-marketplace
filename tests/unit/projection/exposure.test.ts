@@ -9,7 +9,7 @@
  * that missing cache material never fails discovery.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -228,14 +228,18 @@ describe('Runtime Skill Exposure — passive inspection only', () => {
     expect(ghost?.reason).toBe('entry-not-found');
   });
 
-  it('treats a corrupted document as empty instead of failing', async () => {
+  it('treats a corrupted document as empty instead of failing — and never rewrites it (passive)', async () => {
     const env = freshEnv();
     mkdirSync(join(env.agentDir, 'codex-marketplace'), { recursive: true });
-    writeFileSync(join(env.agentDir, 'codex-marketplace', 'state.json'), '{ corrupted', 'utf-8');
+    const statePath = join(env.agentDir, 'codex-marketplace', 'state.json');
+    writeFileSync(statePath, '{ corrupted', 'utf-8');
 
     const result = discoverProjectedSkillPaths({ agentDir: env.agentDir });
     expect(result.skillPaths).toEqual([]);
     expect(result.exposed).toEqual([]);
+    // Passive discovery contributes nothing and never mutates: the corrupted document stays
+    // untouched (the reset contract belongs to the command surface, which announces it).
+    expect(readFileSync(statePath, 'utf-8')).toBe('{ corrupted');
   });
 
   it('local Registrations expose skills from their live Marketplace Root without a cache round-trip', async () => {
