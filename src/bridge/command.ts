@@ -31,6 +31,7 @@ import { findEntryByManifestName, GIT_FAMILY_UNAVAILABLE_REASON, type Catalog, t
 import type { ValidationFinding } from '../registration/findings.js';
 import { normalizeGitLocator } from '../registration/git-locator.js';
 import { acquireGitSource, cleanupAcquisition, type GitExecutor } from '../registration/git-acquisition.js';
+import { CREDENTIAL_HELPERS_ENV, parseCredentialHelpers } from '../registration/credential-helpers.js';
 import { gitSourceKey } from '../registration/source-key.js';
 import { buildGitSnapshot } from '../registration/snapshot.js';
 import { SourceCache } from '../cache/source-cache.js';
@@ -598,6 +599,13 @@ export async function runCommand(
 ): Promise<CommandResult> {
   const rawArgs = typeof argv === 'string' ? argv.trim().split(/\s+/).filter(Boolean) : [...argv];
 
+  // Credentialed Acquisition (#109)：逐次核准的 credential helper allowlist。
+  // 解析結果只經既有 AcquisitionTrustOptions 傳給 Git 取得；底層不讀環境變數，
+  // 未核准（空字串／未設定）時 trust 為 undefined，行為與 credential-free 完全一致。
+  const approvedHelpers = parseCredentialHelpers(process.env[CREDENTIAL_HELPERS_ENV]);
+  const acquireTrust: { allowedCredentialHelpers: string[] } | undefined =
+    approvedHelpers.length > 0 ? { allowedCredentialHelpers: approvedHelpers } : undefined;
+
   // Strip leading command token if passed
   if (rawArgs.length > 0 && (rawArgs[0] === '/codex-marketplace' || rawArgs[0] === 'codex-marketplace')) {
     rawArgs.shift();
@@ -671,6 +679,7 @@ export async function runCommand(
               acquireResult = await acquireGitSource({
                 locator,
                 executor: opts.gitExecutor,
+                trust: acquireTrust,
               });
             } catch (e) {
               const msg = e instanceof Error ? e.message : String(e);
@@ -1089,6 +1098,7 @@ export async function runCommand(
               acquireResult = await acquireGitSource({
                 locator: locRes.locator!,
                 executor: opts.gitExecutor,
+                trust: acquireTrust,
               });
             } catch (e) {
               const msg = e instanceof Error ? e.message : String(e);
