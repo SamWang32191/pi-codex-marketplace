@@ -85,6 +85,18 @@ describe('install #90', () => {
     expect(res.output).toContain('已重新載入生效');
   });
 
+  it('installs a plugin whose path is the marketplace root', async () => {
+    makeCodexMarketplace(mktRoot, 'root-plugin-marketplace', [
+      { name: 'root-plugin', path: './', skills: [] },
+    ]);
+    const added = await runCommand(['add', mktRoot], { statePath });
+    expect(added.output).toContain('已註冊');
+
+    const installed = await runCommand(['install', '1'], { statePath });
+    expect(installed.output).toContain('安裝 \"root-plugin\"');
+    expect(installed.output).not.toContain('path containment syntax violation');
+  });
+
   it('repeat install overwrites', async () => {
     makeCodexMarketplace(mktRoot, 'demo-marketplace', [
       { name: 'demo', path: './plugins/demo', skills: ['skill-a'] },

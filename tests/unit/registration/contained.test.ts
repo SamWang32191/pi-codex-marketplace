@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { containedPathSyntax, resolveContained } from '../../../src/registration/contained.js';
 
 describe('Contained Path syntax', () => {
-  it('accepts clean ./ relative paths', () => {
+  it('accepts clean ./ relative paths, including the owning root', () => {
+    expect(containedPathSyntax('./').ok).toBe(true);
     expect(containedPathSyntax('./plugin-a/plugin.json').ok).toBe(true);
     expect(containedPathSyntax('./a/b/c').ok).toBe(true);
   });
@@ -44,6 +45,14 @@ describe('Contained Path resolution', () => {
     expect(res.outcome.kind).toBe('ok');
     if (res.outcome.kind === 'ok') {
       expect(res.outcome.canonicalPath).toBe(join(root, 'plugins', 'p1'));
+    }
+  });
+
+  it('resolves the owning root itself', () => {
+    const res = resolveContained(root, './', 'directory');
+    expect(res.outcome.kind).toBe('ok');
+    if (res.outcome.kind === 'ok') {
+      expect(res.outcome.canonicalPath).toBe(root);
     }
   });
 
