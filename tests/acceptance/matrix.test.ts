@@ -37,11 +37,10 @@ describe('Acceptance matrix — per-row gates (smoke that each layer is covered)
   // The full matrix is the aggregate of unit/integration/E2E files listed in .github/workflows/ci.yml.
   // CI fails the publish gate when any row fails (strategy.fail-fast:false ensures full matrix reported).
 
-  it('unit row — synthetic: selector/locator/contained/classification exercised', async () => {
-    // Import one representative pure seam per row to prove the tier is wired
-    const { normalizeGitSelector } = await import('../../src/registration/git-selector.js');
-    const res = normalizeGitSelector({ kind: 'branch', value: 'main' });
-    expect(res.ok && (res as any).selector.canonical).toBe('refs/heads/main');
+  it('unit row — synthetic: locator/contained/classification exercised', async () => {
+    const { normalizeGitLocator } = await import('../../src/registration/git-locator.js');
+    const res = normalizeGitLocator('https://github.com/owner/repo');
+    expect(res.ok && (res as any).locator.canonicalUrl).toBe('https://github.com/owner/repo');
   });
 
   it('integration row — synthetic: Minimal Bridge State atomic persistence exercised', async () => {

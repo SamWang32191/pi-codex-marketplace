@@ -62,11 +62,14 @@ describe('Marketplace Catalog parsing', () => {
     const entries = res.catalog!.entries;
     expect(entries[0].available).toBe(true);
     expect(entries[1].available).toBe(false);
-    expect(entries[1].unavailableReason).toMatch(/unsupported source kind/i);
+    expect(entries[1].unavailableReason).toMatch(/external git-family/i);
+    expect(entries[1].type).toBe('git');
     expect(entries[2].type).toBe('git');
+    expect(entries[2].available).toBe(false);
+    expect(entries[2].unavailableReason).toMatch(/external git-family/i);
     expect(entries[3].type).toBe('unsupported');
-    // Unavailable Entries are a disclosed outcome, not a finding (CONTEXT: Validation Warning is
-    // reserved for ignored Inert Metadata only)
+    expect(entries[3].available).toBe(false);
+    // Unavailable Entries are a disclosed outcome, not a finding
     expect(res.findings).toEqual([]);
   });
 

@@ -1,14 +1,11 @@
 /**
- * Validation Snapshot — the immutable source state to which validation and confirmation apply.
- * See CONTEXT.md: Validation Snapshot.
+ * Validation Snapshot — minimal fingerprint over the inspected tree for cache addressing.
+ * See CONTEXT.md: Validation Snapshot, Source Cache.
  *
- * Covers the complete inspected tree: ordered paths, object types, modes, symlink targets, content
- * hashes. Binds the Source Key, Compatibility Profile, Validation Ruleset, and Validation Budget.
- * For Git, also binds Canonical Git Locator and Resolved Revision.
- * The fingerprint must still match before durable state mutation; a mismatch is a Blocking Finding.
- *
- * Deterministic: entries are always ordered by relative path; the fingerprint is a sha256 over the
- * canonical entry list plus binds.
+ * Covers the complete inspected tree: ordered paths, object types, modes, symlink targets,
+ * content hashes. Binds the Source Key; for Git, also binds Canonical Git Locator and
+ * Resolved Revision. The fingerprint is the cache-addressing key (fingerprint-addressed
+ * entries directory) and must never be replaced by another identity.
  */
 
 import { createHash } from 'node:crypto';
@@ -22,7 +19,7 @@ import {
 import { join, sep } from 'node:path';
 
 import { hashBoundedFileSync } from './bounded-read.js';
-import { BUDGET, COMPATIBILITY_PROFILE, VALIDATION_BUDGET, VALIDATION_RULESET } from './budget.js';
+import { BUDGET } from './budget.js';
 import { CODE, RULE, blocking, type ValidationFinding } from './findings.js';
 import type { SourceKey } from './source-key.js';
 
@@ -47,11 +44,8 @@ export interface ValidationSnapshot {
   fingerprint: string;
   /** Ordered (sorted) inspected tree entries. */
   entries: SnapshotEntry[];
-  /** Bound Source Key (local canonical real path for #17, git canonicalUrl+selector for #18). */
+  /** Bound Source Key. */
   sourceKey: SourceKey;
-  profile: string;
-  ruleset: string;
-  budget: string;
   /** Git-only: Canonical Git Locator bound at validation time */
   canonicalLocator?: string;
   /** Git-only: Resolved Revision (full commit) bound at validation time */
@@ -279,7 +273,7 @@ export function buildLocalSnapshot(
   // Symlink).
   checkSymlinkContainment(canonicalRoot, entries, findings);
 
-  const binds = [sourceKey.key, COMPATIBILITY_PROFILE, VALIDATION_RULESET, VALIDATION_BUDGET];
+  const binds = [sourceKey.key];
 
   if (findings.some((f) => f.classification === 'blocking')) {
     return {
@@ -289,9 +283,6 @@ export function buildLocalSnapshot(
         fingerprint: fingerprintOf(entries, binds),
         entries,
         sourceKey,
-        profile: COMPATIBILITY_PROFILE,
-        ruleset: VALIDATION_RULESET,
-        budget: VALIDATION_BUDGET,
       },
     };
   }
@@ -303,9 +294,6 @@ export function buildLocalSnapshot(
       fingerprint: fingerprintOf(entries, binds),
       entries,
       sourceKey,
-      profile: COMPATIBILITY_PROFILE,
-      ruleset: VALIDATION_RULESET,
-      budget: VALIDATION_BUDGET,
     },
   };
 }
@@ -340,9 +328,6 @@ export function buildGitSnapshot(
     extra.canonicalLocator,
     extra.resolvedRevision,
     extra.selectorCanonical,
-    COMPATIBILITY_PROFILE,
-    VALIDATION_RULESET,
-    VALIDATION_BUDGET,
   ];
 
   const fingerprint = fingerprintOf(entries, binds);
@@ -351,9 +336,6 @@ export function buildGitSnapshot(
     fingerprint,
     entries,
     sourceKey,
-    profile: COMPATIBILITY_PROFILE,
-    ruleset: VALIDATION_RULESET,
-    budget: VALIDATION_BUDGET,
     canonicalLocator: extra.canonicalLocator,
     resolvedRevision: extra.resolvedRevision,
     selectorCanonical: extra.selectorCanonical,
