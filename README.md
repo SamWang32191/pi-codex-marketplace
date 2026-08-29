@@ -37,7 +37,7 @@ Nine subcommands, no arguments = 總覽：
 
 | 子命令 | 行為 |
 |--------|------|
-| `add <路徑\|網址>` | 註冊 marketplace（本機資料夾、GitHub 完整網址、`owner/repo` 簡寫皆收），自動偵測 codex／claude 格式並告知 `偵測：<format> marketplace · N plugins`。重複註冊同來源被拒絕並提示下一步。Git 來源以安全線取得（`core.hooksPath=/dev/null`、`GIT_LFS_SKIP_SMUDGE=1`、`GIT_TERMINAL_PROMPT=0`），catalog 解析失敗明示錯誤、不註冊。 |
+| `add <路徑\|網址>` | 註冊 marketplace（本機資料夾、GitHub 完整網址、`owner/repo` 簡寫皆收），自動偵測 codex／claude 格式並告知 `偵測：<format> marketplace · N plugins`。重複註冊同來源被拒絕並提示下一步。Git 來源以安全線取得（`core.hooksPath=/dev/null`、`GIT_LFS_SKIP_SMUDGE=1`、`GIT_TERMINAL_PROMPT=0`），catalog 解析失敗明示錯誤、不註冊。私有 HTTPS repo 預設 credential-free（有權限也可能 401）——先以 `PI_CODEX_MARKETPLACE_CREDENTIAL_HELPERS` 核准 credential helper 再 add（逐次生效、永不持久化），或改用 SSH 定位器；用法與範例見下方〈私有 Git repo：Credentialed Acquisition〉。 |
 | `list [名稱]` | 列出 plugins（編號／所屬 marketplace／狀態：可安裝・已裝啟用・已裝停用・unavailable＋原因），可帶 marketplace 名稱過濾。 |
 | `install <編號\|名稱>` | 裝到**當下最新**並自動啟用＋reload。成功話術如 `安裝 "name"（N skills：a, b, c）· 已重新載入生效`；同名衝突列出 `⚠ skill "b" 與既有同名，未投影（名稱衝突）`。**重複安裝＝重抓最新覆寫**（重裝＝更新，不報錯）。 |
 | `update` | 對全部已註冊 marketplace 重抓最新：有變化的 plugin 升到最新、無變化各自顯示「無變化」；整體以「已重新載入生效」收尾（有變時）。 |
@@ -55,16 +55,34 @@ Nine subcommands, no arguments = 總覽：
 
 ### 私有 Git repo：Credentialed Acquisition（核准式取得）
 
-預設 `add`／`update` 對 Git 來源完全 credential-free：不執行任何 credential helper，私有 HTTPS repo 會以 401 失敗（並提示核准或改用 SSH）。若要核准 credential helper，以逗號分隔設定環境變數（逐次生效、永不持久化，`add` 與 `update` 共用）：
+預設 `add`／`update` 對 Git 來源完全 credential-free：不執行任何 credential helper，因此「有權限卻失敗」時，私有 HTTPS repo 會以 401 失敗（並提示核准或改用 SSH）。若要核准 credential helper，以逗號分隔設定環境變數（**逐次生效、永不持久化**，`add` 與 `update` 共用同一核准來源）：
 
 ```
 PI_CODEX_MARKETPLACE_CREDENTIAL_HELPERS='store, !f() { echo "username=${GITHUB_USER}"; echo "password=${GITHUB_TOKEN}"; }; f'
 /codex-marketplace add https://github.com/acme/private-mkt
 ```
 
-- 值為 git `credential.helper` 字串，逗號分隔、各項 trim、空項目忽略；未設定或空白＝未核准（行為與 credential-free 完全相同）。
+Credentialed Acquisition 語意（安全線）：
+
+- 核准僅限該次呼叫（per-invocation）：環境變數逐指令讀取，**不寫入** Bridge State、設定檔或任何持久化位置；重開 session 後需重新設定。
+- 值為 git `credential.helper` 字串，逗號分隔、各項 trim、空項目忽略；未設定或空白＝未核准（行為與 credential-free 完全相同，安全線其餘禁制不變）。
+- 憑證與核准清單**永不**進入指令輸出、Bridge State、Canonical Git Locator（定位器）、Validation Snapshot（快照）或 cache identity（快取身份）——取得流程的 identity 判定與憑證完全無關。
 - 已核准 helper 仍被遠端拒絕（401）時，錯誤訊息提示檢查憑證；未核准時提示核准或改用 SSH。
-- 憑證與核准清單**永不**進入指令輸出、Bridge State、快照指紋或 cache 位址；SSH（known_hosts + agent）是私有 repo 的另一條替代路徑，完全不需要此環境變數。
+
+#### SSH 定位器：私有 repo 的替代路徑
+
+私有 repo 可以完全繞過此環境變數，直接用 SSH 定位器註冊（HTTPS 與 SSH 同屬允許的 credential-free 定位器）：
+
+```
+/codex-marketplace add git@github.com:acme/private-mkt       # scp-like 簡寫（canonical：ssh://git@github.com/acme/private-mkt）
+/codex-marketplace add ssh://git@github.com/acme/private-mkt
+```
+
+前提（與既有 Acquisition Trust Base 一致）：
+
+- host key 必須**預先存在** `~/.ssh/known_hosts`——安全線以 `StrictHostKeyChecking=yes` 只信任既有 host key，遇到未知或變更的主機金鑰直接拒絕，不會提示接受；
+- 憑證由 SSH agent 提供，整個取得過程不互動（`BatchMode=yes`）、無任何提示；
+- SSH 定位器本身仍維持 credential-free：不得內嵌密碼（`user:pass@` 拒絕）；憑證只能經由 SSH agent 或 Credentialed Acquisition 到達取得流程。
 
 ## Bridge State storage
 
