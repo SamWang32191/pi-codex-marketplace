@@ -1,6 +1,6 @@
 # Entry 級取得的信任邊界與定位器正規化 (Entry-level acquisition trust boundary and locator normalization)
 
-> **Status: superseded（#95 拆除）** — Entry Acquisition 已整層退場（極簡 #87 Out of Scope）：catalog 內 git 家族 entry 一律標記 `unavailable`（保留 `parseGitEntrySpec` 純解析用於分類），不再取得、不再 pin。本記錄保留為歷史決策參考。
+> **Status: superseded（#95/#96 拆除）** — Entry Acquisition 已整層退場（極簡 #87 Out of Scope）：catalog 內 git 家族 entry 一律標記 `unavailable`，不再取得、不再 pin、無保留解析器（`parseGitEntrySpec` 一併移除）。本記錄保留為歷史決策參考。
 
 Marketplace Catalog（包含 Claude 與 Codex 格式）允許 Marketplace 聚合分散於外部 Git 倉庫的外掛條目（如 `github`、`url`、`git-subdir` 形態）。Bridge 需要在不擴大既有信任基礎與維持「零執行」（Zero-Execution）安全承諾的前提下，取得並驗證這些外部 entry。決定：**Entry 級外部 Git 取得完全遵循頂層 Marketplace 既有的 Acquisition Trust Base 與 Validation Budget 約束；`owner/repo` 簡寫一律決定性正規化為 canonical HTTPS 定位器；`command` 來源永久不合格；外掛宣告以 `sha` 為不可變 pin，而可動 `ref` 於 Refresh 時產生 Update Candidate，確保第三方聚合不擴大信任面與執行邊界。**
 
