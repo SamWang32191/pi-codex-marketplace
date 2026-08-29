@@ -4,6 +4,15 @@ All notable changes to `pi-codex-marketplace` are documented here. Format follow
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-29
+
+### Added
+- **Credentialed Acquisition** (#109)：以 `PI_CODEX_MARKETPLACE_CREDENTIAL_HELPERS` 環境變數（逗號分隔的 git `credential.helper` 字串）逐次核准 credential helper，`add` 與 `update` 共用同一核准來源——解析結果以既有 trust options 傳入 Git 取得，底層不讀環境變數；未設定或空白＝未核准，行為與 credential-free 完全相同；憑證與核准清單永不進入指令輸出、Bridge State、快照指紋或 cache 位址。（ADRs/0006、CONTEXT.md 詞彙補齊）
+- **認證失敗診斷** (#110)：Git 401 依核准狀態分兩變體訊息——未核准 → 提示設定 `PI_CODEX_MARKETPLACE_CREDENTIAL_HELPERS` 或改用 SSH 定位器；已核准仍失敗 → 提示檢查憑證（`gh auth status`／keychain）；`ls-remote` 與 `clone` 的 not-found 分支一致分類。
+
+### Changed
+- **README 私有 repo 支援文件** (#111)：`add` 指令表格補環境變數用法與範例，安全線段落補 Credentialed Acquisition 語意（per-invocation、永不持久化、憑證不入 locator/snapshot/cache identity），新增 SSH 定位器作為私有 repo 替代路徑的說明（known_hosts 前提、`StrictHostKeyChecking=yes`、`BatchMode=yes`），詞彙與 CONTEXT.md 正典一致。
+
 ## [0.4.0] - 2026-08-29
 
 ### Added
