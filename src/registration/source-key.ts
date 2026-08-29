@@ -21,12 +21,8 @@ export interface SourceKey {
   canonicalPath?: string;
   /** Canonical Git URL for git */
   canonicalUrl?: string;
-  /** Canonical Git selector (for git) */
+  /** Canonical Git selector (for git, always 'default' in minimal HEAD-only mode) */
   selector?: string;
-  /** Subpath inside repository for git-subdir entries */
-  subpath?: string;
-  /** Resolved Revision (git, not part of identity but stored for provenance) */
-  resolvedRevision?: string;
 }
 
 export interface SourceKeyResult {
