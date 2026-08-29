@@ -1,16 +1,8 @@
 /**
- * Validation Ruleset / Validation Budget — versioned Bridge contracts applied during validation.
- * See CONTEXT.md: Validation Ruleset, Validation Budget.
- *
- * A changed ruleset or budget requires revalidation even when source bytes are unchanged.
- * Exceeding a budget produces a Blocking Finding at the owning boundary (source/catalog/entry),
- * never partial or best-effort validation.
+ * Minimal budget guards — only the two catalog-size limits that remain after the v2 ritual
+ * retired (maxCatalogBytes / maxEntries) plus generic tree-walk safety caps. Exceeding a
+ * budget produces a Blocking Finding at the owning boundary, never partial validation.
  */
-
-export const VALIDATION_RULESET = 'ruleset:v3';
-export const VALIDATION_BUDGET = 'budget:v2';
-/** Compatibility Profile reference bound into every snapshot. */
-export const COMPATIBILITY_PROFILE = 'profile:v2';
 
 export const BUDGET = {
   /** Maximum tree depth under the Marketplace Root (1 = immediate children). */
@@ -21,16 +13,6 @@ export const BUDGET = {
   maxTotalBytes: 512 * 1024 * 1024,
   /** Maximum Marketplace Catalog file bytes. */
   maxCatalogBytes: 1 * 1024 * 1024,
-  /** Maximum bytes read and synchronously parsed from one Skill Agent Profile. */
-  maxAgentProfileBytes: 64 * 1024,
-  /** Maximum YAML lexer tokens accepted before composing a Skill Agent Profile. */
-  maxAgentProfileYamlTokens: 8_192,
-  /** Maximum YAML collection nesting accepted in a Skill Agent Profile. */
-  maxAgentProfileYamlDepth: 32,
-  /** Maximum composed YAML AST nodes accepted in a Skill Agent Profile. */
-  maxAgentProfileYamlNodes: 2_048,
-  /** Maximum alias expansion count while materializing a Skill Agent Profile. */
-  maxAgentProfileYamlAliases: 32,
   /** Maximum plugins entries in a catalog. */
   maxEntries: 1024,
   /** Maximum declared marketplace name length. */

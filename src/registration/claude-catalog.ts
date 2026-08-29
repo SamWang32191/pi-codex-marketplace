@@ -32,7 +32,6 @@ import {
   type CatalogResult,
   type MarketplaceEntry,
 } from './catalog.js';
-import { parseGitEntrySpec } from './entry-spec.js';
 
 /**
  * Snapshot-relative location of the claude Marketplace Catalog within a Marketplace Root.
@@ -126,12 +125,8 @@ function classifySource(
     if (rawKind === 'command') {
       return { type: 'unsupported', source, available: false, reason: CLAUDE_UNAVAILABLE_REASON.command };
     }
-    const parsed = parseGitEntrySpec(source, entryId);
-    if (parsed.isGitFamily) {
-      if (parsed.ok) {
-        return { type: 'git', source, available: true };
-      }
-      return { type: 'git', source, available: false, reason: parsed.unavailableReason ?? 'invalid git entry', findings: parsed.findings };
+    if (rawKind === 'github' || rawKind === 'url' || rawKind === 'git-subdir' || rawKind === 'git') {
+      return { type: 'git', source, available: false, reason: CLAUDE_UNAVAILABLE_REASON.gitFamily };
     }
     return { type: 'unsupported', source, available: false, reason: CLAUDE_UNAVAILABLE_REASON.unknownKind };
   }

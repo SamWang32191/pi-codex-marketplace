@@ -12,7 +12,6 @@ import { basename } from 'node:path';
 
 import { CODE, RULE, blocking, type ValidationFinding } from './findings.js';
 import { BUDGET } from './budget.js';
-import { parseGitEntrySpec } from './entry-spec.js';
 
 /**
  * The disclosed Unavailable reason for git-family entries on the command surface: the minimal
@@ -26,7 +25,7 @@ export const GIT_FAMILY_UNAVAILABLE_REASON =
 export type EntryType = 'local' | 'git' | 'unsupported';
 
 const LOCAL_KINDS = new Set(['local', 'directory', 'dir', 'file', 'path', 'src']);
-const NONLOCAL_KINDS = new Set(['git', 'github', 'repo', 'url', 'remote', 'http', 'https']);
+const NONLOCAL_KINDS = new Set(['git', 'github', 'repo', 'url', 'remote', 'http', 'https', 'git-subdir']);
 
 /** Matches lowercase kebab-case names (Codex marketplace declared name). */
 export const KEBAB_NAME_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
@@ -191,36 +190,7 @@ export function parseCatalog(obj: unknown): CatalogResult {
 
     if (kind.type !== 'local') {
       const rawSource = nestedSource ?? e.source ?? e;
-      const parsedGit = parseGitEntrySpec(rawSource, entryId);
-      if (parsedGit.isGitFamily) {
-        if (parsedGit.ok) {
-          entries.push({
-            entryId,
-            ordinal: index,
-            name,
-            type: 'git',
-            source: rawSource,
-            path,
-            available: true,
-          });
-          return;
-        }
-        if (parsedGit.findings.length > 0) {
-          findings.push(...parsedGit.findings);
-        }
-        entries.push({
-          entryId,
-          ordinal: index,
-          name,
-          type: 'git',
-          source: rawSource,
-          path,
-          available: false,
-          unavailableReason: parsedGit.unavailableReason ?? 'invalid git entry',
-        });
-        return;
-      }
-      // Recognized only as an Unavailable Entry. Disclosed, not a finding.
+      const reason = kind.type === 'git' ? GIT_FAMILY_UNAVAILABLE_REASON : 'unsupported source kind';
       entries.push({
         entryId,
         ordinal: index,
@@ -229,7 +199,7 @@ export function parseCatalog(obj: unknown): CatalogResult {
         source: rawSource,
         path,
         available: false,
-        unavailableReason: 'unsupported source kind',
+        unavailableReason: reason,
       });
       return;
     }

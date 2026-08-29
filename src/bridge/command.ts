@@ -30,7 +30,6 @@ import { resolveContained } from '../registration/contained.js';
 import { findEntryByManifestName, GIT_FAMILY_UNAVAILABLE_REASON, type Catalog, type MarketplaceEntry } from '../registration/catalog.js';
 import type { ValidationFinding } from '../registration/findings.js';
 import { normalizeGitLocator } from '../registration/git-locator.js';
-import type { NormalizedGitSelector } from '../registration/git-selector.js';
 import { acquireGitSource, cleanupAcquisition, type GitExecutor } from '../registration/git-acquisition.js';
 import { gitSourceKey } from '../registration/source-key.js';
 import { buildGitSnapshot } from '../registration/snapshot.js';
@@ -667,12 +666,10 @@ export async function runCommand(
               break;
             }
 
-            const selectorDefault: NormalizedGitSelector = { kind: 'default', canonical: 'default', raw: 'default' };
             let acquireResult;
             try {
               acquireResult = await acquireGitSource({
                 locator,
-                selector: selectorDefault,
                 executor: opts.gitExecutor,
               });
             } catch (e) {
@@ -726,12 +723,11 @@ export async function runCommand(
 
             const catalog = catalogResult.catalog;
 
-            const sourceKey = gitSourceKey(locator, selectorDefault);
-            (sourceKey as unknown as { resolvedRevision?: string }).resolvedRevision = resolvedRevision;
+            const sourceKey = gitSourceKey(locator);
             const snapRes = buildGitSnapshot(acquiredPath, sourceKey, {
               canonicalLocator: canonicalUrl,
               resolvedRevision,
-              selectorCanonical: selectorDefault.canonical,
+              selectorCanonical: sourceKey.selector!,
             });
             if (!snapRes.ok || !snapRes.snapshot) {
               const outcome = snapRes.findings[0]?.outcome ?? 'snapshot 建立失敗';
@@ -752,7 +748,7 @@ export async function runCommand(
                 fingerprint,
                 resolvedRevision,
                 canonicalLocator: canonicalUrl,
-                selectorCanonical: selectorDefault.canonical,
+                selectorCanonical: sourceKey.selector!,
               });
             } catch {}
             if (createdTemp) {
@@ -1088,12 +1084,10 @@ export async function runCommand(
               updateLines.push(`⚠ marketplace [${display}] Git 網址不合法：${locRes.findings[0]?.outcome ?? '未知錯誤'}`);
               continue;
             }
-            const selectorDefault: NormalizedGitSelector = { kind: 'default', canonical: 'default', raw: 'default' };
             let acquireResult;
             try {
               acquireResult = await acquireGitSource({
                 locator: locRes.locator!,
-                selector: selectorDefault,
                 executor: opts.gitExecutor,
               });
             } catch (e) {
@@ -1123,12 +1117,11 @@ export async function runCommand(
               }
             };
 
-            const sourceKey = gitSourceKey(locRes.locator!, selectorDefault);
-            (sourceKey as unknown as { resolvedRevision?: string }).resolvedRevision = resolvedRevision;
+            const sourceKey = gitSourceKey(locRes.locator!);
             const snapRes = buildGitSnapshot(acquiredPath, sourceKey, {
               canonicalLocator: reg.source,
               resolvedRevision,
-              selectorCanonical: selectorDefault.canonical,
+              selectorCanonical: sourceKey.selector!,
             });
             if (!snapRes.ok || !snapRes.snapshot) {
               cleanupAcquired();
@@ -1152,7 +1145,7 @@ export async function runCommand(
                 fingerprint,
                 resolvedRevision,
                 canonicalLocator: reg.source,
-                selectorCanonical: selectorDefault.canonical,
+                selectorCanonical: sourceKey.selector!,
               });
             } catch (e) {
               cleanupAcquired();
