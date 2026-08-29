@@ -95,7 +95,7 @@ Every row is a **release blocker**: `v*` may not publish unless the full matrix 
 | Layer | What is covered |
 |-------|-----------------|
 | unit — 縫層 | `runCommand` 指令分派（add/list/install/update/disable/enable/remove/forget/help、重複註冊拒絕、重裝覆寫、衝突未投影清單、corrupt→重置、unavailable 顯示、git 重抓）、Minimal Bridge State 原子持久化 |
-| unit — 低層 | 雙格式 catalog 解析（codex＋claude、open 政策、unavailable entry）、git locator／selector／source-key、contained path／symlink、collision、投影（exposure）、source-cache（store/hit/LRU/pin/flock）、git acquisition（mock executor） |
+| unit — 低層 | 雙格式 catalog 解析（codex＋claude、open 政策、unavailable entry）、git locator／source-key（fixed `default` selector）、contained path／symlink、collision、投影（exposure）、source-cache（store/hit/LRU/pin/flock）、git acquisition（mock executor） |
 | integration | 真 Pi 縫：extension 註冊 `resources_discover` → 投影 skillPaths（startup/reload 一致、trust flag 無關、被動不變異） |
 | E2E | `/codex-marketplace` 薄 Pi adapter：overview/help 輸出路由、corrupt 重置通知、reload 門控 |
 

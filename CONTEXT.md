@@ -64,13 +64,9 @@ _Avoid_: Package installation, build, Plugin activation
 The constrained host components trusted during Source Acquisition: the selected Git and SSH executables, operating-system certificate authorities, pre-established SSH known-host keys, and approved credential helper or SSH agent. The Bridge Package permits only necessary trust and credential configuration, rejects unknown or changed SSH host keys and canonical-locator-changing redirects, and never extends this trust to repository content or repository-controlled Git configuration.
 _Avoid_: Project Trust, Plugin trust, sandbox
 
-**Git Selector**:
-The structured `default`, `branch`, `tag`, or `commit` choice attached to a Git Marketplace Source. Branch and tag values obey Git ref-name rules and canonicalize to exact case-sensitive `refs/heads/...` or `refs/tags/...` values; commit values are complete 40- or 64-hex object names canonicalized to lowercase. Ambiguous shorthand, abbreviated object names, generic refs, `HEAD`, revision or reflog expressions, option-like values, whitespace, and control characters are not accepted.
-_Avoid_: Resolved Revision, arbitrary Git revision expression
-
 **Resolved Revision**:
-The full Git commit at which a Git Marketplace Source was acquired. It is a source attribute rather than identity; a changed resolution means the latest material differs, which an explicit `update` re-fetches.
-_Avoid_: Git Selector, Plugin version
+The full Git commit at which a Git Marketplace Source was acquired. Git acquisition always resolves HEAD; there is no branch, tag, or commit selector. It is a source attribute rather than identity; a changed resolution means the latest material differs, which an explicit `update` re-fetches.
+_Avoid_: Plugin version
 
 **Canonical Git Locator**:
 A credential-free HTTPS or SSH repository locator that preserves identity-relevant transport, host, port, path, and SSH user. Plaintext or local transports, embedded credentials, query, fragment, and ambiguous encoding are not accepted.
@@ -85,15 +81,11 @@ A symlink whose canonical target is a regular file or directory within the same 
 _Avoid_: Unrestricted symlink, path escape
 
 **Validation Snapshot**:
-The deterministic fingerprint of one acquired or inspected source tree (ordered paths, object types, modes, symlink targets, content hashes), binding the Source Key, verified Canonical Git Locator and Resolved Revision where applicable, and the Validation Ruleset and Validation Budget strings. It is the Source Cache addressing key: Git Registrations and Installations pin their fingerprint, and projection reads the pinned cache entry directly, so the fingerprint must never be replaced by another identity value.
+The deterministic fingerprint of one acquired or inspected source tree (ordered paths, object types, modes, symlink targets, content hashes), binding the Source Key and, for Git, the verified Canonical Git Locator and Resolved Revision. It is the Source Cache addressing key: Git Registrations and Installations pin their fingerprint, and projection reads the pinned cache entry directly, so the fingerprint must never be replaced by another identity value.
 _Avoid_: Live source tree, cache freshness marker
 
-**Validation Ruleset**:
-The versioned Bridge contract for source, parser, content, path, symlink, finding, and failure-granularity rules, bound into the Validation Snapshot fingerprint. A changed ruleset changes fingerprints and therefore cache addresses.
-_Avoid_: Compatibility Profile alone, implementation version
-
 **Validation Budget**:
-A versioned set of fixed, non-waivable limits on acquisition time and size, parser complexity, path depth, file counts, and validation-relevant content. Exceeding a limit produces a Blocking Finding at the owning source, catalog, entry, or Plugin boundary rather than partial or best-effort validation.
+A fixed, non-waivable set of limits on tree depth, inspected file counts and content bytes, Marketplace Catalog size, entry count, and declared name length. Exceeding a limit produces a Blocking Finding at the owning source or catalog boundary rather than partial or best-effort validation; the limits are constants, not a versioned contract.
 _Avoid_: Cache retention policy, warning threshold
 
 **Source Cache**:
@@ -109,7 +101,7 @@ An opaque, immutable lowercase UUIDv4 generated locally by the Bridge Package fo
 _Avoid_: Marketplace name, alias, source path, Git URL
 
 **Source Key**:
-A deterministic, typed value used to compare Marketplace Sources for duplicate detection and repeated registration; it is not the identity of a Marketplace Registration. A local Source Key uses the Marketplace Root's canonical real path, while a Git Source Key combines a canonical remote URL with its exact selector; local and Git keys remain distinct, and equal keys do not merge registrations.
+A deterministic, typed value used to compare Marketplace Sources for duplicate detection and repeated registration; it is not the identity of a Marketplace Registration. A local Source Key uses the Marketplace Root's canonical real path, while a Git Source Key combines a canonical remote URL with its fixed `default` selector (Git sources always resolve HEAD); local and Git keys remain distinct, and equal keys do not merge registrations.
 _Avoid_: Registration ID, user-facing alias
 
 **Registration Alias**:
@@ -125,7 +117,7 @@ A bundle whose `.codex-plugin/plugin.json` or `.claude-plugin/plugin.json` manif
 _Avoid_: Pi package, Pi extension
 
 **Plugin ID**:
-The canonical identity of a Plugin, composed of its Marketplace ID and authoritative manifest name. Version, source revision, Marketplace Entry ordinal, and directory path are attributes; changing the manifest name creates a new Plugin ID without automatically migrating an Installation.
+The canonical identity of a Plugin, composed of its Marketplace ID and authoritative manifest name. Version, Resolved Revision, Marketplace Entry ordinal, and directory path are attributes; changing the manifest name creates a new Plugin ID without automatically migrating an Installation.
 _Avoid_: Marketplace entry name, Plugin path
 
 **Unavailable Entry**:
@@ -163,7 +155,7 @@ _Avoid_: Compatible Plugin, renamed skill
 
 **Runtime Skill Exposure**:
 The read-time participation of Projected Skills in Pi through host resource discovery contributed by the Bridge Extension at session start or runtime reload. It derives entirely from the current Effective State and its collision survivors, performs passive existence inspection only, never mutates Bridge State, and is neither confirmation nor activation admission. Exposure never establishes Skill Availability. `install` / `enable` / `update` request a host reload as the only activation action; a failed reload does not affect the recorded state.
-_Avoid_: Installation, Marketplace Refresh, activation confirmation
+_Avoid_: Installation, activation confirmation
 
 **Skill Availability**:
 The evidence status of an Installed Plugin skill, for which the Bridge may report eligibility, known unavailability, or unverified availability while only independent host evidence may establish that it is Available. It does not alter Plugin classification or whole-state application.
