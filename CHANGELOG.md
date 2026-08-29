@@ -2,6 +2,11 @@
 
 All notable changes to `pi-codex-marketplace` are documented here. Format follows Keep a Changelog and SemVer (starting at `0.1.0`; Git tags `v*` mirror npm versions).
 
+## [0.6.2] - 2026-08-29
+
+### Fixed
+- **Marketplace root plugin path** (#118)：允許 catalog plugin 以 `./` 指向 marketplace 根目錄本身，同時維持 canonical containment 與 symlink 逸出防護。
+
 ## [0.6.1] - 2026-08-29
 
 ### Fixed
