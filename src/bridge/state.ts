@@ -97,9 +97,11 @@ export function writeMinimalBridgeState(
 
   const timeoutMs = opts.lockTimeoutMs ?? 5000;
   const res = atomicWriteWithLockSync(statePath, data, lockPath, timeoutMs);
-  if (!res.success) {
-    // Fallback direct atomic write
-    atomicWriteFile(statePath, data);
+  if (res.success && res.verified) return;
+  // Fail-closed: lock 路徑失敗時 fallback 至直寫，但必須驗證成功否則拋出，讓呼叫端的 try/catch 能捕獲並回滾（避免 ENOSPC 時誤報成功）
+  const fallback = atomicWriteFile(statePath, data);
+  if (!fallback.success || !fallback.verified) {
+    throw new Error(fallback.error ?? res.error ?? 'Bridge State 寫入失敗：Persistence Indeterminate');
   }
 }
 

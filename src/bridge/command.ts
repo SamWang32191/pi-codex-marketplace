@@ -142,7 +142,7 @@ function formatOverview(state: MinimalBridgeState): string[] {
       const mktPadded = padRight(mkt, 18);
       const skillCount = inst.skills ? inst.skills.length : 0;
       const skillsStr = `${skillCount} skills`;
-      const isEnabled = inst.enabled !== false && inst.installationState !== 'disabled';
+      const isEnabled = isInstallationEnabled(inst as any);
       const stateStr = isEnabled ? '啟用' : '停用';
       installedLines.push(`${name}${mktPadded}${skillsStr} · ${stateStr}`);
     });
@@ -282,7 +282,7 @@ function enumeratePlugins(state: MinimalBridgeState, opts: CommandOptions = {}):
         status = 'unavailable';
         unavailableReason = entryUnavailableReason(entry);
       } else if (!inst) status = '可安裝';
-      else if (inst.enabled !== false && inst.installationState !== 'disabled') status = '已裝啟用';
+      else if (isInstallationEnabled(inst as any)) status = '已裝啟用';
       else status = '已裝停用';
       result.push({ number: counter, reg, entry, pluginName, status, unavailableReason });
       counter++;
@@ -322,6 +322,101 @@ function formatPluginListLines(state: MinimalBridgeState, filter?: string, opts:
   }
   lines.push(...errorLines);
   return lines;
+}
+
+// ---- Lifecycle helpers (#93 maintainability, P0/P1) ----
+
+function isInstallationEnabled(inst: MinimalBridgeState['installations'][number]): boolean {
+  return (inst as any).enabled !== false && (inst as any).installationState !== 'disabled';
+}
+
+function setInstallationEnabled(inst: MinimalBridgeState['installations'][number], enabled: boolean): void {
+  (inst as any).enabled = enabled;
+  (inst as any).installationState = enabled ? 'enabled' : 'disabled';
+}
+
+function matchesInstallation(inst: MinimalBridgeState['installations'][number], name: string): boolean {
+  return inst.manifestName === name || inst.pluginId === name || inst.id === name;
+}
+
+function matchesRegistration(reg: MinimalBridgeState['registrations'][number], name: string): boolean {
+  return reg.marketplaceName === name || reg.alias === name || reg.id === name;
+}
+
+function findInstallationIndex(state: MinimalBridgeState, name: string): number {
+  return state.installations.findIndex((i) => matchesInstallation(i, name));
+}
+
+function findInstallationsByName(state: MinimalBridgeState, name: string): MinimalBridgeState['installations'] {
+  return state.installations.filter((i) => matchesInstallation(i, name));
+}
+
+function findRegistrationsByName(state: MinimalBridgeState, name: string): MinimalBridgeState['registrations'] {
+  return state.registrations.filter((r) => matchesRegistration(r, name));
+}
+
+function findRegistrationIndex(state: MinimalBridgeState, name: string): number {
+  return state.registrations.findIndex((r) => matchesRegistration(r, name));
+}
+
+/**
+ * Best-effort refresh for enable: mirrors install Step1-3 (sourceRoot -> catalogRoot -> readCatalog -> entry -> resolveContained -> collectSkillNames).
+ * Returns undefined on any missing cache/catalog/entry/path — caller falls back to stored skills.
+ * Pure-logic branches (find/entry.path/resolveContained outcome) do not throw; only I/O (readCatalogForReg/collectSkillNames) is try/catch guarded.
+ */
+function tryRefreshSkills(
+  reg: MinimalBridgeState['registrations'][number],
+  inst: MinimalBridgeState['installations'][number],
+  opts: CommandOptions,
+): string[] | undefined {
+  const sourceRoot = sourceRootForReg(reg, opts);
+  const catalogRoot = catalogRootForReg(reg, opts);
+  if (!sourceRoot || !catalogRoot) return undefined;
+  let read: CatalogReadResult | undefined;
+  try {
+    read = readCatalogForReg(catalogRoot, reg.format ?? 'codex');
+  } catch {
+    // best-effort: catalog 讀取/解析失敗（cache 缺失或損毀）則沿用舊 skills
+    return undefined;
+  }
+  if (read.error || !read.catalog) return undefined;
+  const entry =
+    read.catalog.entries.find((e) => e.name === inst.manifestName && e.type === 'local' && e.path) ??
+    read.catalog.entries.find((e) => e.name === inst.manifestName && e.path) ??
+    read.catalog.entries.find((e) => e.path && basename(e.path) === inst.manifestName && e.type === 'local');
+  if (!entry?.path) return undefined;
+  const contained = resolveContained(sourceRoot, entry.path, 'directory');
+  if (contained.outcome.kind !== 'ok') return undefined;
+  try {
+    return collectSkillNames(contained.outcome.canonicalPath, (reg.format ?? 'codex') as 'codex' | 'claude');
+  } catch {
+    // best-effort: 目錄掃描失敗則沿用舊 skills
+    return undefined;
+  }
+}
+
+function detectCollidingSkills(
+  skillList: string[],
+  installations: MinimalBridgeState['installations'],
+  isExcluded?: (inst: MinimalBridgeState['installations'][number]) => boolean,
+): string[] {
+  const existing = new Map<string, number>();
+  for (const other of installations) {
+    if (isExcluded?.(other)) continue;
+    if (!isInstallationEnabled(other)) continue;
+    for (const s of (other as any).skills ?? []) existing.set(s, (existing.get(s) ?? 0) + 1);
+  }
+  return [...new Set(skillList.filter((s) => existing.has(s)))].sort((a, b) => a.localeCompare(b));
+}
+
+function tryWriteState(state: MinimalBridgeState, opts: CommandOptions): string | undefined {
+  try {
+    writeMinimalBridgeState(state, opts);
+    return undefined;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return msg;
+  }
 }
 
 // ---- Skill discovery helpers ----
@@ -435,7 +530,19 @@ export async function runCommand(
     rawArgs.shift();
   }
 
-  const { state, wasReset, resetReason } = readMinimalBridgeState(opts);
+  let state: MinimalBridgeState;
+  let wasReset = false;
+  let resetReason: string | undefined;
+  try {
+    const read = readMinimalBridgeState(opts);
+    state = read.state;
+    wasReset = read.wasReset;
+    resetReason = read.resetReason;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const messages = [`錯誤：讀取 Bridge State 失敗：${msg}`];
+    return { messages, lines: messages, output: messages.join('\n\n'), reload: false, stateReset: false };
+  }
 
   const messages: string[] = [];
   if (wasReset) {
@@ -797,35 +904,20 @@ export async function runCommand(
           const skillNames = collectSkillNames(pluginDir, format);
 
           // ---- Step 4: collision detection (同名衝突) ----
-          // Collect existing skill names from other enabled installations
-          const existingSkillCounts = new Map<string, number>();
-          // Also include other installations' skills
-          for (const inst of state.installations) {
-            const isEnabled = inst.enabled !== false && inst.installationState !== 'disabled';
-            if (!isEnabled) continue;
-            // For re-install of same plugin, exclude self from collision count temporarily
-            if (inst.registrationId === targetReg.id && (inst.manifestName === manifestName || inst.pluginId === manifestName)) {
-              continue;
-            }
-            if (!inst.skills) continue;
-            for (const s of inst.skills) {
-              existingSkillCounts.set(s, (existingSkillCounts.get(s) ?? 0) + 1);
-            }
-          }
-          // Now for the new plugin's skills, determine colliding ones
-          const colliding: string[] = [];
-          const projectedForThisInstall: string[] = [];
+          // 以 helper 收斂重複邏輯：僅純邏輯，排除同 plugin 的重裝自身
+          const colliding = detectCollidingSkills(
+            skillNames,
+            state.installations,
+            (other) =>
+              other.registrationId === targetReg.id &&
+              (other.manifestName === manifestName || other.pluginId === manifestName),
+          );
+          // 同 plugin 內重複 skill 亦視為衝突（全拒）
           for (const s of skillNames) {
-            if (existingSkillCounts.has(s)) {
-              colliding.push(s);
-            } else {
-              // also check duplicate within same plugin? Collect within-plugin duplicates as colliding (all denied)
-              // For now, if skillNames has duplicates, treat as colliding.
-              const dupInSelf = skillNames.filter((x) => x === s).length > 1;
-              if (dupInSelf) colliding.push(s);
-              else projectedForThisInstall.push(s);
-            }
+            const dupInSelf = skillNames.filter((x) => x === s).length > 1;
+            if (dupInSelf && !colliding.includes(s)) colliding.push(s);
           }
+          colliding.sort((a, b) => a.localeCompare(b));
           // For all-denied policy, if a new skill collides, existing holder also becomes denied, but we only list new's colliding.
 
           // ---- Step 5: write enabled installation record (重抓最新覆寫) ----
@@ -903,7 +995,31 @@ export async function runCommand(
         if (subargs.length === 0) {
           messages.push('用法：/codex-marketplace disable <名稱>');
         } else {
-          messages.push(`停用 "${subargs[0]}"（骨架建立中，功能即將推出）`);
+          const name = subargs[0];
+          const matches = findInstallationsByName(state, name);
+          if (matches.length === 0) {
+            messages.push(`錯誤：找不到已安裝的 plugin "${name}"`);
+          } else if (matches.length > 1) {
+            const list = matches.map((m) => `${m.manifestName}[${m.registrationId}]`).join('、');
+            messages.push(`錯誤：名稱 "${name}" 對應多個已安裝 plugin（${list}），請改用更精確的識別`);
+          } else {
+            const target = matches[0];
+            const idx = state.installations.indexOf(target);
+            const inst = target;
+            if (!isInstallationEnabled(inst as any)) {
+              messages.push(`"${name}" 已是停用狀態`);
+            } else {
+              const backup = { ...inst };
+              setInstallationEnabled(inst as any, false);
+              const writeErr = tryWriteState(state, opts);
+              if (!writeErr) {
+                messages.push(`已停用 "${name}"`);
+              } else {
+                state.installations[idx] = backup as any;
+                messages.push(`錯誤：寫入 Bridge State 失敗：${writeErr}`);
+              }
+            }
+          }
         }
         break;
       }
@@ -911,7 +1027,45 @@ export async function runCommand(
         if (subargs.length === 0) {
           messages.push('用法：/codex-marketplace enable <名稱>');
         } else {
-          messages.push(`啟用 "${subargs[0]}"（骨架建立中，功能即將推出）`);
+          const name = subargs[0];
+          const matches = findInstallationsByName(state, name);
+          if (matches.length === 0) {
+            messages.push(`錯誤：找不到已安裝的 plugin "${name}"`);
+          } else if (matches.length > 1) {
+            const list = matches.map((m) => `${m.manifestName}[${m.registrationId}]`).join('、');
+            messages.push(`錯誤：名稱 "${name}" 對應多個已安裝 plugin（${list}），請改用更精確的識別`);
+          } else {
+            const target = matches[0];
+            const idx = state.installations.indexOf(target);
+            const inst = target;
+            if (isInstallationEnabled(inst as any)) {
+              messages.push(`"${name}" 已是啟用狀態`);
+            } else {
+              const reg = state.registrations.find((r) => r.id === inst.registrationId);
+              // 收斂 best-effort 邊界：僅 I/O 包 try/catch，純邏輯不拋；失敗則沿用舊 skills
+              const refreshedSkills = reg ? tryRefreshSkills(reg as any, inst as any, opts) : undefined;
+              const backup = { ...inst };
+              setInstallationEnabled(inst as any, true);
+              if (refreshedSkills) (inst as any).skills = refreshedSkills;
+              const skillList = (refreshedSkills ?? inst.skills ?? []) as string[];
+              const colliding = detectCollidingSkills(skillList, state.installations, (other) => other.id === inst.id);
+              const writeErr = tryWriteState(state, opts);
+              if (!writeErr) {
+                reload = true;
+                if (skillList.length === 0) {
+                  messages.push(`已啟用 "${name}"（0 skills）· 已重新載入生效`);
+                } else {
+                  messages.push(`已啟用 "${name}"（${skillList.length} skills：${skillList.join(', ')}）· 已重新載入生效`);
+                }
+                for (const c of colliding) {
+                  messages.push(`⚠ skill "${c}" 與既有同名，未投影（名稱衝突）`);
+                }
+              } else {
+                state.installations[idx] = backup as any;
+                messages.push(`錯誤：寫入 Bridge State 失敗：${writeErr}`);
+              }
+            }
+          }
         }
         break;
       }
@@ -919,7 +1073,26 @@ export async function runCommand(
         if (subargs.length === 0) {
           messages.push('用法：/codex-marketplace remove <名稱>');
         } else {
-          messages.push(`移除 "${subargs[0]}"（骨架建立中，功能即將推出）`);
+          const name = subargs[0];
+          const matches = findInstallationsByName(state, name);
+          if (matches.length === 0) {
+            messages.push(`錯誤：找不到已安裝的 plugin "${name}"`);
+          } else if (matches.length > 1) {
+            const list = matches.map((m) => `${m.manifestName}[${m.registrationId}]`).join('、');
+            messages.push(`錯誤：名稱 "${name}" 對應多個已安裝 plugin（${list}），請改用更精確的識別`);
+          } else {
+            const target = matches[0];
+            const idx = state.installations.indexOf(target);
+            const backup = state.installations.slice();
+            state.installations.splice(idx, 1);
+            const writeErr = tryWriteState(state, opts);
+            if (!writeErr) {
+              messages.push(`已移除 "${name}"`);
+            } else {
+              state.installations = backup as any;
+              messages.push(`錯誤：寫入 Bridge State 失敗：${writeErr}`);
+            }
+          }
         }
         break;
       }
@@ -927,7 +1100,34 @@ export async function runCommand(
         if (subargs.length === 0) {
           messages.push('用法：/codex-marketplace forget <名稱>');
         } else {
-          messages.push(`移除 marketplace "${subargs[0]}"（骨架建立中，功能即將推出）`);
+          const name = subargs[0];
+          const matches = findRegistrationsByName(state, name);
+          if (matches.length === 0) {
+            messages.push(`錯誤：找不到 marketplace "${name}"`);
+          } else if (matches.length > 1) {
+            const list = matches.map((r) => `${r.marketplaceName || r.alias || r.id}[${r.id}]`).join('、');
+            messages.push(`錯誤：名稱 "${name}" 對應多個 marketplace（${list}），請改用更精確的識別`);
+          } else {
+            const reg = matches[0];
+            const regIdx = state.registrations.indexOf(reg);
+            const relatedCount = state.installations.filter((i) => i.registrationId === reg.id).length;
+            const backupRegs = state.registrations.slice();
+            const backupInsts = state.installations.slice();
+            state.registrations.splice(regIdx, 1);
+            state.installations = state.installations.filter((i) => i.registrationId !== reg.id);
+            const writeErr = tryWriteState(state, opts);
+            if (!writeErr) {
+              if (relatedCount > 0) {
+                messages.push(`已移除 marketplace "${name}"（含 ${relatedCount} 個安裝）`);
+              } else {
+                messages.push(`已移除 marketplace "${name}"`);
+              }
+            } else {
+              state.registrations = backupRegs as any;
+              state.installations = backupInsts as any;
+              messages.push(`錯誤：寫入 Bridge State 失敗：${writeErr}`);
+            }
+          }
         }
         break;
       }
