@@ -4,6 +4,10 @@ All notable changes to `pi-codex-marketplace` are documented here. Format follow
 
 ## [Unreleased]
 
+### Added
+- **開箱即用自動偵測** (#117)：`add`／`update` 未設 `PI_CODEX_MARKETPLACE_CREDENTIAL_HELPERS` 時，自動偵測固定白名單（gh CLI 已登入 → `!gh auth git-credential`；macOS `osxkeychain`；git `credential-store`）並逐次核准——私有 HTTPS repo 不再需要先設環境變數；env 顯式設定完全覆蓋自動偵測；認證失敗診斷擴為三態（none／detected／approved）。（ADR 0006 修訂、CONTEXT.md 詞彙同步）
+- **GIT-35 helper 名稱無效診斷**：`PI_CODEX_MARKETPLACE_CREDENTIAL_HELPERS` 設了非原生 helper 名稱（如直接寫 `gh`）時，錯誤訊息指出正確寫法（原生 helper 名稱或 `!gh auth git-credential`），不再誤導為「檢查登入」。
+
 ## [0.5.0] - 2026-08-29
 
 ### Added

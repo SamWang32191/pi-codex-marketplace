@@ -31,7 +31,11 @@ import { findEntryByManifestName, GIT_FAMILY_UNAVAILABLE_REASON, type Catalog, t
 import type { ValidationFinding } from '../registration/findings.js';
 import { normalizeGitLocator } from '../registration/git-locator.js';
 import { acquireGitSource, cleanupAcquisition, type GitExecutor } from '../registration/git-acquisition.js';
-import { CREDENTIAL_HELPERS_ENV, parseCredentialHelpers } from '../registration/credential-helpers.js';
+import {
+  CREDENTIAL_HELPERS_ENV,
+  resolveApprovedHelpers,
+  type CredentialHelperDetector,
+} from '../registration/credential-helpers.js';
 import { gitSourceKey } from '../registration/source-key.js';
 import { buildGitSnapshot } from '../registration/snapshot.js';
 import { SourceCache } from '../cache/source-cache.js';
@@ -43,6 +47,8 @@ export interface CommandOptions {
   cwd?: string;
   /** Git executor seam for tests — mocks `git` invocations (ls-remote/clone/checkout). */
   gitExecutor?: GitExecutor;
+  /** 自動偵測 seam for tests — mocks gh/keychain/store detection (#117). */
+  credentialHelperDetector?: CredentialHelperDetector;
 }
 
 export interface CommandResult {
@@ -599,12 +605,14 @@ export async function runCommand(
 ): Promise<CommandResult> {
   const rawArgs = typeof argv === 'string' ? argv.trim().split(/\s+/).filter(Boolean) : [...argv];
 
-  // Credentialed Acquisition (#109)：逐次核准的 credential helper allowlist。
-  // 解析結果只經既有 AcquisitionTrustOptions 傳給 Git 取得；底層不讀環境變數，
-  // 未核准（空字串／未設定）時 trust 為 undefined，行為與 credential-free 完全一致。
-  const approvedHelpers = parseCredentialHelpers(process.env[CREDENTIAL_HELPERS_ENV]);
-  const acquireTrust: { allowedCredentialHelpers: string[] } | undefined =
-    approvedHelpers.length > 0 ? { allowedCredentialHelpers: approvedHelpers } : undefined;
+  // Credentialed Acquisition (#109，#117)：逐次核准的 credential helper allowlist。
+  // env 顯式設定 → 完全覆蓋；未設定／空白 → 自動偵測固定白名單（gh／keychain／store），
+  // 開箱即用（私有 repo 不再要求先設 env）。解析結果只經既有 AcquisitionTrustOptions
+  // 傳給 Git 取得；底層不讀環境變數，未核准（偵測也無結果）時 trust 為 undefined，
+  // 行為與 credential-free 完全一致。
+  const resolved = resolveApprovedHelpers(process.env[CREDENTIAL_HELPERS_ENV], opts.credentialHelperDetector);
+  const acquireTrust: { allowedCredentialHelpers: string[]; helperMode: 'detected' | 'approved' } | undefined =
+    resolved.helpers.length > 0 ? { allowedCredentialHelpers: resolved.helpers, helperMode: resolved.mode as 'detected' | 'approved' } : undefined;
 
   // Strip leading command token if passed
   if (rawArgs.length > 0 && (rawArgs[0] === '/codex-marketplace' || rawArgs[0] === 'codex-marketplace')) {

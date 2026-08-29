@@ -15,7 +15,7 @@ import { join } from 'node:path';
 
 import { CODE, RULE, blocking, type ValidationFinding } from './findings.js';
 import type { CanonicalGitLocator } from './git-locator.js';
-import { CREDENTIAL_HELPERS_ENV } from './credential-helpers.js';
+import { CREDENTIAL_HELPERS_ENV, type CredentialHelperMode } from './credential-helpers.js';
 
 export interface GitExecutor {
   (args: string[], opts?: { cwd?: string; env?: Record<string, string> }): Promise<{
@@ -47,6 +47,8 @@ export function defaultGitExecutor(): GitExecutor {
 export interface AcquisitionTrustOptions {
   knownHostsFile?: string;
   allowedCredentialHelpers?: string[];
+  /** 允許清單來源（#117）：approved＝env 顯式核准；detected＝自動偵測白名單；缺省視為 approved（相容既有 caller）。 */
+  helperMode?: CredentialHelperMode;
   gitPath?: string;
   sshCommand?: string;
   allowRedirects?: boolean;
@@ -129,19 +131,33 @@ function isFullHex(s: string): boolean {
 
 /**
  * 共用失敗分類（#110）：ls-remote 與 clone 兩條取得路徑採用同一分類與訊息。
- * - auth：伺服器 401（authentication failed）→ GIT-34，訊息依核准狀態分兩變體；
- * - helper：credential source 拒絕（原字串匹配的 helper 拒絕情境）→ GIT-33 保留；
+ * - auth：伺服器 401（authentication failed）→ GIT-34，訊息依 helper 模式分三變體（none／detected／approved）。
+ * - invalid-helper：核准的 helper 名稱無效（git 找不到對應執行檔，如 `gh`）→ GIT-35，
+ *   訊息指出正確寫法（原生 helper 名稱或 `!命令` shell form）。放在 auth 之前：stderr 常同時含兩者。
  * - not-found：「repository not found」類字串 → 標明 repo 不存在（保留非 GitHub 情境；
  *   GitHub smart-HTTP 對不存在 repo 實測回 401，落入 auth 分支）。
+ * - helper：credential source 拒絕（原字串匹配的 helper 拒絕情境）→ GIT-33 保留。
  */
 type FailureKind =
   | { kind: 'host-key'; isChanged: boolean }
   | { kind: 'redirect' }
   | { kind: 'not-found' }
-  | { kind: 'auth'; approved: boolean }
-  | { kind: 'helper'; approved: boolean };
+  | { kind: 'invalid-helper'; name: string }
+  | { kind: 'auth'; mode: CredentialHelperMode }
+  | { kind: 'helper'; mode: CredentialHelperMode };
 
-function classifyFailure(stderr: string, approvedHelpers: boolean): FailureKind | null {
+const INVALID_HELPER_RE = /git: 'credential-([^']+)' is not a git command/i;
+
+/**
+ * 從 allowlist 推導模式：未提供時視為 approved（既有 caller 語意）；
+ * 空 allowlist → none。
+ */
+function modeOf(trust: AcquisitionTrustOptions | undefined): CredentialHelperMode {
+  if (trust?.helperMode) return trust.helperMode;
+  return (trust?.allowedCredentialHelpers?.length ?? 0) > 0 ? 'approved' : 'none';
+}
+
+function classifyFailure(stderr: string, mode: CredentialHelperMode): FailureKind | null {
   const lower = stderr.toLowerCase();
   if (lower.includes('host key verification failed') || lower.includes('unknown host key') || lower.includes('offending')) {
     return { kind: 'host-key', isChanged: lower.includes('changed') || lower.includes('offending') || lower.includes('key changed') };
@@ -152,8 +168,12 @@ function classifyFailure(stderr: string, approvedHelpers: boolean): FailureKind 
   if (lower.includes('repository not found') || lower.includes('repo not found') || lower.includes('does not appear to be a git repository') || lower.includes("' not found")) {
     return { kind: 'not-found' };
   }
+  const invalidMatch = stderr.match(INVALID_HELPER_RE);
+  if (invalidMatch && (lower.includes('credentials') || lower.includes('credential-'))) {
+    return { kind: 'invalid-helper', name: invalidMatch[1] };
+  }
   if (lower.includes('authentication failed')) {
-    return { kind: 'auth', approved: approvedHelpers };
+    return { kind: 'auth', mode };
   }
   if (
     lower.includes('could not read username') ||
@@ -161,7 +181,7 @@ function classifyFailure(stderr: string, approvedHelpers: boolean): FailureKind 
     lower.includes('terminal prompts disabled') ||
     lower.includes('credential')
   ) {
-    return { kind: 'helper', approved: approvedHelpers };
+    return { kind: 'helper', mode };
   }
   return null;
 }
@@ -186,11 +206,27 @@ function failureFinding(kind: FailureKind, locator: CanonicalGitLocator, stderr:
         RULE.GIT_TRUST_AUTH_REQUIRED,
         `Acquisition Trust Base violation: repository not found — '${locator.canonicalUrl}' does not exist (check the URL or owner/repo name) — ${stderr.trim()}`,
       );
+    case 'invalid-helper': {
+      // GIT-35：核准的 helper 名稱無效（git 找不到 `git-credential-<name>` 執行檔）。
+      // 典型：使用者直覺設 `PI_CODEX_MARKETPLACE_CREDENTIAL_HELPERS=gh`，git 抱怨
+      // `credential-gh` is not a git command；正確寫法是 `!gh auth git-credential`。
+      return trustFinding(
+        CODE.GIT_TRUST_CREDENTIAL_HELPER_INVALID,
+        RULE.GIT_TRUST_CREDENTIAL_HELPER_INVALID,
+        `Acquisition Trust Base violation: '${kind.name}' is not a valid git credential helper — use a native helper name (osxkeychain / store) or a shell form like '!gh auth git-credential' — ${stderr.trim()}`,
+      );
+    }
     case 'auth': {
-      // 伺服器 401：訊息依核准狀態分兩變體（未核准 → 指出 credential-free 且需認證，指引核准或 SSH；已核准仍 401 → 指引檢查登入）。
-      const why = kind.approved
-        ? `approved credential helper did not provide valid credentials — check your login with 'gh auth status' or your keychain`
-        : `repository requires authentication (private or nonexistent) and this acquisition is credential-free — approve a credential helper via ${CREDENTIAL_HELPERS_ENV}, or switch to an SSH locator`;
+      // 伺服器 401：訊息依 helper 模式分三變體（#117）：
+      // - none：本機也偵測不到任何憑證來源 → 指引設 env 或改 SSH。
+      // - detected：自動偵測白名單被伺服器拒絕 → 指引檢查登入，或手動核准其他 helper。
+      // - approved：顯式核准仍 401 → 指引檢查登入。
+      const why =
+        kind.mode === 'none'
+          ? `repository requires authentication (private or nonexistent); no credential source was detected on this machine (gh CLI / macOS keychain / git credential-store) and this acquisition is credential-free — approve a credential helper via ${CREDENTIAL_HELPERS_ENV}, or switch to an SSH locator`
+          : kind.mode === 'detected'
+            ? `repository requires authentication; the credential sources auto-detected on this machine (gh / macOS keychain / credential-store) were rejected by the server — check your login with 'gh auth status' or your keychain, or set ${CREDENTIAL_HELPERS_ENV} to approve a different helper`
+            : `approved credential helper did not provide valid credentials — check your login with 'gh auth status' or your keychain`;
       return trustFinding(
         CODE.GIT_TRUST_AUTH_REQUIRED,
         RULE.GIT_TRUST_AUTH_REQUIRED,
@@ -199,10 +235,11 @@ function failureFinding(kind: FailureKind, locator: CanonicalGitLocator, stderr:
     }
     case 'helper': {
       // GIT-33 保留：credential source 拒絕（could not read Username/Password 等原字串匹配）；
-      // 訊息依核准狀態分兩變體，未核准時維持原「not approved」措辭。
-      const why = kind.approved
-        ? `approved credential helper failed to supply credentials — check your login with 'gh auth status' or your keychain`
-        : `credential helper/agent not approved — set ${CREDENTIAL_HELPERS_ENV} to approve one, or use SSH`;
+      // 訊息依模式分變體：none 維持原「not approved」措辭。
+      const why =
+        kind.mode === 'none'
+          ? `credential helper/agent not approved — set ${CREDENTIAL_HELPERS_ENV} to approve one, or use SSH`
+          : `approved or auto-detected credential helper failed to supply credentials — check your login with 'gh auth status' or your keychain`;
       return trustFinding(
         CODE.GIT_TRUST_CREDENTIAL_HELPER,
         RULE.GIT_TRUST_CREDENTIAL_HELPER,
@@ -217,12 +254,12 @@ async function resolveHead(
   executor: GitExecutor,
   env: Record<string, string>,
   configArgs: string[],
-  approvedHelpers: boolean,
+  mode: CredentialHelperMode,
 ): Promise<{ ok: true; sha: string } | { ok: false; findings: ValidationFinding[]; stderr?: string }> {
   const lsArgs = [...configArgs, 'ls-remote', locator.canonicalUrl, 'HEAD'];
   const res = await executor(lsArgs, { env });
   if (res.exitCode !== 0) {
-    const kind = classifyFailure(res.stderr || '', approvedHelpers);
+    const kind = classifyFailure(res.stderr || '', mode);
     if (kind) {
       return {
         ok: false,
@@ -268,8 +305,8 @@ export async function resolveGitRevision(
 ): Promise<{ ok: true; sha: string } | { ok: false; findings: ValidationFinding[]; stderr?: string }> {
   const env = hardenedEnv(opts.trust, locator);
   const configArgs = hardenedConfigArgs(opts.trust);
-  const approvedHelpers = (opts.trust?.allowedCredentialHelpers?.length ?? 0) > 0;
-  return resolveHead(locator, opts.executor ?? defaultGitExecutor(), env, configArgs, approvedHelpers);
+  const mode = modeOf(opts.trust);
+  return resolveHead(locator, opts.executor ?? defaultGitExecutor(), env, configArgs, mode);
 }
 
 /**
@@ -281,8 +318,9 @@ export async function acquireGitSource(opts: AcquireOptions): Promise<AcquireRes
   const trust = opts.trust;
   const env = hardenedEnv(trust, locator);
   const configArgs = hardenedConfigArgs(trust);
+  const mode = modeOf(trust);
 
-  const resolved = await resolveHead(locator, executor, env, configArgs, (trust?.allowedCredentialHelpers?.length ?? 0) > 0);
+  const resolved = await resolveHead(locator, executor, env, configArgs, mode);
   if (!resolved.ok) {
     return { ok: false, findings: (resolved as { findings: ValidationFinding[] }).findings, stderr: (resolved as { stderr?: string }).stderr };
   }
@@ -301,7 +339,7 @@ export async function acquireGitSource(opts: AcquireOptions): Promise<AcquireRes
   const cloneRes = await executor(cloneArgs, { env });
   if (cloneRes.exitCode !== 0) {
     const stderr = cloneRes.stderr || '';
-    const kind = classifyFailure(stderr, (trust?.allowedCredentialHelpers?.length ?? 0) > 0);
+    const kind = classifyFailure(stderr, mode);
     const finding = kind
       ? failureFinding(kind, locator, stderr)
       : acquireFinding(`git clone failed: ${stderr.trim() || `exit ${cloneRes.exitCode}`}`);

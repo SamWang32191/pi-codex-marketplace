@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { runCommand } from '../../../src/bridge/command.js';
 import { readMinimalBridgeState } from '../../../src/bridge/state.js';
 import type { GitExecutor } from '../../../src/registration/git-acquisition.js';
-import { CREDENTIAL_HELPERS_ENV } from '../../../src/registration/credential-helpers.js';
+import { CREDENTIAL_HELPERS_ENV, type CredentialHelperDetector } from '../../../src/registration/credential-helpers.js';
 
 function makeCodexMarketplace(root: string, name: string, plugins: { name: string; path: string; skills?: string[] }[]) {
   mkdirSync(join(root, '.agents', 'plugins'), { recursive: true });
@@ -61,6 +61,15 @@ function makeAlwaysAuthFailGitExecutor(): GitExecutor {
   return async () => ({ exitCode: 128, stdout: '', stderr: "fatal: Authentication failed for 'https://github.com/acme/private-mkt/'" });
 }
 
+/** 本機沒有任何憑證來源（gh／keychain／store 皆無）——「未核准」情境（#117） */
+const noneDetector: CredentialHelperDetector = { ghLoggedIn: () => false, hasGitHelper: () => false };
+
+/** 僅 gh CLI 已登入（store 等原生 helper 不存在） */
+const ghOnlyDetector: CredentialHelperDetector = { ghLoggedIn: () => true, hasGitHelper: () => false };
+
+/** 僅 git credential-store 存在 */
+const storeOnlyDetector: CredentialHelperDetector = { ghLoggedIn: () => false, hasGitHelper: (n) => n === 'credential-store' };
+
 describe('Credentialed Acquisition add 接線（#109）', () => {
   let tmpDir: string;
   let agentDir: string;
@@ -79,12 +88,16 @@ describe('Credentialed Acquisition add 接線（#109）', () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('未核准（env 未設定）→ 401 失敗、不註冊；輸出不含任何 helper 字串', async () => {
+  it('未核准（本機無任何憑證來源）→ 401 失敗、不註冊；輸出不含任何 helper 字串', async () => {
     makeCodexMarketplace(gitRepo, 'private-mkt', [{ name: 'p1', path: './plugins/p1' }]);
     const helper = 'approved-helper-a';
     const executor = makeAuthGatedGitExecutor(gitRepo, 'a'.repeat(40), [helper]);
 
-    const res = await runCommand(['add', 'https://github.com/acme/private-mkt'], { agentDir, gitExecutor: executor });
+    const res = await runCommand(['add', 'https://github.com/acme/private-mkt'], {
+      agentDir,
+      gitExecutor: executor,
+      credentialHelperDetector: noneDetector,
+    });
 
     expect(res.output).toContain('錯誤：git 取得失敗');
     expect(res.output).not.toContain(helper);
@@ -92,15 +105,55 @@ describe('Credentialed Acquisition add 接線（#109）', () => {
     expect(st.state.registrations).toHaveLength(0);
   });
 
-  it('未核准（env 為空字串）→ 與未設定相同：401 失敗、不註冊', async () => {
+  it('未核准（env 為空字串）→ 與未設定相同：自動偵測無結果則 401 失敗、不註冊', async () => {
     process.env[CREDENTIAL_HELPERS_ENV] = '  ,  ';
     makeCodexMarketplace(gitRepo, 'private-mkt', [{ name: 'p1', path: './plugins/p1' }]);
     const executor = makeAuthGatedGitExecutor(gitRepo, 'a'.repeat(40), ['approved-helper-a']);
 
-    const res = await runCommand(['add', 'https://github.com/acme/private-mkt'], { agentDir, gitExecutor: executor });
+    const res = await runCommand(['add', 'https://github.com/acme/private-mkt'], {
+      agentDir,
+      gitExecutor: executor,
+      credentialHelperDetector: noneDetector,
+    });
 
     expect(res.output).toContain('錯誤：git 取得失敗');
     expect(readMinimalBridgeState({ agentDir }).state.registrations).toHaveLength(0);
+  });
+
+  it('env 未設定＋偵測到 gh 登入 → 開箱即用：add 成功註冊（自動核准 `!gh auth git-credential`）；輸出與 Bridge State 不含 helper 字串', async () => {
+    makeCodexMarketplace(gitRepo, 'private-mkt', [{ name: 'p1', path: './plugins/p1' }]);
+    const executors: string[] = [];
+    const executor = makeAuthGatedGitExecutor(gitRepo, 'a'.repeat(40), []);
+    const capturing: GitExecutor = async (args) => {
+      executors.push(args.join(' '));
+      return executor(args);
+    };
+
+    const res = await runCommand(['add', 'https://github.com/acme/private-mkt'], {
+      agentDir,
+      gitExecutor: capturing,
+      credentialHelperDetector: ghOnlyDetector,
+    });
+
+    expect(res.output).toContain('偵測：codex marketplace');
+    expect(res.output).toContain('已註冊');
+    expect(readMinimalBridgeState({ agentDir }).state.registrations).toHaveLength(1);
+    // git 命令列必須攜帶自動偵測到的 `!gh auth git-credential`（shell form），非空值
+    expect(executors.some((line) => line.includes('credential.helper=!gh auth git-credential'))).toBe(true);
+  });
+
+  it('env 未設定＋偵測到 credential-store → add 成功註冊', async () => {
+    makeCodexMarketplace(gitRepo, 'private-mkt', [{ name: 'p1', path: './plugins/p1' }]);
+    const executor = makeAuthGatedGitExecutor(gitRepo, 'a'.repeat(40), []);
+
+    const res = await runCommand(['add', 'https://github.com/acme/private-mkt'], {
+      agentDir,
+      gitExecutor: executor,
+      credentialHelperDetector: storeOnlyDetector,
+    });
+
+    expect(res.output).toContain('已註冊');
+    expect(readMinimalBridgeState({ agentDir }).state.registrations).toHaveLength(1);
   });
 
   it('已核准 helper → add 成功註冊；偵測（格式、plugin 數）與公開 repo 一致；輸出與 Bridge State 不含 helper 字串', async () => {
@@ -147,13 +200,35 @@ describe('Credentialed Acquisition add 接線（#109）', () => {
     delete process.env[CREDENTIAL_HELPERS_ENV];
     const executor = makeAlwaysAuthFailGitExecutor();
 
-    const res = await runCommand(['add', 'https://github.com/acme/private-mkt'], { agentDir, gitExecutor: executor });
+    const res = await runCommand(['add', 'https://github.com/acme/private-mkt'], {
+      agentDir,
+      gitExecutor: executor,
+      credentialHelperDetector: noneDetector,
+    });
 
     expect(res.output).toContain('錯誤：git 取得失敗');
     expect(res.output).toContain(CREDENTIAL_HELPERS_ENV);
     expect(res.output).toMatch(/SSH/i);
+    expect(res.output).toMatch(/no credential source was detected/i);
     expect(res.output).not.toMatch(/not approved/i);
-    expect(res.output).not.toMatch(/check your login|keychain/i);
+    expect(res.output).not.toMatch(/check your login/i);
+  });
+
+  it('env 未設定＋自動偵測仍 401 → detected 變體：指引檢查登入＋可手動核准其他 helper（非「未核准」變體）', async () => {
+    delete process.env[CREDENTIAL_HELPERS_ENV];
+    const executor = makeAlwaysAuthFailGitExecutor();
+
+    const res = await runCommand(['add', 'https://github.com/acme/private-mkt'], {
+      agentDir,
+      gitExecutor: executor,
+      credentialHelperDetector: ghOnlyDetector,
+    });
+
+    expect(res.output).toContain('錯誤：git 取得失敗');
+    expect(res.output).toMatch(/check your login/i);
+    expect(res.output).toContain(CREDENTIAL_HELPERS_ENV);
+    expect(res.output).not.toContain('credential-gh is not a git command');
+    expect(readMinimalBridgeState({ agentDir }).state.registrations).toHaveLength(0);
   });
 
   it('未核准＋401 → 不寫入 Bridge State、無暫存殘留', async () => {
@@ -161,7 +236,11 @@ describe('Credentialed Acquisition add 接線（#109）', () => {
     const executor = makeAlwaysAuthFailGitExecutor();
     const before = new Set(readdirSync(tmpdir()).filter((n) => n.startsWith('git-acq-')));
 
-    const res = await runCommand(['add', 'https://github.com/acme/private-mkt'], { agentDir, gitExecutor: executor });
+    const res = await runCommand(['add', 'https://github.com/acme/private-mkt'], {
+      agentDir,
+      gitExecutor: executor,
+      credentialHelperDetector: noneDetector,
+    });
 
     expect(res.output).toContain('錯誤：git 取得失敗');
     expect(readMinimalBridgeState({ agentDir }).state.registrations).toHaveLength(0);
@@ -194,7 +273,11 @@ describe('Credentialed Acquisition add 接線（#109）', () => {
       stderr: "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
     });
 
-    const res = await runCommand(['add', 'https://github.com/acme/private-mkt'], { agentDir, gitExecutor: executor });
+    const res = await runCommand(['add', 'https://github.com/acme/private-mkt'], {
+      agentDir,
+      gitExecutor: executor,
+      credentialHelperDetector: noneDetector,
+    });
 
     expect(res.output).toContain('錯誤：git 取得失敗');
     expect(res.output).toMatch(/not approved/i);
@@ -215,6 +298,28 @@ describe('Credentialed Acquisition add 接線（#109）', () => {
     expect(res.output).toContain('錯誤：git 取得失敗');
     expect(res.output).toMatch(/check your login|gh auth status|keychain/i);
     expect(res.output).not.toMatch(/not approved/i);
+  });
+
+  it('env 顯式核准無效的 helper 名稱（如 `gh`）→ GIT-35 變體：指出不是有效 credential helper 與正確寫法', async () => {
+    process.env[CREDENTIAL_HELPERS_ENV] = 'gh';
+    const executor: GitExecutor = async () => ({
+      exitCode: 128,
+      stdout: '',
+      stderr:
+        "git: 'credential-gh' is not a git command. See 'git --help'.\n" +
+        "The most similar command is\n\tcredential-cache\n" +
+        "remote: Invalid username or token. Password authentication is not supported for Git operations.\n" +
+        "fatal: Authentication failed for 'https://github.com/acme/private-mkt/'",
+    });
+
+    const res = await runCommand(['add', 'https://github.com/acme/private-mkt'], { agentDir, gitExecutor: executor });
+
+    expect(res.output).toContain('錯誤：git 取得失敗');
+    expect(res.output).toMatch(/not a valid git credential helper/i);
+    expect(res.output).toContain("'gh'");
+    expect(res.output).toContain('!gh auth git-credential');
+    expect(res.output).not.toMatch(/check your login/i);
+    expect(readMinimalBridgeState({ agentDir }).state.registrations).toHaveLength(0);
   });
 });
 
@@ -238,7 +343,7 @@ describe('Credentialed Acquisition update 接線（#109）', () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('未核准 → 重抓失敗（未核准變體）、snapshot 不變、不 reload；輸出不含 helper 字串', async () => {
+  it('未核准（本機無憑證來源）→ 重抓失敗（未核准變體）、snapshot 不變、不 reload；輸出不含 helper 字串', async () => {
     makeCodexMarketplace(gitRepo, 'private-mkt', [{ name: 'p1', path: './plugins/p1' }]);
     const helper = 'approved-helper-a';
     const sha = 'a'.repeat(40);
@@ -247,8 +352,12 @@ describe('Credentialed Acquisition update 接線（#109）', () => {
     const before = readMinimalBridgeState({ agentDir });
     delete process.env[CREDENTIAL_HELPERS_ENV];
 
-    // 未核准：即使 executor 認識 helper 也不放行
-    const res = await runCommand(['update'], { agentDir, gitExecutor: makeAuthGatedGitExecutor(gitRepo, sha, [helper]) });
+    // 自動偵測也無結果：即使 executor 認識 helper 也不放行
+    const res = await runCommand(['update'], {
+      agentDir,
+      gitExecutor: makeAuthGatedGitExecutor(gitRepo, sha, [helper]),
+      credentialHelperDetector: noneDetector,
+    });
 
     expect(res.output).toContain('錯誤：git 重抓失敗');
     expect(res.output).toContain(CREDENTIAL_HELPERS_ENV);
@@ -258,6 +367,22 @@ describe('Credentialed Acquisition update 接線（#109）', () => {
     expect(res.reload).toBe(false);
     const after = readMinimalBridgeState({ agentDir });
     expect(after.state.registrations[0].snapshot).toBe(before.state.registrations[0].snapshot);
+  });
+
+  it('env 未設＋自動偵測有來源 → update 重抓成功（detected 模式作為逐次核准來源）', async () => {
+    makeCodexMarketplace(gitRepo, 'private-mkt', [{ name: 'p1', path: './plugins/p1' }]);
+    const helper = 'approved-helper-a';
+    const sha = 'd'.repeat(40);
+    process.env[CREDENTIAL_HELPERS_ENV] = helper;
+    await runCommand(['add', 'https://github.com/acme/private-mkt'], { agentDir, gitExecutor: makeAuthGatedGitExecutor(gitRepo, sha, [helper]) });
+    delete process.env[CREDENTIAL_HELPERS_ENV];
+
+    // 自動偵測供應 helper（與 add 時相同值），executor 放行
+    const detector: CredentialHelperDetector = { ghLoggedIn: () => true, hasGitHelper: () => false };
+    const res = await runCommand(['update'], { agentDir, gitExecutor: makeAuthGatedGitExecutor(gitRepo, sha, ['!gh auth git-credential']), credentialHelperDetector: detector });
+
+    expect(res.output).toContain('重新抓取… 無變化');
+    expect(res.reload).toBe(false);
   });
 
   it('已核准 → 對私有 repo 成功重抓當下最新（新 sha 新 tree → 有新版本＋reload＋snapshot 推進）', async () => {
