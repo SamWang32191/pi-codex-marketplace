@@ -4,7 +4,17 @@ All notable changes to `pi-codex-marketplace` are documented here. Format follow
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-29
+
 ### Added
+- **極簡骨架：runCommand 縫＋薄 Pi adapter＋極簡 Bridge State＋總覽/help** (#88)：
+  - 新增 `src/bridge/state.ts`：極簡 Bridge State（schemaVersion＋registrations＋installations），atomicWriteWithLock 寫入防護與壞檔／未知格式自動重置。
+  - 新增 `src/bridge/command.ts`：純 Node 可測試的 `runCommand(argv)` 分派縫，九個子命令、無參數總覽、help 與未知命令用法提示。
+  - `extensions/pi/index.ts` 收斂為薄 Pi adapter（輸出導向 `ctx.ui.notify`、依 reload 旗標觸發 `ctx.reload()`、維持 `resources_discover` 投影）。
+- **add 本機 codex marketplace 註冊與 list 顯示** (#89)：`add <路徑>` 以 local realpath 計算 Source Key、格式偵測（codex 優先）、解析 catalog、重複註冊拒絕（提示「想更新？`update`；想換？先 `remove` 再 `add`」）；`list` 顯示已註冊 marketplace（名稱／格式／來源）並支援 `[名稱]` 過濾；catalog 缺失或 malformed 顯示錯誤、不註冊、不寫入。
+- **install 本機 codex plugin** (#90)：`list` 顯示 plugins（編號／所屬 marketplace／狀態：可安裝、已裝啟用、已裝停用）；`install <編號>` 走 contained path 檢查 → 讀 manifest name → 寫入 enabled installation → 投影推導 → 回傳 reload 旗標；同名衝突逐項列出「未投影（名稱衝突）」；重複 install 視為重抓最新覆寫；無 skills 的 plugin 照裝並明說 0 skills；真 Pi host e2e 驗證 install → reload → `resources_discover` 回傳含該 plugin skill 的 skillPaths。
+- **claude 雙格式 open 政策** (#91)：claude catalog 解析改採 open 政策（未知欄位一律忽略不 block，含 renames/`$schema`/metadata）；runCommand add/list/install 與 codex 同一條解析鏈與 install 路徑；catalog 內 git 型／不支援 source 型 entry → list 顯示 unavailable＋原因、install 拒絕；同資料夾雙格式並存 codex 優先；exposure 技能推導 manifest.skills 優先、缺席時 fallback 掃描 skills/ 目錄。
+- **Git marketplace** (#92)：`add <GitHub 完整網址|owner/repo>`——HTTPS 正規化（拒絕內嵌憑證／明文傳輸／query＆fragment）→ ls-remote HEAD → clone → checkout → 讀 catalog → 記入 registrations；重複註冊同 canonical URL 拒絕；安全線保留（hooksPath=/dev/null、LFS skip、終端提示禁、StrictHostKeyChecking）；git plugin install 與本機同一條路徑、投影材料直讀 fingerprint 位址化的 cache entries（此位址不可換成別種身份值）。
 - **disable／enable／remove／forget＋總覽狀態** (#93)：`disable <名稱>` 停用（不再投影、下次 discovery pass 自然消失）、`enable <名稱>` 重新投影＋reload、`remove <名稱>` 移除單支 plugin（不動 marketplace、不動來源資料）、`forget <名稱>` 移除整個 marketplace（含其全部安裝）；無參數總覽反映 marketplace 與 installed 狀態。
 - **update：全部 marketplace 重抓最新** (#94)：對全部已註冊 marketplace 重新抓取當下最新（本機重讀／git 重抓），有變化的 plugin 升到最新並以「已重新載入生效」收尾，無變化的各自顯示「無變化」；投影指向最新材料。語意上「重裝＝更新」，不引入任何更新計畫機械。
 
@@ -174,7 +184,8 @@ Initial Bridge Package release — single `pi` extension, Pi `0.84.2` baseline.
 - **TUI management flow** (`/codex-marketplace`): single aggregated command faithful to `prototype/tui-management-flow@c9107d2` — hybrid discovery/guided, explicit scope choice per operation, Registration/Activation separated snapshot+revision bound Default No confirmations, Update Plan Checklist, partitioned Global/Project lists, skill-granular diagnostics, synchronized Findings, closed Recovery Actions, immediate-reload three-orthogonal Receipt report, Pending/Global Barrier blocking hints.
 - **Verification matrix**: synthetic / pinned `SamWang32191/codex-plugins@98e78ca` / adversarial three-tier fixtures × (unit + integration + E2E at the TUI seam) on Pi `0.84.2` / macOS / Linux / Node `>=22.19.0`; every row is a release gate (`v*` → CI full matrix green → `npm publish --provenance` `latest`/`next` channels, `0.y`/`1.0` maintenance windows).
 
-[Unreleased]: https://github.com/SamWang32191/pi-codex-marketplace/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/SamWang32191/pi-codex-marketplace/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/SamWang32191/pi-codex-marketplace/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/SamWang32191/pi-codex-marketplace/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/SamWang32191/pi-codex-marketplace/compare/v0.1.10...v0.2.0
 [0.1.10]: https://github.com/SamWang32191/pi-codex-marketplace/compare/v0.1.9...v0.1.10
