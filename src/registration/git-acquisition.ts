@@ -127,20 +127,89 @@ function isFullHex(s: string): boolean {
   return /^[0-9a-f]{40}$/.test(s) || /^[0-9a-f]{64}$/.test(s);
 }
 
-function authFailureFinding(approvedHelpers: boolean, stderr: string): ValidationFinding {
-  const why = approvedHelpers
-    ? `approved credential helper was rejected by the remote — check your credentials`
-    : `credential helper/agent not approved — set ${CREDENTIAL_HELPERS_ENV} to approve one, or use SSH`;
-  return trustFinding(
-    CODE.GIT_ACQUISITION_FAILED,
-    RULE.GIT_TRUST_CREDENTIAL_HELPER,
-    `Acquisition Trust Base violation: ${why} — ${stderr.trim()}`,
-  );
+/**
+ * 共用失敗分類（#110）：ls-remote 與 clone 兩條取得路徑採用同一分類與訊息。
+ * - auth：伺服器 401（authentication failed）→ GIT-34，訊息依核准狀態分兩變體；
+ * - helper：credential source 拒絕（原字串匹配的 helper 拒絕情境）→ GIT-33 保留；
+ * - not-found：「repository not found」類字串 → 標明 repo 不存在（保留非 GitHub 情境；
+ *   GitHub smart-HTTP 對不存在 repo 實測回 401，落入 auth 分支）。
+ */
+type FailureKind =
+  | { kind: 'host-key'; isChanged: boolean }
+  | { kind: 'redirect' }
+  | { kind: 'not-found' }
+  | { kind: 'auth'; approved: boolean }
+  | { kind: 'helper'; approved: boolean };
+
+function classifyFailure(stderr: string, approvedHelpers: boolean): FailureKind | null {
+  const lower = stderr.toLowerCase();
+  if (lower.includes('host key verification failed') || lower.includes('unknown host key') || lower.includes('offending')) {
+    return { kind: 'host-key', isChanged: lower.includes('changed') || lower.includes('offending') || lower.includes('key changed') };
+  }
+  if (lower.includes('redirect') || lower.includes('moved') || lower.includes('followredirects')) {
+    return { kind: 'redirect' };
+  }
+  if (lower.includes('repository not found') || lower.includes('repo not found') || lower.includes('does not appear to be a git repository') || lower.includes("' not found")) {
+    return { kind: 'not-found' };
+  }
+  if (lower.includes('authentication failed')) {
+    return { kind: 'auth', approved: approvedHelpers };
+  }
+  if (
+    lower.includes('could not read username') ||
+    lower.includes('could not read password') ||
+    lower.includes('terminal prompts disabled') ||
+    lower.includes('credential')
+  ) {
+    return { kind: 'helper', approved: approvedHelpers };
+  }
+  return null;
 }
 
-function isAuthFailure(stderr: string): boolean {
-  const lower = stderr.toLowerCase();
-  return lower.includes('could not read username') || lower.includes('authentication failed') || lower.includes('credential');
+function failureFinding(kind: FailureKind, locator: CanonicalGitLocator, stderr: string): ValidationFinding {
+  switch (kind.kind) {
+    case 'host-key':
+      return trustFinding(
+        kind.isChanged ? CODE.GIT_TRUST_HOST_KEY_CHANGED : CODE.GIT_TRUST_HOST_KEY_UNKNOWN,
+        RULE.GIT_TRUST_HOST_KEY,
+        `Acquisition Trust Base violation: SSH host key ${kind.isChanged ? 'changed' : 'unknown'} for ${locator.host} — ${stderr.trim()} (only pre-established known-host keys are trusted)`,
+      );
+    case 'redirect':
+      return trustFinding(
+        CODE.GIT_TRUST_REDIRECT,
+        RULE.GIT_TRUST_REDIRECT,
+        `Acquisition Trust Base violation: redirect that would change canonical locator (followRedirects disabled) — ${stderr.trim()}`,
+      );
+    case 'not-found':
+      return trustFinding(
+        CODE.GIT_REPO_NOT_FOUND,
+        RULE.GIT_TRUST_AUTH_REQUIRED,
+        `Acquisition Trust Base violation: repository not found — '${locator.canonicalUrl}' does not exist (check the URL or owner/repo name) — ${stderr.trim()}`,
+      );
+    case 'auth': {
+      // 伺服器 401：訊息依核准狀態分兩變體（未核准 → 指出 credential-free 且需認證，指引核准或 SSH；已核准仍 401 → 指引檢查登入）。
+      const why = kind.approved
+        ? `approved credential helper did not provide valid credentials — check your login with 'gh auth status' or your keychain`
+        : `repository requires authentication (private or nonexistent) and this acquisition is credential-free — approve a credential helper via ${CREDENTIAL_HELPERS_ENV}, or switch to an SSH locator`;
+      return trustFinding(
+        CODE.GIT_TRUST_AUTH_REQUIRED,
+        RULE.GIT_TRUST_AUTH_REQUIRED,
+        `Acquisition Trust Base violation: ${why} — ${stderr.trim()}`,
+      );
+    }
+    case 'helper': {
+      // GIT-33 保留：credential source 拒絕（could not read Username/Password 等原字串匹配）；
+      // 訊息依核准狀態分兩變體，未核准時維持原「not approved」措辭。
+      const why = kind.approved
+        ? `approved credential helper failed to supply credentials — check your login with 'gh auth status' or your keychain`
+        : `credential helper/agent not approved — set ${CREDENTIAL_HELPERS_ENV} to approve one, or use SSH`;
+      return trustFinding(
+        CODE.GIT_TRUST_CREDENTIAL_HELPER,
+        RULE.GIT_TRUST_CREDENTIAL_HELPER,
+        `Acquisition Trust Base: ${why} — ${stderr.trim()}`,
+      );
+    }
+  }
 }
 
 async function resolveHead(
@@ -153,35 +222,11 @@ async function resolveHead(
   const lsArgs = [...configArgs, 'ls-remote', locator.canonicalUrl, 'HEAD'];
   const res = await executor(lsArgs, { env });
   if (res.exitCode !== 0) {
-    const stderr = (res.stderr || '').toLowerCase();
-    if (stderr.includes('host key verification failed') || stderr.includes('unknown host key') || stderr.includes('offending')) {
-      const isChanged = stderr.includes('changed') || stderr.includes('offending') || stderr.includes('key changed');
-      const code = isChanged ? CODE.GIT_TRUST_HOST_KEY_CHANGED : CODE.GIT_TRUST_HOST_KEY_UNKNOWN;
+    const kind = classifyFailure(res.stderr || '', approvedHelpers);
+    if (kind) {
       return {
         ok: false,
-        findings: [
-          trustFinding(
-            code,
-            RULE.GIT_TRUST_HOST_KEY,
-            `Acquisition Trust Base violation: SSH host key ${isChanged ? 'changed' : 'unknown'} for ${locator.host} — ${res.stderr.trim()} (only pre-established known-host keys are trusted)`,
-          ),
-        ],
-        stderr: res.stderr,
-      };
-    }
-    if (stderr.includes('redirect') || stderr.includes('moved') || stderr.includes('followredirects')) {
-      return {
-        ok: false,
-        findings: [
-          trustFinding(CODE.GIT_TRUST_REDIRECT, RULE.GIT_TRUST_REDIRECT, `Acquisition Trust Base violation: redirect that would change canonical locator (followRedirects disabled) — ${res.stderr.trim()}`),
-        ],
-        stderr: res.stderr,
-      };
-    }
-    if (isAuthFailure(stderr)) {
-      return {
-        ok: false,
-        findings: [authFailureFinding(approvedHelpers, res.stderr)],
+        findings: [failureFinding(kind, locator, res.stderr)],
         stderr: res.stderr,
       };
     }
@@ -256,47 +301,12 @@ export async function acquireGitSource(opts: AcquireOptions): Promise<AcquireRes
   const cloneRes = await executor(cloneArgs, { env });
   if (cloneRes.exitCode !== 0) {
     const stderr = cloneRes.stderr || '';
-    const lower = stderr.toLowerCase();
-    if (lower.includes('host key verification failed') || lower.includes('unknown host key') || lower.includes('offending')) {
-      const isChanged = lower.includes('changed') || lower.includes('offending');
-      const code = isChanged ? CODE.GIT_TRUST_HOST_KEY_CHANGED : CODE.GIT_TRUST_HOST_KEY_UNKNOWN;
-      if (createdTemp) try { rmSync(dest, { recursive: true, force: true }); } catch {}
-      return {
-        ok: false,
-        findings: [
-          trustFinding(
-            code,
-            RULE.GIT_TRUST_HOST_KEY,
-            `Acquisition Trust Base violation: SSH host key ${isChanged ? 'changed' : 'unknown'} — ${stderr.trim()}`,
-          ),
-        ],
-        stderr,
-      };
-    }
-    if (lower.includes('redirect') || lower.includes('moved permanently') || lower.includes('followredirects')) {
-      if (createdTemp) try { rmSync(dest, { recursive: true, force: true }); } catch {}
-      return {
-        ok: false,
-        findings: [
-          trustFinding(CODE.GIT_TRUST_REDIRECT, RULE.GIT_TRUST_REDIRECT, `Acquisition Trust Base violation: redirect changing canonical locator — ${stderr.trim()}`),
-        ],
-        stderr,
-      };
-    }
-    if (isAuthFailure(stderr)) {
-      if (createdTemp) try { rmSync(dest, { recursive: true, force: true }); } catch {}
-      return {
-        ok: false,
-        findings: [authFailureFinding((trust?.allowedCredentialHelpers?.length ?? 0) > 0, stderr)],
-        stderr,
-      };
-    }
+    const kind = classifyFailure(stderr, (trust?.allowedCredentialHelpers?.length ?? 0) > 0);
+    const finding = kind
+      ? failureFinding(kind, locator, stderr)
+      : acquireFinding(`git clone failed: ${stderr.trim() || `exit ${cloneRes.exitCode}`}`);
     if (createdTemp) try { rmSync(dest, { recursive: true, force: true }); } catch {}
-    return {
-      ok: false,
-      findings: [acquireFinding(`git clone failed: ${stderr.trim() || `exit ${cloneRes.exitCode}`}`)],
-      stderr,
-    };
+    return { ok: false, findings: [finding], stderr };
   }
 
   if (trust?.allowRedirects !== true) {

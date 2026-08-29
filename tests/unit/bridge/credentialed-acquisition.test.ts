@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, cpSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, cpSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -130,27 +130,91 @@ describe('Credentialed Acquisition add 接線（#109）', () => {
     expect(JSON.stringify(st.state)).not.toContain('cache');
   });
 
-  it('已核准但仍 401 → 錯誤訊息為「核准後仍失敗」變體（提示檢查憑證），非「未核准」變體', async () => {
+  it('已核准但仍 401 → 錯誤訊息為「已核准仍失敗」變體（指引檢查登入 gh auth status／keychain），非「未核准」變體', async () => {
     process.env[CREDENTIAL_HELPERS_ENV] = 'approved-helper-a';
     const executor = makeAlwaysAuthFailGitExecutor();
 
     const res = await runCommand(['add', 'https://github.com/acme/private-mkt'], { agentDir, gitExecutor: executor });
 
     expect(res.output).toContain('錯誤：git 取得失敗');
-    expect(res.output).toMatch(/check your credentials|憑證/i);
+    expect(res.output).toMatch(/check your login|gh auth status|keychain|憑證/i);
     expect(res.output).not.toMatch(/not approved/i);
+    expect(res.output).not.toContain(CREDENTIAL_HELPERS_ENV);
     expect(readMinimalBridgeState({ agentDir }).state.registrations).toHaveLength(0);
   });
 
-  it('未核准 → 錯誤訊息為「未核准」變體（提示核准或 SSH）', async () => {
+  it('未核准 → 錯誤訊息為 GIT-34 未核准變體（需認證＋env 變數與 SSH 指引），無「not approved」', async () => {
     delete process.env[CREDENTIAL_HELPERS_ENV];
     const executor = makeAlwaysAuthFailGitExecutor();
 
     const res = await runCommand(['add', 'https://github.com/acme/private-mkt'], { agentDir, gitExecutor: executor });
 
     expect(res.output).toContain('錯誤：git 取得失敗');
+    expect(res.output).toContain(CREDENTIAL_HELPERS_ENV);
+    expect(res.output).toMatch(/SSH/i);
+    expect(res.output).not.toMatch(/not approved/i);
+    expect(res.output).not.toMatch(/check your login|keychain/i);
+  });
+
+  it('未核准＋401 → 不寫入 Bridge State、無暫存殘留', async () => {
+    delete process.env[CREDENTIAL_HELPERS_ENV];
+    const executor = makeAlwaysAuthFailGitExecutor();
+    const before = new Set(readdirSync(tmpdir()).filter((n) => n.startsWith('git-acq-')));
+
+    const res = await runCommand(['add', 'https://github.com/acme/private-mkt'], { agentDir, gitExecutor: executor });
+
+    expect(res.output).toContain('錯誤：git 取得失敗');
+    expect(readMinimalBridgeState({ agentDir }).state.registrations).toHaveLength(0);
+    expect(JSON.stringify(readMinimalBridgeState({ agentDir }).state)).not.toContain('acme');
+    const gained = readdirSync(tmpdir()).filter((n) => n.startsWith('git-acq-') && !before.has(n));
+    expect(gained).toEqual([]);
+  });
+
+  it('not-found（Repository not found）→ 訊息標明 repo 不存在、不註冊', async () => {
+    delete process.env[CREDENTIAL_HELPERS_ENV];
+    const executor: GitExecutor = async () => ({
+      exitCode: 128,
+      stdout: '',
+      stderr: "ERROR: Repository not found\nfatal: Could not read from remote repository.",
+    });
+
+    const res = await runCommand(['add', 'https://github.com/acme/private-mkt'], { agentDir, gitExecutor: executor });
+
+    expect(res.output).toContain('錯誤：git 取得失敗');
+    expect(res.output).toMatch(/does not exist/i);
+    expect(res.output).toContain('https://github.com/acme/private-mkt');
+    expect(readMinimalBridgeState({ agentDir }).state.registrations).toHaveLength(0);
+  });
+
+  it('GIT-33 helper 拒絕情境（could not read Username）→ 保留「not approved」變體', async () => {
+    delete process.env[CREDENTIAL_HELPERS_ENV];
+    const executor: GitExecutor = async () => ({
+      exitCode: 128,
+      stdout: '',
+      stderr: "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+    });
+
+    const res = await runCommand(['add', 'https://github.com/acme/private-mkt'], { agentDir, gitExecutor: executor });
+
+    expect(res.output).toContain('錯誤：git 取得失敗');
     expect(res.output).toMatch(/not approved/i);
-    expect(res.output).not.toMatch(/check your credentials|憑證/i);
+    expect(res.output).toContain(CREDENTIAL_HELPERS_ENV);
+    expect(res.output).not.toMatch(/does not exist/i);
+  });
+
+  it('GIT-33 helper 拒絕＋已核准 → 已核准變體（檢查登入），無「not approved」', async () => {
+    process.env[CREDENTIAL_HELPERS_ENV] = 'approved-helper-a';
+    const executor: GitExecutor = async () => ({
+      exitCode: 128,
+      stdout: '',
+      stderr: "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+    });
+
+    const res = await runCommand(['add', 'https://github.com/acme/private-mkt'], { agentDir, gitExecutor: executor });
+
+    expect(res.output).toContain('錯誤：git 取得失敗');
+    expect(res.output).toMatch(/check your login|gh auth status|keychain/i);
+    expect(res.output).not.toMatch(/not approved/i);
   });
 });
 
@@ -187,7 +251,9 @@ describe('Credentialed Acquisition update 接線（#109）', () => {
     const res = await runCommand(['update'], { agentDir, gitExecutor: makeAuthGatedGitExecutor(gitRepo, sha, [helper]) });
 
     expect(res.output).toContain('錯誤：git 重抓失敗');
-    expect(res.output).toMatch(/not approved/i);
+    expect(res.output).toContain(CREDENTIAL_HELPERS_ENV);
+    expect(res.output).toMatch(/SSH/i);
+    expect(res.output).not.toMatch(/not approved/i);
     expect(res.output).not.toContain(helper);
     expect(res.reload).toBe(false);
     const after = readMinimalBridgeState({ agentDir });
