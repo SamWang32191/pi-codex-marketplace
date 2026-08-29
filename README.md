@@ -53,6 +53,19 @@ Nine subcommands, no arguments = 總覽：
 - 安裝成功後由指令層主動要求 reload；reload 失敗不影響已記錄狀態，下次 session start 或 `/reload` 仍生效。
 - `--no-skills` 啟動 Pi 不影響 Bridge 投影。
 
+### 私有 Git repo：Credentialed Acquisition（核准式取得）
+
+預設 `add`／`update` 對 Git 來源完全 credential-free：不執行任何 credential helper，私有 HTTPS repo 會以 401 失敗（並提示核准或改用 SSH）。若要核准 credential helper，以逗號分隔設定環境變數（逐次生效、永不持久化，`add` 與 `update` 共用）：
+
+```
+PI_CODEX_MARKETPLACE_CREDENTIAL_HELPERS='store, !f() { echo "username=${GITHUB_USER}"; echo "password=${GITHUB_TOKEN}"; }; f'
+/codex-marketplace add https://github.com/acme/private-mkt
+```
+
+- 值為 git `credential.helper` 字串，逗號分隔、各項 trim、空項目忽略；未設定或空白＝未核准（行為與 credential-free 完全相同）。
+- 已核准 helper 仍被遠端拒絕（401）時，錯誤訊息提示檢查憑證；未核准時提示核准或改用 SSH。
+- 憑證與核准清單**永不**進入指令輸出、Bridge State、快照指紋或 cache 位址；SSH（known_hosts + agent）是私有 repo 的另一條替代路徑，完全不需要此環境變數。
+
 ## Bridge State storage
 
 Bridge State 是唯一權威，存於**單一 Global Scope 文件** `{getAgentDir()}/codex-marketplace/state.json`（`~/.pi/agent/codex-marketplace/state.json`）：

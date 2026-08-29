@@ -15,6 +15,7 @@ import { join } from 'node:path';
 
 import { CODE, RULE, blocking, type ValidationFinding } from './findings.js';
 import type { CanonicalGitLocator } from './git-locator.js';
+import { CREDENTIAL_HELPERS_ENV } from './credential-helpers.js';
 
 export interface GitExecutor {
   (args: string[], opts?: { cwd?: string; env?: Record<string, string> }): Promise<{
@@ -126,11 +127,28 @@ function isFullHex(s: string): boolean {
   return /^[0-9a-f]{40}$/.test(s) || /^[0-9a-f]{64}$/.test(s);
 }
 
+function authFailureFinding(approvedHelpers: boolean, stderr: string): ValidationFinding {
+  const why = approvedHelpers
+    ? `approved credential helper was rejected by the remote — check your credentials`
+    : `credential helper/agent not approved — set ${CREDENTIAL_HELPERS_ENV} to approve one, or use SSH`;
+  return trustFinding(
+    CODE.GIT_ACQUISITION_FAILED,
+    RULE.GIT_TRUST_CREDENTIAL_HELPER,
+    `Acquisition Trust Base violation: ${why} — ${stderr.trim()}`,
+  );
+}
+
+function isAuthFailure(stderr: string): boolean {
+  const lower = stderr.toLowerCase();
+  return lower.includes('could not read username') || lower.includes('authentication failed') || lower.includes('credential');
+}
+
 async function resolveHead(
   locator: CanonicalGitLocator,
   executor: GitExecutor,
   env: Record<string, string>,
   configArgs: string[],
+  approvedHelpers: boolean,
 ): Promise<{ ok: true; sha: string } | { ok: false; findings: ValidationFinding[]; stderr?: string }> {
   const lsArgs = [...configArgs, 'ls-remote', locator.canonicalUrl, 'HEAD'];
   const res = await executor(lsArgs, { env });
@@ -160,16 +178,10 @@ async function resolveHead(
         stderr: res.stderr,
       };
     }
-    if (stderr.includes('could not read username') || stderr.includes('authentication failed') || stderr.includes('credential')) {
+    if (isAuthFailure(stderr)) {
       return {
         ok: false,
-        findings: [
-          trustFinding(
-            CODE.GIT_ACQUISITION_FAILED,
-            RULE.GIT_TRUST_CREDENTIAL_HELPER,
-            `Acquisition Trust Base: credential helper/agent not approved — ${res.stderr.trim()}`,
-          ),
-        ],
+        findings: [authFailureFinding(approvedHelpers, res.stderr)],
         stderr: res.stderr,
       };
     }
@@ -211,7 +223,8 @@ export async function resolveGitRevision(
 ): Promise<{ ok: true; sha: string } | { ok: false; findings: ValidationFinding[]; stderr?: string }> {
   const env = hardenedEnv(opts.trust, locator);
   const configArgs = hardenedConfigArgs(opts.trust);
-  return resolveHead(locator, opts.executor ?? defaultGitExecutor(), env, configArgs);
+  const approvedHelpers = (opts.trust?.allowedCredentialHelpers?.length ?? 0) > 0;
+  return resolveHead(locator, opts.executor ?? defaultGitExecutor(), env, configArgs, approvedHelpers);
 }
 
 /**
@@ -224,7 +237,7 @@ export async function acquireGitSource(opts: AcquireOptions): Promise<AcquireRes
   const env = hardenedEnv(trust, locator);
   const configArgs = hardenedConfigArgs(trust);
 
-  const resolved = await resolveHead(locator, executor, env, configArgs);
+  const resolved = await resolveHead(locator, executor, env, configArgs, (trust?.allowedCredentialHelpers?.length ?? 0) > 0);
   if (!resolved.ok) {
     return { ok: false, findings: (resolved as { findings: ValidationFinding[] }).findings, stderr: (resolved as { stderr?: string }).stderr };
   }
@@ -267,6 +280,14 @@ export async function acquireGitSource(opts: AcquireOptions): Promise<AcquireRes
         findings: [
           trustFinding(CODE.GIT_TRUST_REDIRECT, RULE.GIT_TRUST_REDIRECT, `Acquisition Trust Base violation: redirect changing canonical locator — ${stderr.trim()}`),
         ],
+        stderr,
+      };
+    }
+    if (isAuthFailure(stderr)) {
+      if (createdTemp) try { rmSync(dest, { recursive: true, force: true }); } catch {}
+      return {
+        ok: false,
+        findings: [authFailureFinding((trust?.allowedCredentialHelpers?.length ?? 0) > 0, stderr)],
         stderr,
       };
     }
