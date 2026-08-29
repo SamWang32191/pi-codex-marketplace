@@ -65,7 +65,7 @@ The constrained host components trusted during Source Acquisition: the selected 
 _Avoid_: Project Trust, Plugin trust, sandbox
 
 **Credentialed Acquisition**:
-A Source Acquisition mode in which approved credential helpers may supply credentials while fetching an otherwise credential-free Canonical Git Locator. It is opt-in per invocation, never persisted, and leaves the locator, Validation Snapshot, and cached identity unchanged; the default mode remains credential-free (no helpers approved).
+A Source Acquisition mode in which approved credential helpers may supply credentials while fetching an otherwise credential-free Canonical Git Locator. Approval is per invocation and never persisted: an explicit `PI_CODEX_MARKETPLACE_CREDENTIAL_HELPERS` allowlist fully overrides the default auto-detected fixed allowlist (gh CLI logged in → `!gh auth git-credential`; macOS `osxkeychain`; git `credential-store`); the locator, Validation Snapshot, and cached identity stay unchanged; when nothing is detected the acquisition remains credential-free.
 _Avoid_: embedded credentials, per-source credentials, plaintext token
 
 **Resolved Revision**:
