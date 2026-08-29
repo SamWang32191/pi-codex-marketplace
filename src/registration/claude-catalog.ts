@@ -32,7 +32,7 @@ import {
   type CatalogResult,
   type MarketplaceEntry,
 } from './catalog.js';
-import { parseGitEntrySpec } from './entry-acquisition.js';
+import { parseGitEntrySpec } from './entry-spec.js';
 
 /**
  * Snapshot-relative location of the claude Marketplace Catalog within a Marketplace Root.

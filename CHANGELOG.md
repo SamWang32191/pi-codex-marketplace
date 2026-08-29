@@ -4,6 +4,14 @@ All notable changes to `pi-codex-marketplace` are documented here. Format follow
 
 ## [Unreleased]
 
+### Removed
+- **拆防損毀／生命週期機械＋舊 TUI 殘餘** (#95)：
+  - 移除 receipt／fence／journal／State Revision／CAS／repair／startup reconciliation／migration／refresh／update／update-plan／rebind 機械及其對應測試（`src/journal/`、`src/lifecycle/`、`src/reconciliation/`、`src/bridge-state/{migrate,repair,schema,store,types}.ts`、`src/installation/`、`src/compatibility/`、`src/projection/{runtime,effective-state}.ts`、`src/registration/{fence,receipt,flow,git-flow,registration}.ts`）。
+  - 移除舊 TUI 殘餘與重疊舊 extensions（bridge ledger、transaction sheet、journal view、effective-state view、ui-strings、terminal-presentation 等）；extension 收斂為薄 adapter（`runCommand`＋`resources_discover`）。
+  - 存活消費者收斂：投影僅讀 Minimal Bridge State、Source Cache pinning 讀極簡 state、Entry Acquisition 收斂為 `entry-spec` 純解析（git 家族 entry 一律 unavailable 不取得）。
+  - CONTEXT.md 詞彙與 README 收斂至極簡表面；ADR 0004／0005 標記 superseded。
+  - 全專案 typecheck＋存活測試全綠。
+
 ## [0.3.0] - 2026-08-27
 
 ### Added

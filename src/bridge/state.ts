@@ -17,10 +17,12 @@ import { dirname } from 'node:path';
 import { atomicWriteFile, atomicWriteWithLockSync } from '../bridge-state/atomic.js';
 import { getGlobalStatePath, getLockPath } from '../bridge-state/paths.js';
 
+export type MarketplaceFormat = 'codex' | 'claude';
+
 export interface MinimalRegistration {
   id: string;
   marketplaceName: string;
-  format: 'codex' | 'claude';
+  format: MarketplaceFormat;
   sourceKind: 'local' | 'git';
   source: string;
   alias?: string;
@@ -63,18 +65,31 @@ export interface ReadMinimalStateResult {
   resetReason?: string;
 }
 
+/** The one supported Minimal Bridge State schema version (fixed, never migrated). */
+export const MINIMAL_SCHEMA_VERSION = 1;
+
 export function createEmptyMinimalState(): MinimalBridgeState {
   return {
-    schemaVersion: 1,
+    schemaVersion: MINIMAL_SCHEMA_VERSION,
     registrations: [],
     installations: [],
   };
 }
 
+/**
+ * Whether an Installation participates in Effective State. `enabled` is the durable
+ * installation state; `installationState` is tolerated for older minimal records.
+ */
+export function isInstallationEnabled(inst: MinimalInstallation): boolean {
+  return inst.enabled !== false && inst.installationState !== 'disabled';
+}
+
 export function isMinimalBridgeState(value: unknown): value is MinimalBridgeState {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const o = value as Record<string, unknown>;
-  if (typeof o.schemaVersion !== 'number') return false;
+  // Fail-reset contract: any schema version other than the minimal one is an unrecognized
+  // format (legacy v2/v3 documents included) and is reset to empty, never partially read.
+  if (o.schemaVersion !== MINIMAL_SCHEMA_VERSION) return false;
   if (!Array.isArray(o.registrations) || !Array.isArray(o.installations)) return false;
 
   for (const reg of o.registrations) {
@@ -109,6 +124,36 @@ export function resetMinimalBridgeState(opts: ReadMinimalStateOptions = {}): Min
   const state = createEmptyMinimalState();
   writeMinimalBridgeState(state, opts);
   return state;
+}
+
+/**
+ * Passive read for read-only consumers (Runtime Skill Exposure / resources_discover):
+ * corrupted, unreadable, or shape-mismatched documents contribute an empty state and are
+ * never written back — discovery must never mutate Bridge State. The fail-reset contract
+ * belongs to the command surface, which announces the reset; passive reads stay passive.
+ */
+export function readMinimalBridgeStatePassive(opts: ReadMinimalStateOptions = {}): MinimalBridgeState {
+  const statePath = opts.statePath ?? getGlobalStatePath(opts.agentDir);
+
+  if (!existsSync(statePath)) return createEmptyMinimalState();
+
+  let content: string;
+  try {
+    content = readFileSync(statePath, 'utf-8');
+  } catch {
+    return createEmptyMinimalState();
+  }
+
+  if (content.trim().length === 0) return createEmptyMinimalState();
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return createEmptyMinimalState();
+  }
+
+  return isMinimalBridgeState(parsed) ? parsed : createEmptyMinimalState();
 }
 
 export function readMinimalBridgeState(opts: ReadMinimalStateOptions = {}): ReadMinimalStateResult {

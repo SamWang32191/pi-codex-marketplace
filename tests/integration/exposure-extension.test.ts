@@ -2,9 +2,9 @@
  * Integration: the Bridge Extension registers the host resource-discovery handler and returns
  * Runtime Skill Exposure paths through `resources_discover` (Issue #54, ADR 0001).
  *
- * Global-only (#61): discovery reads the single Global document only. External observable
- * behavior only: startup and reload reasons produce identical contributions, and passive
- * inspection writes no Attempt Receipt.
+ * Global-only (#61, 極簡 #87): discovery reads the single Minimal Bridge State document only.
+ * External observable behavior only: startup and reload reasons produce identical
+ * contributions, and passive inspection mutates nothing.
  */
 
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -14,10 +14,8 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import registerBridgeExtension from '../../extensions/pi/index.js';
-import { commitBridgeState } from '../../src/bridge-state/store.js';
-import { getReceiptsJournalPath } from '../../src/bridge-state/paths.js';
+import { readMinimalBridgeState, writeMinimalBridgeState } from '../../src/bridge/state.js';
 import { SourceCache } from '../../src/cache/source-cache.js';
-import type { BridgeState } from '../../src/bridge-state/types.js';
 
 const GLOBAL_REG = '11111111-1111-4111-8111-111111111111';
 const FINGERPRINT = 'a'.repeat(64);
@@ -63,35 +61,34 @@ function makeEnv() {
 }
 
 async function seedEnabledGlobalInstallation(agentDir: string): Promise<void> {
-  await commitBridgeState((state: BridgeState) => ({
-      ...state,
-      registrations: [
-        ...state.registrations,
-        {
-          id: GLOBAL_REG,
-          alias: 'acme',
-          marketplaceName: 'acme-marketplace',
-          sourceKind: 'git' as const,
-          source: 'https://github.com/acme/marketplace.git',
-          canonicalLocator: 'https://github.com/acme/marketplace.git',
-          validationSnapshot: FINGERPRINT,
-        },
-      ],
-      installations: [
-        ...state.installations,
-        {
-          id: `global/${GLOBAL_REG}/acme-marketplace/release-helper`,
-          pluginId: `${GLOBAL_REG}/acme-marketplace/release-helper`,
-          installationState: 'enabled' as const,
-          registrationId: GLOBAL_REG,
-          marketplaceEntryId: `${GLOBAL_REG}/acme-marketplace/plugins/0`,
-          validationSnapshot: `bound-${FINGERPRINT.slice(0, 8)}`,
-          manifestName: 'release-helper',
-        },
-      ],
-    }),
-    { agentDir },
-  );
+  writeMinimalBridgeState({
+    schemaVersion: 1,
+    registrations: [
+      {
+        id: GLOBAL_REG,
+        alias: 'acme',
+        marketplaceName: 'acme-marketplace',
+        format: 'codex',
+        sourceKind: 'git',
+        source: 'https://github.com/acme/marketplace.git',
+        snapshot: FINGERPRINT,
+      },
+    ],
+    installations: [
+      {
+        id: 'release-helper',
+        pluginId: 'release-helper',
+        enabled: true,
+        installationState: 'enabled',
+        registrationId: GLOBAL_REG,
+        manifestName: 'release-helper',
+        sourceKind: 'git',
+        source: 'https://github.com/acme/marketplace.git',
+        snapshot: `bound-${FINGERPRINT.slice(0, 8)}`,
+        skills: ['release-notes'],
+      },
+    ],
+  }, { agentDir });
 }
 
 let envs: ReturnType<typeof makeEnv>[] = [];
@@ -130,7 +127,7 @@ describe('Bridge Extension resources_discover seam (#54)', () => {
     expect(existsSync(join(startup.skillPaths![0]!, 'SKILL.md'))).toBe(true);
   });
 
-  it('contributes identically regardless of the host trust flag (Global-only) and writes no Attempt Receipt', async () => {
+  it('contributes identically regardless of the host trust flag (Global-only) and mutates no state', async () => {
     const env = makeEnv();
     envs.push(env);
     await new SourceCache({ agentDir: env.agentDir }).storeTree(env.marketplace, FINGERPRINT);
@@ -152,7 +149,7 @@ describe('Bridge Extension resources_discover seam (#54)', () => {
     );
     expect(trusted.skillPaths).toEqual(untrusted.skillPaths);
 
-    // Passive inspection creates none.
-    expect(existsSync(getReceiptsJournalPath(env.agentDir))).toBe(false);
+    // Passive inspection creates none: state document is untouched.
+    expect(readMinimalBridgeState({ agentDir: env.agentDir }).state.installations).toHaveLength(1);
   });
 });

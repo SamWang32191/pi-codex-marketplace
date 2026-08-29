@@ -1,5 +1,7 @@
 # 統一 Compatibility Profile v2 取代凍結 v1 (Unified Compatibility Profile v2 replacing frozen v1)
 
+> **Status: superseded（#95 拆除）** — Compatibility Profile v2 儀式已整層退場（極簡 #87 §7）：不再有原子三分法分類、Agent Profile（`openai.yaml`）解析、resources 掃描或 captureFingerprint；雙格式支援收斂為 catalog 解析＋manifest 名稱讀取。本記錄保留為歷史決策參考。
+
 導入 Claude 外掛支援後，Bridge 需處理兩種不同 manifest 結構（`.codex-plugin/plugin.json` 與 `.claude-plugin/plugin.json`）及各自的技能與中繼資料規範。決定：**以單一統一的 Compatibility Profile v2 取代並凍結 Profile v1，將 Validation Ruleset 跳升至 v2，強制雙格式外掛在同一套嚴格規則集下進行原子分類；Claude 與 Codex 外掛享有完全一致的生命週期、碰撞解析與全有全無語意。**
 
 ## Decisions

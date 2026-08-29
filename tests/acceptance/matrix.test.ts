@@ -4,9 +4,9 @@
  * This file is the matrix runner that will be enforced by .github/workflows/ci.yml.
  *
  * Tiers:
- * - unit: pure-function seams (selector/locator/contained/budget/profile/effective-state/collision)
- * - integration: Bridge State atomic WAL + file lock + Cache pinning/LRU/flock + Receipt Journal, Git acquisition, lifecycle WAL commits
- * - E2E (highest seam — TUI): /codex-marketplace aggregated command through the mocked TUI seam, covering disclosure, confirmation, receipt, partitioned lists, skill-granular diagnostics, cache observability.
+ * - unit: pure-function seams (selector/locator/contained/budget/collision)
+ * - integration: Minimal Bridge State atomic persistence + file lock + Cache pinning/LRU/flock + Git acquisition
+ * - E2E (highest seam): /codex-marketplace thin Pi adapter command through the mocked host seam, covering overview/help output and reload gating.
  *
  * Fixtures:
  * - synthetic: deterministic small marketplace (deterministic entries, stable fingerprint)
@@ -44,12 +44,12 @@ describe('Acceptance matrix — per-row gates (smoke that each layer is covered)
     expect(res.ok && (res as any).selector.canonical).toBe('refs/heads/main');
   });
 
-  it('integration row — synthetic: Bridge State WAL atomic commit exercised', async () => {
-    const { createEmptyState, CURRENT_SCHEMA_VERSION } = await import('../../src/bridge-state/types.js');
-    expect(createEmptyState().schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+  it('integration row — synthetic: Minimal Bridge State atomic persistence exercised', async () => {
+    const { createEmptyMinimalState } = await import('../../src/bridge/state.js');
+    expect(createEmptyMinimalState().schemaVersion).toBe(1);
   });
 
-  it('E2E row — synthetic: TUI aggregated command highest seam is exposed', async () => {
+  it('E2E row — synthetic: /codex-marketplace thin adapter highest seam is exposed', async () => {
     const mod = await import('../../extensions/pi/index.js');
     expect(mod.default).toBeDefined();
   });

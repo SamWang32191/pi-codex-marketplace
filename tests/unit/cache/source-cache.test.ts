@@ -9,7 +9,8 @@ import {
   SourceCache,
   treeBytes,
 } from '../../../src/cache/source-cache.js';
-import type { BridgeState, Registration } from '../../../src/bridge-state/types.js';
+import { writeMinimalBridgeState, type MinimalBridgeState } from '../../../src/bridge/state.js';
+import { getGlobalStatePath } from '../../../src/bridge-state/paths.js';
 
 const FP_A = 'a'.repeat(64);
 const FP_B = 'b'.repeat(64);
@@ -63,19 +64,30 @@ describe('SourceCache (Git-only, fingerprint-addressed)', () => {
     const mk = (fp: string) => makeTree(join(root, `src-${fp.slice(0, 4)}`), marker);
     // Budget sized so exactly one LRU eviction occurs among three equal trees.
     const probe = treeBytes(mk(FP_A));
-    cache = new SourceCache({ root, budgetBytes: Math.floor(probe * 2.5), clock: () => (tick += 10) });
 
-    await cache.storeTree(mk(FP_A), FP_A); // oldest
-    await cache.storeTree(mk(FP_B), FP_B);
-    // A pending Update Candidate fingerprint is pinned (not itself stored here).
-    cache.recordPendingUpdate({ registrationId: 'r1', fingerprint: FP_PINNED });
-    await cache.storeTree(mk(FP_C), FP_C);
-    await cache.prune();
+    // A Minimal Bridge State referenced fingerprint is pinned (not itself stored here).
+    // The state document lives in a per-test agent dir following the production layout
+    // (<agentDir>/codex-marketplace/state.json next to <agentDir>/codex-marketplace/cache),
+    // so it is cleaned up with this test's own temp root — never the shared OS tmpdir.
+    const agentDir = join(root, 'agent');
+    const layoutCache = new SourceCache({ root: join(agentDir, 'codex-marketplace', 'cache'), budgetBytes: Math.floor(probe * 2.5), clock: () => (tick += 10) });
+    writeMinimalBridgeState(
+      {
+        schemaVersion: 1,
+        registrations: [{ id: 'r1', marketplaceName: 'm', format: 'codex', sourceKind: 'git', source: 'https://example.com/m.git', snapshot: FP_PINNED }],
+        installations: [],
+      } satisfies MinimalBridgeState,
+      { statePath: getGlobalStatePath(agentDir) },
+    );
+    await layoutCache.storeTree(mk(FP_A), FP_A); // oldest
+    await layoutCache.storeTree(mk(FP_B), FP_B);
+    await layoutCache.storeTree(mk(FP_C), FP_C);
+    await layoutCache.prune();
 
-    // FP_A (oldest unpinned) must be evicted; newer entries remain.
-    expect(existsSync(cache.entryPath(FP_A))).toBe(false);
-    expect(existsSync(cache.entryPath(FP_B))).toBe(true);
-    expect(existsSync(cache.entryPath(FP_C))).toBe(true);
+    // FP_A (oldest unpinned in the layout cache) must be evicted; newer entries remain.
+    expect(existsSync(layoutCache.entryPath(FP_A))).toBe(false);
+    expect(existsSync(layoutCache.entryPath(FP_B))).toBe(true);
+    expect(existsSync(layoutCache.entryPath(FP_C))).toBe(true);
   });
 
   it('never evicts in-flight entries even over budget', async () => {
@@ -122,47 +134,33 @@ describe('SourceCache (Git-only, fingerprint-addressed)', () => {
     await expect(cache.withFingerprintLock(FP_A, () => 'ok')).resolves.toBe('ok');
   });
 
-  it('records and clears pending Update Candidate fingerprints', () => {
-    cache.recordPendingUpdate({ registrationId: 'reg-1', fingerprint: FP_A });
-    cache.recordPendingUpdate({ registrationId: 'reg-1', fingerprint: FP_B }); // replaces root
-    cache.recordPendingUpdate({ registrationId: 'reg-1', entryId: '/plugins/0', fingerprint: FP_A }); // keeps entry 0
-    cache.recordPendingUpdate({ registrationId: 'reg-2', fingerprint: FP_C });
-    expect(cache.pendingUpdates().map((r) => r.fingerprint).sort()).toEqual([FP_A, FP_B, FP_C].sort());
-    cache.clearPendingUpdate('reg-1');
-    expect(cache.pendingUpdates().map((r) => r.fingerprint)).toEqual([FP_C]);
-  });
-
-  it('offline reuse requires an exact index fingerprint match AND a present entry', async () => {
-    const src = makeTree(join(root, 'src'));
-    await cache.storeTree(src, FP_A);
+  it('records and clears the locator+selector index', async () => {
     cache.recordIndex({
       fingerprint: FP_A,
       resolvedRevision: '1'.repeat(40),
       canonicalLocator: 'https://github.com/acme/plugins.git',
       selectorCanonical: 'refs/heads/main',
     });
-    const hit = await cache.offlineHit('https://github.com/acme/plugins.git', 'refs/heads/main', FP_A);
-    expect(hit?.fingerprint).toBe(FP_A);
-    // Different expected fingerprint → no hit (Stale Snapshot never becomes success).
-    expect(await cache.offlineHit('https://github.com/acme/plugins.git', 'refs/heads/main', FP_B)).toBeNull();
-    // Unknown selector → no hit.
-    expect(await cache.offlineHit('https://github.com/acme/plugins.git', 'refs/tags/v1', FP_A)).toBeNull();
-    // Missing entry → no hit even with matching index.
-    rmSync(cache.entryPath(FP_A), { recursive: true, force: true });
-    expect(await cache.offlineHit('https://github.com/acme/plugins.git', 'refs/heads/main', FP_A)).toBeNull();
+    expect(cache.readIndex()['https://github.com/acme/plugins.git\u001frefs/heads/main']?.fingerprint).toBe(FP_A);
+    // A different locator+selector pair has no record.
+    expect(cache.readIndex()['https://github.com/acme/plugins.git\u001frefs/tags/v1']).toBeUndefined();
   });
 
-  it('collects pinned fingerprints from Bridge State documents without I/O', () => {
-    const globalState = {
-      registrations: [{ validationSnapshot: FP_A }],
-      installations: [{ validationSnapshot: FP_B }],
-    } as unknown as BridgeState;
-    const projectState = {
-      registrations: [],
-      installations: [{ validationSnapshot: FP_C }],
-    } as unknown as BridgeState;
-    const pinned = SourceCache.pinnedFromStates([globalState, projectState]);
-    expect(pinned).toEqual(new Set([FP_A, FP_B, FP_C]));
+  it('pins fingerprints referenced by Minimal Bridge State (registrations and installations)', async () => {
+    const agentDir = join(root, 'agent');
+    const layoutCache = new SourceCache({ root: join(agentDir, 'codex-marketplace', 'cache'), clock: () => (tick += 10) });
+    const src = makeTree(join(root, 'src'));
+    await layoutCache.storeTree(src, FP_A);
+    writeMinimalBridgeState(
+      {
+        schemaVersion: 1,
+        registrations: [{ id: 'r1', marketplaceName: 'm', format: 'codex', sourceKind: 'git', source: 'https://example.com/m.git', snapshot: FP_A }],
+        installations: [{ id: 'i1', pluginId: 'p1', enabled: true, registrationId: 'r1', manifestName: 'p1', sourceKind: 'git', source: 'https://example.com/m.git', snapshot: FP_A }],
+      } satisfies MinimalBridgeState,
+      { statePath: getGlobalStatePath(agentDir) },
+    );
+    const pinned = await layoutCache.statePinnedFingerprints();
+    expect(pinned).toEqual(new Set([FP_A]));
   });
 
   it('serves an exact-fingerprint hit synchronously with hitExactSync', async () => {
