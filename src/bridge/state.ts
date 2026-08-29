@@ -17,10 +17,12 @@ import { dirname } from 'node:path';
 import { atomicWriteFile, atomicWriteWithLockSync } from '../bridge-state/atomic.js';
 import { getGlobalStatePath, getLockPath } from '../bridge-state/paths.js';
 
+export type MarketplaceFormat = 'codex' | 'claude';
+
 export interface MinimalRegistration {
   id: string;
   marketplaceName: string;
-  format: 'codex' | 'claude';
+  format: MarketplaceFormat;
   sourceKind: 'local' | 'git';
   source: string;
   alias?: string;

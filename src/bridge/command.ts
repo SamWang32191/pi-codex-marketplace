@@ -11,7 +11,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 
 import { parseFrontmatter } from '@earendil-works/pi-coding-agent';
 
-import { readMinimalBridgeState, writeMinimalBridgeState, type MinimalBridgeState } from './state.js';
+import { readMinimalBridgeState, writeMinimalBridgeState, type MinimalBridgeState, type MarketplaceFormat } from './state.js';
 import { BUDGET } from '../registration/budget.js';
 import { localSourceKey } from '../registration/source-key.js';
 import {
@@ -22,7 +22,6 @@ import {
 } from '../registration/format.js';
 import { resolveContained } from '../registration/contained.js';
 import { GIT_FAMILY_UNAVAILABLE_REASON, type Catalog, type MarketplaceEntry } from '../registration/catalog.js';
-import type { MarketplaceFormat } from '../bridge-state/types.js';
 import type { ValidationFinding } from '../registration/findings.js';
 import { normalizeGitLocator } from '../registration/git-locator.js';
 import type { NormalizedGitSelector } from '../registration/git-selector.js';
@@ -360,11 +359,11 @@ function findRegistrationIndex(state: MinimalBridgeState, name: string): number 
 }
 
 /**
- * Best-effort refresh for enable: mirrors install Step1-3 (sourceRoot -> catalogRoot -> readCatalog -> entry -> resolveContained -> collectSkillNames).
+ * Best-effort reread for enable: mirrors install Step1-3 (sourceRoot -> catalogRoot -> readCatalog -> entry -> resolveContained -> collectSkillNames).
  * Returns undefined on any missing cache/catalog/entry/path — caller falls back to stored skills.
  * Pure-logic branches (find/entry.path/resolveContained outcome) do not throw; only I/O (readCatalogForReg/collectSkillNames) is try/catch guarded.
  */
-function tryRefreshSkills(
+function tryRereadSkills(
   reg: MinimalBridgeState['registrations'][number],
   inst: MinimalBridgeState['installations'][number],
   opts: CommandOptions,
@@ -414,7 +413,7 @@ function findEntryByManifestName(catalog: Catalog, manifestName: string): Market
   );
 }
 
-interface PluginRefreshOutcome {
+interface PluginRereadOutcome {
   ok: boolean;
   manifestName: string;
   skillNames: string[];
@@ -429,12 +428,12 @@ interface PluginRefreshOutcome {
  * catalog → 重解析 manifest＋skills，回傳刷新結果由呼叫端套用。純邏輯分支不拋；
  * 僅 I/O（readCatalogForReg／readManifestName／collectSkillNames）由各函式內部 try/catch 守護。
  */
-function refreshInstalledPlugin(
+function rereadInstalledPlugin(
   root: string,
   format: 'codex' | 'claude',
   inst: MinimalBridgeState['installations'][number],
   installations: MinimalBridgeState['installations'],
-): PluginRefreshOutcome {
+): PluginRereadOutcome {
   const read = readCatalogForReg(root, format);
   if (read.error || !read.catalog) {
     return {
@@ -1175,7 +1174,7 @@ export async function runCommand(
             const cacheRoot = catalogRootForReg(reg, opts);
             if (cacheRoot) {
               for (const inst of insts) {
-                const outcome = refreshInstalledPlugin(cacheRoot, format, inst, state.installations);
+                const outcome = rereadInstalledPlugin(cacheRoot, format, inst, state.installations);
                 if (!outcome.ok) {
                   failures.push(`${inst.manifestName} 更新失敗：${outcome.error}`);
                   continue;
@@ -1219,7 +1218,7 @@ export async function runCommand(
             }
             let changed = false;
             for (const inst of insts) {
-              const outcome = refreshInstalledPlugin(reg.source, format, inst, state.installations);
+              const outcome = rereadInstalledPlugin(reg.source, format, inst, state.installations);
               if (!outcome.ok) {
                 failures.push(`${inst.manifestName} 更新失敗：${outcome.error}`);
                 continue;
@@ -1313,7 +1312,7 @@ export async function runCommand(
             } else {
               const reg = state.registrations.find((r) => r.id === inst.registrationId);
               // 收斂 best-effort 邊界：僅 I/O 包 try/catch，純邏輯不拋；失敗則沿用舊 skills
-              const refreshedSkills = reg ? tryRefreshSkills(reg as any, inst as any, opts) : undefined;
+              const refreshedSkills = reg ? tryRereadSkills(reg as any, inst as any, opts) : undefined;
               const backup = { ...inst };
               setInstallationEnabled(inst as any, true);
               if (refreshedSkills) (inst as any).skills = refreshedSkills;

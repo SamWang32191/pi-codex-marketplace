@@ -60,20 +60,6 @@ export interface ValidationSnapshot {
   selectorCanonical?: string;
 }
 
-/**
- * Bind material captured while deriving a disclosure into the Validation Snapshot.
- * The base tree fingerprint remains available to registration-drift checks, while the
- * activation snapshot also proves the exact catalog/profile bytes observed by preflight.
- */
-export function bindCapturedMaterial(snapshot: ValidationSnapshot, captureFingerprint: string): ValidationSnapshot {
-  const fingerprint = createHash('sha256')
-    .update(snapshot.fingerprint)
-    .update('\u001f')
-    .update(captureFingerprint)
-    .digest('hex');
-  return { ...snapshot, fingerprint };
-}
-
 export interface SnapshotResult {
   ok: boolean;
   snapshot?: ValidationSnapshot;
@@ -98,8 +84,8 @@ function fingerprintOf(entries: SnapshotEntry[], binds: string[]): string {
 const IGNORE_DIRS = new Set(['.git', 'node_modules']);
 // Rationale: a local Marketplace Root that is a git clone must not let the Bridge's own VCS
 // metadata (.git) or vendored dependency trees (node_modules) churn the fingerprint; the
-// snapshot still records the directory entries themselves at their own depth. Full snapshot
-// semantics over these dirs is revisited with Source Drift (#22).
+// snapshot still records the directory entries themselves at their own depth. The fingerprint
+// is the cache addressing key for Git Registrations（投影直讀位址）.
 
 function walkTree(
   canonicalRoot: string,

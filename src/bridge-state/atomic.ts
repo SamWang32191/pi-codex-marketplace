@@ -1,5 +1,5 @@
 /**
- * Atomic file utilities: WAL + write-to-temp → fsync → rename + file lock + read-after-verify
+ * Atomic file utilities: write-to-temp → fsync → rename + file lock + read-after-verify.
  *
  * Guarantees:
  * - Cross-process concurrent writers do not corrupt the file (lock + atomic rename)
@@ -7,9 +7,8 @@
  * - Durability: fsync temp file and parent dir before/after rename
  * - Verification: read back persisted content and compare
  *
- * Fail-closed contract:
- * - If neither previous nor target State Revision can be verified, caller should treat as Persistence Indeterminate
- * - If previous revision still verified, it's Persistence Failed
+ * Fail-closed contract: callers treat an unverified write as failure; the minimal state store
+ * and the Source Cache are the only consumers.
  *
  * Lock strategy: advisory lock file atomically published from a fully-fsynced same-directory temp file.
  * A lock is reclaimed only when its same-host owner can be proven dead; unknown ownership fails closed.

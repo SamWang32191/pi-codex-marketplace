@@ -3,9 +3,9 @@
  * resource-discovery seam. See CONTEXT.md: Runtime Skill Exposure, Projected Skill,
  * Effective State, Runtime Skill Collision.
  *
- * Global-only (#61): discovery reads the single Global document only. Only external observable
- * behavior is asserted: which skill directories are contributed, which Installations are skipped
- * and why, that discovery never mutates Bridge State and never writes an Attempt Receipt, and
+ * Global-only (#61, 極簡 #87): discovery reads the single Minimal Bridge State document only.
+ * Only external observable behavior is asserted: which skill directories are contributed,
+ * which Installations are skipped and why, that discovery never mutates Bridge State, and
  * that missing cache material never fails discovery.
  */
 
@@ -16,10 +16,8 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { discoverProjectedSkillPaths } from '../../../src/projection/exposure.js';
-import { commitBridgeState, readBridgeStateSync } from '../../../src/bridge-state/store.js';
-import { getReceiptsJournalPath } from '../../../src/bridge-state/paths.js';
+import { readMinimalBridgeState, writeMinimalBridgeState, type MinimalBridgeState } from '../../../src/bridge/state.js';
 import { SourceCache } from '../../../src/cache/source-cache.js';
-import type { BridgeState } from '../../../src/bridge-state/types.js';
 
 const GLOBAL_REG = '11111111-1111-4111-8111-111111111111';
 
@@ -63,36 +61,34 @@ async function seedGitRegistrationAndCache(env: ReturnType<typeof makeEnv>, opts
   const cache = new SourceCache({ agentDir: env.agentDir });
   const fingerprint = 'a'.repeat(64);
   await cache.storeTree(env.marketplace, fingerprint);
-  await commitBridgeState((state: BridgeState) => ({
-      ...state,
-      registrations: [
-        ...state.registrations,
-        {
-          id: registrationId,
-          alias: 'acme',
-          marketplaceName: 'acme-marketplace',
-          sourceKind: 'git' as const,
-          source: 'https://github.com/acme/marketplace.git',
-          canonicalLocator: 'https://github.com/acme/marketplace.git',
-          validationSnapshot: fingerprint,
-        },
-      ],
-      installations: [
-        ...state.installations,
-        {
-          // Legacy persisted Installation ID form ('global/<pluginId>') must stay recognizable.
-          id: `global/${registrationId}/acme-marketplace/release-helper`,
-          pluginId: `${registrationId}/acme-marketplace/release-helper`,
-          installationState: 'enabled' as const,
-          registrationId,
-          marketplaceEntryId: `${registrationId}/acme-marketplace/plugins/0`,
-          validationSnapshot: `bound-${fingerprint.slice(0, 8)}`,
-          manifestName: 'release-helper',
-        },
-      ],
-    }),
-    { agentDir: env.agentDir },
-  );
+  writeMinimalBridgeState({
+    schemaVersion: 1,
+    registrations: [
+      {
+        id: registrationId,
+        alias: 'acme',
+        marketplaceName: 'acme-marketplace',
+        format: 'codex',
+        sourceKind: 'git',
+        source: 'https://github.com/acme/marketplace.git',
+        snapshot: fingerprint,
+      },
+    ],
+    installations: [
+      {
+        id: 'release-helper',
+        pluginId: 'release-helper',
+        enabled: true,
+        installationState: 'enabled',
+        registrationId,
+        manifestName: 'release-helper',
+        sourceKind: 'git',
+        source: 'https://github.com/acme/marketplace.git',
+        snapshot: `bound-${fingerprint.slice(0, 8)}`,
+        skills: ['release-notes', 'changelog'],
+      },
+    ],
+  }, { agentDir: env.agentDir });
   return { fingerprint };
 }
 
@@ -124,9 +120,9 @@ describe('Runtime Skill Exposure — contribution', () => {
     expect(result.exposed.map((s) => s.name).sort()).toEqual(['changelog', 'release-notes']);
     expect(result.skipped).toEqual([]);
     for (const exposed of result.exposed) {
-      expect(exposed.pluginId).toBe(`${GLOBAL_REG}/acme-marketplace/release-helper`);
-      expect(exposed.installationId).toBe(`global/${GLOBAL_REG}/acme-marketplace/release-helper`);
-      expect(exposed.skillId).toBe(`${GLOBAL_REG}/acme-marketplace/release-helper/${exposed.name}`);
+      expect(exposed.pluginId).toBe('release-helper');
+      expect(exposed.installationId).toBe('release-helper');
+      expect(exposed.skillId).toBe(`release-helper/${exposed.name}`);
       expect(realpathSync(exposed.skillDir)).toBe(
         realpathSync(join(new SourceCache({ agentDir: env.agentDir }).entryPath(fingerprint), 'plugins', 'release-helper', 'skills', exposed.name)),
       );
@@ -147,18 +143,19 @@ describe('Runtime Skill Exposure — contribution', () => {
   it('excludes disabled Installations — only enabled participate', async () => {
     const env = freshEnv();
     makeMarketplace(env.marketplace, 'release-helper', 'release-helper', ['release-notes']);
-    const { fingerprint } = await seedGitRegistrationAndCache(env);
-    await commitBridgeState((state) => ({
-        ...state,
-        installations: state.installations.map((i) => ({ ...i, installationState: 'disabled' as const })),
-      }),
-      { agentDir: env.agentDir },
-    );
+    await seedGitRegistrationAndCache(env);
+    writeMinimalBridgeState({
+      ...readMinimalBridgeState({ agentDir: env.agentDir }).state,
+      installations: readMinimalBridgeState({ agentDir: env.agentDir }).state.installations.map((i) => ({
+        ...i,
+        enabled: false,
+        installationState: 'disabled' as const,
+      })),
+    }, { agentDir: env.agentDir });
 
     const result = discoverProjectedSkillPaths({ agentDir: env.agentDir });
     expect(result.skillPaths).toEqual([]);
     expect(result.exposed).toEqual([]);
-    void fingerprint;
   });
 
   it('a pre-existing Pi-layer name reserves the name when supplied via piSkillNames', async () => {
@@ -172,11 +169,10 @@ describe('Runtime Skill Exposure — contribution', () => {
 });
 
 describe('Runtime Skill Exposure — passive inspection only', () => {
-  it('skips a deleted cache entry without failing, without mutating State, and without writing an Attempt Receipt', async () => {
+  it('skips a deleted cache entry without failing and without mutating State', async () => {
     const env = freshEnv();
     makeMarketplace(env.marketplace, 'release-helper', 'release-helper', ['release-notes']);
     const { fingerprint } = await seedGitRegistrationAndCache(env);
-    const revisionBefore = readBridgeStateSync({ agentDir: env.agentDir }).state!.stateRevision;
 
     // External deletion outside any lifecycle operation.
     const cache = new SourceCache({ agentDir: env.agentDir });
@@ -188,9 +184,8 @@ describe('Runtime Skill Exposure — passive inspection only', () => {
     expect(result.skipped).toHaveLength(1);
     expect(result.skipped[0]?.reason).toBe('missing-cache-entry');
 
-    // Passive: no receipt journal materialized, State Revision untouched.
-    expect(readBridgeStateSync({ agentDir: env.agentDir }).state!.stateRevision).toBe(revisionBefore);
-    expect(existsSync(getReceiptsJournalPath(env.agentDir))).toBe(false);
+    // Passive: Bridge State untouched.
+    expect(readMinimalBridgeState({ agentDir: env.agentDir }).state.installations).toHaveLength(1);
   });
 
   it('skips an Installation whose cached catalog cannot be read', async () => {
@@ -210,48 +205,27 @@ describe('Runtime Skill Exposure — passive inspection only', () => {
     const env = freshEnv();
     makeMarketplace(env.marketplace, 'release-helper', 'release-helper', ['release-notes']);
     await seedGitRegistrationAndCache(env);
-    await commitBridgeState((state) => ({
-        ...state,
-        installations: [
-          ...state.installations,
-          {
-            id: `${GLOBAL_REG}/acme-marketplace/ghost`,
-            pluginId: `${GLOBAL_REG}/acme-marketplace/ghost`,
-            installationState: 'enabled' as const,
-            registrationId: GLOBAL_REG,
-            marketplaceEntryId: `${GLOBAL_REG}/acme-marketplace/plugins/99`,
-            validationSnapshot: 'bound-ghost',
-            manifestName: 'ghost',
-          },
-        ],
-      }),
-      { agentDir: env.agentDir },
-    );
+    writeMinimalBridgeState({
+      ...readMinimalBridgeState({ agentDir: env.agentDir }).state,
+      installations: [
+        ...readMinimalBridgeState({ agentDir: env.agentDir }).state.installations,
+        {
+          id: 'ghost',
+          pluginId: 'ghost',
+          enabled: true,
+          installationState: 'enabled',
+          registrationId: GLOBAL_REG,
+          manifestName: 'ghost',
+          sourceKind: 'git',
+          source: 'https://github.com/acme/marketplace.git',
+        },
+      ],
+    }, { agentDir: env.agentDir });
 
     const result = discoverProjectedSkillPaths({ agentDir: env.agentDir });
     expect(result.exposed.map((s) => s.name)).toEqual(['release-notes']); // healthy one stays
-    const ghost = result.skipped.find((s) => s.installationId.endsWith('/ghost'));
+    const ghost = result.skipped.find((s) => s.installationId === 'ghost');
     expect(ghost?.reason).toBe('entry-not-found');
-  });
-
-  it('treats a malformed Marketplace Entry ID as no pointer and falls back to manifestName instead of a tail slice', async () => {
-    const env = freshEnv();
-    makeMarketplace(env.marketplace, 'release-helper', 'release-helper', ['release-notes']);
-    await seedGitRegistrationAndCache(env);
-    // Overwrite the Installation's marketplaceEntryId with an ID lacking the "/plugins/" marker.
-    await commitBridgeState((state) => ({
-        ...state,
-        installations: state.installations.map((installation) =>
-          installation.manifestName === 'release-helper' ? { ...installation, marketplaceEntryId: 'not-a-pointer' } : installation,
-        ),
-      }),
-      { agentDir: env.agentDir },
-    );
-
-    const result = discoverProjectedSkillPaths({ agentDir: env.agentDir });
-    // The retained manifestName still resolves the entry; the malformed ID must not produce a bogus pointer.
-    expect(result.exposed.map((s) => s.name)).toEqual(['release-notes']);
-    expect(result.skipped).toEqual([]);
   });
 
   it('treats a corrupted document as empty instead of failing', async () => {
@@ -267,27 +241,25 @@ describe('Runtime Skill Exposure — passive inspection only', () => {
   it('local Registrations expose skills from their live Marketplace Root without a cache round-trip', async () => {
     const env = freshEnv();
     makeMarketplace(env.marketplace, 'release-helper', 'release-helper', ['local-skill']);
-    await commitBridgeState((state) => ({
-        ...state,
-        registrations: [
-          ...state.registrations,
-          { id: GLOBAL_REG, alias: 'acme-local', marketplaceName: 'acme-marketplace', sourceKind: 'local' as const, source: env.marketplace },
-        ],
-        installations: [
-          ...state.installations,
-          {
-            id: `global/${GLOBAL_REG}/acme-marketplace/release-helper`,
-            pluginId: `${GLOBAL_REG}/acme-marketplace/release-helper`,
-            installationState: 'enabled' as const,
-            registrationId: GLOBAL_REG,
-            marketplaceEntryId: `${GLOBAL_REG}/acme-marketplace/plugins/0`,
-            validationSnapshot: 'local-bound-snapshot',
-            manifestName: 'release-helper',
-          },
-        ],
-      }),
-      { agentDir: env.agentDir },
-    );
+    writeMinimalBridgeState({
+      schemaVersion: 1,
+      registrations: [
+        { id: GLOBAL_REG, alias: 'acme-local', marketplaceName: 'acme-marketplace', format: 'codex', sourceKind: 'local', source: env.marketplace },
+      ],
+      installations: [
+        {
+          id: 'release-helper',
+          pluginId: 'release-helper',
+          enabled: true,
+          installationState: 'enabled',
+          registrationId: GLOBAL_REG,
+          manifestName: 'release-helper',
+          sourceKind: 'local',
+          source: env.marketplace,
+          skills: ['local-skill'],
+        },
+      ],
+    }, { agentDir: env.agentDir });
 
     const result = discoverProjectedSkillPaths({ agentDir: env.agentDir });
     expect(result.exposed.map((s) => s.name)).toEqual(['local-skill']);
@@ -321,34 +293,32 @@ describe('Runtime Skill Exposure — passive inspection only', () => {
       }),
     );
 
-    await commitBridgeState((state) => ({
-        ...state,
-        registrations: [
-          ...state.registrations,
-          {
-            id: GLOBAL_REG,
-            alias: 'matt-local',
-            marketplaceName: 'matt-marketplace',
-            sourceKind: 'local' as const,
-            source: env.marketplace,
-            format: 'claude',
-          },
-        ],
-        installations: [
-          ...state.installations,
-          {
-            id: `${GLOBAL_REG}/matt-marketplace/mattpocock-skills`,
-            pluginId: `${GLOBAL_REG}/matt-marketplace/mattpocock-skills`,
-            installationState: 'enabled' as const,
-            registrationId: GLOBAL_REG,
-            marketplaceEntryId: `${GLOBAL_REG}/matt-marketplace/plugins/0`,
-            validationSnapshot: 'claude-local-bound-snapshot',
-            manifestName: 'mattpocock-skills',
-          },
-        ],
-      }),
-      { agentDir: env.agentDir },
-    );
+    writeMinimalBridgeState({
+      schemaVersion: 1,
+      registrations: [
+        {
+          id: GLOBAL_REG,
+          alias: 'matt-local',
+          marketplaceName: 'matt-marketplace',
+          format: 'claude',
+          sourceKind: 'local',
+          source: env.marketplace,
+        },
+      ],
+      installations: [
+        {
+          id: 'mattpocock-skills',
+          pluginId: 'mattpocock-skills',
+          enabled: true,
+          installationState: 'enabled',
+          registrationId: GLOBAL_REG,
+          manifestName: 'mattpocock-skills',
+          sourceKind: 'local',
+          source: env.marketplace,
+          skills: ['code-review', 'grilling'],
+        },
+      ],
+    }, { agentDir: env.agentDir });
 
     const result = discoverProjectedSkillPaths({ agentDir: env.agentDir });
     expect(result.exposed.map((s) => s.name).sort()).toEqual(['code-review', 'grilling']);
@@ -361,4 +331,3 @@ describe('Runtime Skill Exposure — passive inspection only', () => {
     );
   });
 });
-

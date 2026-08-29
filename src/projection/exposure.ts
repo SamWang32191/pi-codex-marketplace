@@ -2,21 +2,19 @@
  * Runtime Skill Exposure — read-time discovery of Projected Skill directories contributed to Pi
  * through the host resource-discovery seam (`resources_discover` → `skillPaths`).
  * See CONTEXT.md: Runtime Skill Exposure, Projected Skill, Projected Plugin, Effective State,
- * Runtime Skill Collision, Source Cache, Skill Availability.
+ * Runtime Skill Collision, Source Cache.
  *
- * Exposure derives entirely from the current Effective State (enabled Installations) and its
- * collision survivors. It performs passive
- * existence inspection only: no fingerprint recomputation, no Bridge State mutation, and no
- * Attempt Receipt — snapshot-bound validation stays bound to Lifecycle Operations and Runtime
- * Applications. Missing cache entries or unreadable snapshot material are skipped individually;
- * discovery always completes. Exposure never establishes Skill Availability.
+ * Exposure derives entirely from the current Minimal Bridge State (enabled Installations) and its
+ * collision survivors. It performs passive existence inspection only: no fingerprint
+ * recomputation and no Bridge State mutation. Missing cache entries or unreadable snapshot
+ * material are skipped individually; discovery always completes. Exposure never establishes
+ * Skill Availability.
  *
- * Path resolution follows the retained Validation Snapshot locations:
+ * Path resolution follows the retained snapshot locations:
  * - Git Registrations resolve inside the Source Cache entry pinned by their recorded base-tree
- *   fingerprint (the same addressing Marketplace Refresh and inspection reuse; both the
- *   Registration's and Installation's snapshots are state-pinned against eviction).
- * - Local Registrations resolve inside their live Marketplace Root at its canonical real path,
- *   mirroring read-time inspection; drift remains a Lifecycle Operation concern, not discovery's.
+ *   fingerprint (the cache entry is the projection runtime material — projection reads it
+ *   directly, so the fingerprint addressing must never be replaced by another identity).
+ * - Local Registrations resolve inside their live Marketplace Root at its canonical real path.
  */
 
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
@@ -25,15 +23,12 @@ import { basename, join } from 'node:path';
 import { parseFrontmatter } from '@earendil-works/pi-coding-agent';
 
 import { getCacheEntriesDir, getCacheDir } from '../cache/paths.js';
-import { readBridgeStateSync } from '../bridge-state/store.js';
-import { createEmptyState, type BridgeState, type Installation, type MarketplaceFormat, type Registration } from '../bridge-state/types.js';
+import { readMinimalBridgeState, type MarketplaceFormat, type MinimalBridgeState } from '../bridge/state.js';
 import { catalogContractFor } from '../registration/format.js';
 import { type Catalog } from '../registration/catalog.js';
 import { BUDGET } from '../registration/budget.js';
 import { resolveContained } from '../registration/contained.js';
-import { computeEffectiveState } from './effective-state.js';
 import { resolveRuntimeSkillCollisions, type SkillCandidate } from './collision.js';
-import { readMinimalBridgeState } from '../bridge/state.js';
 
 export interface RuntimeSkillExposureOptions {
   /** Pi agent dir; defaults to getAgentDir(). */
@@ -75,19 +70,23 @@ function safeFingerprint(fp: string | undefined): fp is string {
   return typeof fp === 'string' && /^[0-9a-f]{64}$/.test(fp);
 }
 
-/** Passive closed read: corrupted or incompatible documents contribute nothing and never throw. */
-function readGlobalOrEmpty(opts: RuntimeSkillExposureOptions): BridgeState {
-  const read = readBridgeStateSync({ agentDir: opts.agentDir });
-  return read.status === 'ok' || read.status === 'missing' ? read.state! : createEmptyState();
+/** Passive fail-reset read allowed by the fail-reset contract: corrupted state contributes nothing. */
+function readGlobalOrEmpty(opts: RuntimeSkillExposureOptions): MinimalBridgeState {
+  try {
+    return readMinimalBridgeState({ agentDir: opts.agentDir }).state;
+  } catch {
+    return { schemaVersion: 1, registrations: [], installations: [] };
+  }
 }
 
 /**
  * Locate one Installation's plugin directory inside a snapshot root by resolving its
- * Marketplace Entry ID through the retained catalog, then verify containment.
+ * catalog entry (authoritative manifest name first, then entry path basename), then
+ * verify containment.
  */
 function resolvePluginDirInSnapshot(
   snapshotRoot: string,
-  installation: Installation,
+  manifestName: string,
   format: MarketplaceFormat = 'codex',
 ): string | undefined {
   const contract = catalogContractFor(format);
@@ -97,24 +96,21 @@ function resolvePluginDirInSnapshot(
     const parsed: unknown = JSON.parse(readFileSync(catalogPath, 'utf8'));
     const result = contract.parse(parsed);
     if (!result.catalog) return undefined;
-    return resolveEntryPluginDir(snapshotRoot, result.catalog, installation);
+    return resolveEntryPluginDir(snapshotRoot, result.catalog, manifestName);
   } catch {
     return undefined;
   }
 }
 
-function resolveEntryPluginDir(snapshotRoot: string, catalog: Catalog, installation: Installation): string | undefined {
-  // A malformed Marketplace Entry ID without the "/plugins/" marker yields an undefined pointer
-  // so resolution falls back to manifestName instead of degrading to a bogus tail slice.
-  const markerIndex = installation.marketplaceEntryId?.indexOf('/plugins/') ?? -1;
-  const pointer = installation.marketplaceEntryId && markerIndex >= 0
-    ? installation.marketplaceEntryId.slice(markerIndex)
+function resolveEntryPluginDir(snapshotRoot: string, catalog: Catalog, manifestName: string): string | undefined {
+  let entry = manifestName
+    ? catalog.entries.find((item) => item.name === manifestName && item.type === 'local' && item.available && item.path)
     : undefined;
-  let entry = pointer !== undefined
-    ? catalog.entries.find((item) => item.entryId === pointer && item.type === 'local' && item.available && item.path)
-    : undefined;
-  if (!entry && installation.manifestName) {
-    entry = catalog.entries.find((item) => item.name === installation.manifestName && item.type === 'local' && item.available && item.path);
+  if (!entry && manifestName) {
+    entry = catalog.entries.find((item) => item.name === manifestName && item.type === 'local' && item.path);
+  }
+  if (!entry && manifestName) {
+    entry = catalog.entries.find((item) => item.path && basename(item.path) === manifestName && item.type === 'local');
   }
   if (!entry) return undefined;
   const contained = resolveContained(snapshotRoot, entry.path!, 'directory');
@@ -185,15 +181,16 @@ function descriptorSkillName(skillDir: string, descriptorPath: string): string |
 }
 
 /**
- * Compute the Runtime Skill Exposure for the current Effective State. Pure read-time behavior:
- * never mutates either Bridge State document, never writes an Attempt Receipt, never throws on
- * missing material.
+ * Compute the Runtime Skill Exposure for the current Effective State (enabled Installations in
+ * Minimal Bridge State). Pure read-time behavior: never mutates Bridge State and never throws
+ * on missing material.
  */
 export function discoverProjectedSkillPaths(opts: RuntimeSkillExposureOptions = {}): ExposureResult {
   const globalState = readGlobalOrEmpty(opts);
-  const effective = computeEffectiveState(globalState);
-
-  const registrationsById = new Map(effective.registrations.map((registration) => [registration.id, registration]));
+  const installations = globalState.installations.filter(
+    (inst) => (inst as { enabled?: boolean }).enabled !== false && inst.installationState !== 'disabled',
+  );
+  const registrationsById = new Map(globalState.registrations.map((registration) => [registration.id, registration]));
   const entriesRoot = getCacheEntriesDir(getCacheDir(opts.agentDir));
 
   interface Candidate extends SkillCandidate {
@@ -203,16 +200,17 @@ export function discoverProjectedSkillPaths(opts: RuntimeSkillExposureOptions = 
   const candidates: Candidate[] = [];
   const skipped: SkippedInstallation[] = [];
 
-  for (const installation of effective.installations) {
-    const registration: Registration | undefined = registrationsById.get(installation.registrationId ?? '');
-    if (!registration || !installation.marketplaceEntryId) {
+  for (const installation of installations) {
+    const registration = registrationsById.get(installation.registrationId ?? '');
+    const manifestName = installation.manifestName || installation.pluginId;
+    if (!registration || !manifestName) {
       skipped.push({ installationId: installation.id, reason: 'entry-not-found' });
       continue;
     }
 
     let snapshotRoot: string | undefined;
     if (registration.sourceKind === 'local') {
-      // Live registered Marketplace Root at its canonical real path (mirrors inspection).
+      // Live registered Marketplace Root at its canonical real path.
       try {
         snapshotRoot = registration.source && existsSync(registration.source)
           ? realpathSync.native(registration.source)
@@ -221,13 +219,14 @@ export function discoverProjectedSkillPaths(opts: RuntimeSkillExposureOptions = 
         snapshotRoot = undefined;
       }
     } else if (registration.sourceKind === 'git') {
-      if (!safeFingerprint(registration.validationSnapshot)) {
+      const fingerprint = registration.snapshot ?? installation.snapshot;
+      if (!safeFingerprint(fingerprint)) {
         skipped.push({ installationId: installation.id, reason: 'missing-snapshot' });
         continue;
       }
-      // Source Cache addressing matches inspection reuse: the Registration's retained
-      // base-tree fingerprint pins the entry against eviction.
-      const entryDir = join(entriesRoot, registration.validationSnapshot);
+      // Source Cache addressing: projection reads the registered base-tree fingerprint
+      // directly; the entry directory is the projection runtime material.
+      const entryDir = join(entriesRoot, fingerprint);
       if (!existsSync(entryDir)) {
         skipped.push({ installationId: installation.id, reason: 'missing-cache-entry' });
         continue;
@@ -242,8 +241,8 @@ export function discoverProjectedSkillPaths(opts: RuntimeSkillExposureOptions = 
       continue;
     }
 
-    const format = registration.format ?? 'codex';
-    const pluginDir = resolvePluginDirInSnapshot(snapshotRoot, installation, format);
+    const format = (registration.format ?? 'codex') as MarketplaceFormat;
+    const pluginDir = resolvePluginDirInSnapshot(snapshotRoot, manifestName, format);
     if (!pluginDir) {
       const contract = catalogContractFor(format);
       skipped.push({
@@ -267,115 +266,6 @@ export function discoverProjectedSkillPaths(opts: RuntimeSkillExposureOptions = 
         skillDir: skill.skillDir,
       });
     }
-  }
-
-  // ---- Minimal Bridge State (極簡) augmentation (#90) ----
-  // Merge enabled installations from MinimalBridgeState (schemaVersion 1, Global-only) into the same
-  // collision domain so that local-codex installs via runCommand are visible to resources_discover.
-  // This keeps the legacy BridgeState path untouched while making minimal installs e2e-visible.
-  try {
-    const minimalRead = readMinimalBridgeState({ agentDir: opts.agentDir });
-    const minimal = minimalRead.state;
-    // Build quick lookup to avoid duplicating installations already covered by the legacy effective state
-    const legacyIds = new Set(effective.installations.map((i) => i.id));
-    // Also dedupe by manifestName+registrationId for minimal vs legacy overlap (e.g., same plugin installed via both paths in tests)
-    const legacyKeys = new Set(effective.installations.map((i) => `${i.registrationId ?? ''}:${i.manifestName ?? i.pluginId}`));
-    for (const inst of minimal.installations) {
-      const isEnabled = (inst as any).enabled !== false && (inst as any).installationState !== 'disabled';
-      if (!isEnabled) continue;
-      if (legacyIds.has(inst.id)) continue;
-      const key = `${inst.registrationId ?? ''}:${(inst as any).manifestName ?? inst.pluginId}`;
-      if (legacyKeys.has(key)) continue;
-      const reg: any = minimal.registrations.find((r: any) => r.id === inst.registrationId);
-      if (!reg || !reg.source) {
-        skipped.push({ installationId: inst.id, reason: 'entry-not-found' });
-        continue;
-      }
-      let snapshotRoot: string | undefined;
-      if (reg.sourceKind === 'git') {
-        const snap = (reg as any).snapshot ?? (inst as any).snapshot;
-        if (!snap || !safeFingerprint(snap)) {
-          skipped.push({ installationId: inst.id, reason: 'missing-snapshot' });
-          continue;
-        }
-        const dir = join(getCacheEntriesDir(getCacheDir(opts.agentDir)), snap);
-        if (!existsSync(dir)) {
-          skipped.push({ installationId: inst.id, reason: 'missing-cache-entry' });
-          continue;
-        }
-        snapshotRoot = dir;
-      } else {
-        if (!existsSync(reg.source)) {
-          skipped.push({ installationId: inst.id, reason: 'entry-not-found' });
-          continue;
-        }
-        try {
-          snapshotRoot = realpathSync.native(reg.source);
-        } catch {
-          snapshotRoot = reg.source;
-        }
-        if (!snapshotRoot || !existsSync(snapshotRoot)) {
-          skipped.push({ installationId: inst.id, reason: 'catalog-unreadable' });
-          continue;
-        }
-      }
-      const format: MarketplaceFormat = (reg.format ?? 'codex') as MarketplaceFormat;
-      // Resolve plugin dir via catalog entry matching manifestName
-      const contract = catalogContractFor(format);
-      const catalogPath = join(snapshotRoot, ...contract.relPath.split('/'));
-      let catalog: Catalog | undefined;
-      try {
-        if (!existsSync(catalogPath) || statSync(catalogPath).size > BUDGET.maxCatalogBytes) {
-          skipped.push({ installationId: inst.id, reason: 'catalog-unreadable' });
-          continue;
-        }
-        const parsed: unknown = JSON.parse(readFileSync(catalogPath, 'utf8'));
-        const res = contract.parse(parsed);
-        if (!res.catalog) {
-          skipped.push({ installationId: inst.id, reason: 'catalog-unreadable' });
-          continue;
-        }
-        catalog = res.catalog;
-      } catch {
-        skipped.push({ installationId: inst.id, reason: 'catalog-unreadable' });
-        continue;
-      }
-      const manifestName = (inst as any).manifestName ?? inst.pluginId;
-      let entry = catalog.entries.find((e) => e.name === manifestName && e.type === 'local' && e.available && e.path);
-      if (!entry && manifestName) {
-        entry = catalog.entries.find((e) => e.name === manifestName && e.type === 'local' && e.path);
-      }
-      if (!entry && manifestName) {
-        entry = catalog.entries.find((e) => e.path && basename(e.path) === manifestName && e.type === 'local');
-      }
-      if (!entry || !entry.path) {
-        skipped.push({ installationId: inst.id, reason: 'entry-not-found' });
-        continue;
-      }
-      const contained = resolveContained(snapshotRoot, entry.path, 'directory');
-      if (contained.outcome.kind !== 'ok') {
-        skipped.push({ installationId: inst.id, reason: 'entry-not-found' });
-        continue;
-      }
-      const pluginDir = contained.outcome.canonicalPath;
-      const skills = skillCandidates(pluginDir, format);
-      if (skills.length === 0) {
-        skipped.push({ installationId: inst.id, reason: 'no-skills' });
-        continue;
-      }
-      for (const skill of skills) {
-        candidates.push({
-          layer: 'global',
-          name: skill.name,
-          skillId: `${inst.pluginId}/${skill.name}`,
-          pluginId: inst.pluginId,
-          installationId: inst.id,
-          skillDir: skill.skillDir,
-        });
-      }
-    }
-  } catch {
-    // Minimal augmentation is best-effort; never fails the host's resource pass
   }
 
   // Only collision survivors are contributed; layering is Pi → Global.

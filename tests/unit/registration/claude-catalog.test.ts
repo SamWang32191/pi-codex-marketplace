@@ -423,11 +423,12 @@ describe('Structural boundaries stay consistent with the codex parser', () => {
     expect(res.findings.some((f) => f.code === 'CATALOG_MALFORMED' && f.pointer === '/metadata')).toBe(true);
   });
 
-  it('treats metadata.description/version as known inert backward-compat members', () => {
+  it('treats metadata.description/version as inert members under the open policy', () => {
     const res = parseClaudeCatalog(
       validCatalog({ extraTopLevel: { metadata: { description: 'd', version: '2.0.0' } } }),
     );
     expect(res.ok).toBe(true);
-    expect(res.findings.every((f) => f.code === 'INERT_METADATA_IGNORED')).toBe(true);
+    // Open policy (#91): unknown members are ignored, never blocked and never flagged.
+    expect(res.findings).toEqual([]);
   });
 });

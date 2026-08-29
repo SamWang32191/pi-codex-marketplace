@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { getAgentDir, getGlobalStatePath, getReceiptsJournalPath, getLockPath } from '../../src/bridge-state/paths.js';
+import { getAgentDir, getGlobalStatePath, getLockPath } from '../../src/bridge-state/paths.js';
 
 describe('paths — Global-only series', () => {
   it('getAgentDir defaults to ~/.pi/agent', () => {
@@ -18,10 +18,6 @@ describe('paths — Global-only series', () => {
 
   it('global path under agentDir', () => {
     expect(getGlobalStatePath('/tmp/agent')).toBe(join('/tmp/agent', 'codex-marketplace', 'state.json'));
-  });
-
-  it('receipts journal under the global state dir', () => {
-    expect(getReceiptsJournalPath('/tmp/agent')).toBe(join('/tmp/agent', 'codex-marketplace', 'receipts.jsonl'));
   });
 
   it('lock path is state + .lock', () => {

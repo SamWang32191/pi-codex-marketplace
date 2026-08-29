@@ -2,7 +2,7 @@
 
 Bridge Package for Codex and Claude Marketplace compatibility in Pi (`Pi 0.84.2`).
 
-> **One-line:** `pi install npm:pi-codex-marketplace` → `/codex-marketplace` opens a responsive Bridge Ledger with Global authority, guarded lifecycle transactions, and three-orthogonal Receipt reporting.
+> **One-line:** `pi install npm:pi-codex-marketplace` → `/codex-marketplace add <本機資料夾|GitHub 網址>` 註冊 marketplace → `install <編號>` 裝到當下最新並立刻在 Pi 可用。
 
 ## Install
 
@@ -26,64 +26,57 @@ Source types follow `docs/packages.md`: `npm:` for registry, `git:`/`https://` f
 
 Requirements: **Pi 0.84.2**, **Node >=22.19.0**, **macOS / Linux** (Windows not supported).
 
-## Usage — `/codex-marketplace` (聚合指令)
+## Usage — `/codex-marketplace`（純文字，無 TUI）
 
-Single aggregated command in Pi TUI, faithful to `prototype/tui-management-flow@c9107d2`:
+Nine subcommands, no arguments = 總覽：
 
 ```
 /codex-marketplace
+/codex-marketplace help
 ```
 
-TUI mode opens a persistent **Bridge Ledger** instead of a flat action list. The workspace presents the Global authority with its State Revision, counts, and health. Navigation is grouped into **Observe**, **Sources**, **Plugins**, and **Recovery & receipts**; every action is attached to a canonical object identity rather than dispatched from its translated label.
+| 子命令 | 行為 |
+|--------|------|
+| `add <路徑\|網址>` | 註冊 marketplace（本機資料夾、GitHub 完整網址、`owner/repo` 簡寫皆收），自動偵測 codex／claude 格式並告知 `偵測：<format> marketplace · N plugins`。重複註冊同來源被拒絕並提示下一步。Git 來源以安全線取得（`core.hooksPath=/dev/null`、`GIT_LFS_SKIP_SMUDGE=1`、`GIT_TERMINAL_PROMPT=0`），catalog 解析失敗明示錯誤、不註冊。 |
+| `list [名稱]` | 列出 plugins（編號／所屬 marketplace／狀態：可安裝・已裝啟用・已裝停用・unavailable＋原因），可帶 marketplace 名稱過濾。 |
+| `install <編號\|名稱>` | 裝到**當下最新**並自動啟用＋reload。成功話術如 `安裝 "name"（N skills：a, b, c）· 已重新載入生效`；同名衝突列出 `⚠ skill "b" 與既有同名，未投影（名稱衝突）`。**重複安裝＝重抓最新覆寫**（重裝＝更新，不報錯）。 |
+| `update` | 對全部已註冊 marketplace 重抓最新：有變化的 plugin 升到最新、無變化各自顯示「無變化」；整體以「已重新載入生效」收尾（有變時）。 |
+| `disable <名稱>` / `enable <名稱>` | 停用／啟用 plugin（enable 重新投影＋reload）。 |
+| `remove <名稱>` | 移除單支 plugin（不動 marketplace、不動來源資料）。 |
+| `forget <名稱>` | 移除整個 marketplace（含其全部安裝）。 |
+| `help` | 子命令清單。 |
 
-At 120/80 columns the Ledger uses navigation and detail panes; below 64 columns it switches to a single-column drill-down. Use arrows or `j/k` to move, `Enter` to open/activate, `Esc` to go back or cancel, `q`/Ctrl-C to exit, and `?` for help. On Validation sheets, `d` expands or collapses the full ordered disclosure after the initial verdict and finding counts.
+語意鐵則：
 
-Every mutation uses the shared transaction sequence **`Intent → Validation → Consent → Plan → Commit → Receipt`**. The target authority, State Revision, Validation Snapshot, separate Default-No confirmations, atomic commit boundary, and final Durable / Findings / Runtime outcomes remain visible across the flow. After every completed, declined, blocked, stale, or cancelled action, the workspace re-reads the authoritative state document and receipts before rendering again. Existing `list` / `inspect` and non-TUI summary paths remain non-interactive.
+- 安裝語意不分「安裝／啟用」兩步；輸出不得宣稱 reload 後 skill 已在 host 內可見（host 無內省 API），只說「已重新載入生效」。
+- catalog 內 git 型或不支援來源的 entry 一律 `unavailable` 並顯示原因；解析失敗顯示明確錯誤、不給裝。
+- 安裝成功後由指令層主動要求 reload；reload 失敗不影響已記錄狀態，下次 session start 或 `/reload` 仍生效。
+- `--no-skills` 啟動 Pi 不影響 Bridge 投影。
 
-The Ledger exposes these existing capabilities without changing their lifecycle semantics:
+## Bridge State storage
 
-- **檢視 Global 分區** — single `Global Scope` (`{getAgentDir()}/codex-marketplace/state.json`) workspace. Shows `schemaVersion` (v3), `stateRevision`, registrations/installations, empty-state guidance, and provenance notes.
-- **註冊本地 / Git Marketplace…** — local or Git Marketplace Source Registration supporting dual Marketplace Formats (`codex` via `.agents/plugins/marketplace.json` and `claude` via `.claude-plugin/marketplace.json`, with codex precedence when both exist; missing both fails closed as `CATALOG_MISSING`). The derived `format` is fixed to the Registration record. Local uses canonical real path; Git uses Canonical Git Locator (credential-free) + Normalized Git Selector (`default` / `branch refs/heads/*` / `tag refs/tags/*` / `commit` lower 40/64 hex) → Resolved Revision. Validation Disclosure shows source, Marketplace name, Marketplace Format, State Revision, Validation Snapshot fingerprint, entry outcomes, findings summary. **Registration Confirmation** is snapshot+revision bound, Default No. Blocking Findings (Contained Path / Contained Symlink / Budget / duplicate Source Key / locator/selector trust) block the attempt; concurrent attempt is blocked by Attempt Fence (`FENCE-01`); changed State Revision or snapshot yields `Rejected as Stale` (`STALE-01/02`).
-- **安裝 Compatible Plugin…** — the Plugins ledger is keyed directly by stable **Marketplace Entry ID** (`/plugins/<序號>`), classification, skills, Invocation Policies, and resources; each compatible row exposes `Install Disabled` and `Install and Enable` without reopening a display-label Entry selector. Unavailable rows remain visible with their exact reason (unsupported source kind / entry-defined strict:false / parse failure / Invalid / Incompatible / Plugin ID collision). Compatibility Profile v2 classifies every Plugin atomically across Codex and Claude manifests as Compatible / Incompatible / Invalid; collision never changes classification. `Install Disabled` persists provenance without Activation Confirmation; `Install and Enable` discloses exact Plugin, skill list, Skill Resources, Invocation Policies, `Pi → Global` precedence and findings, then requires a separate **Default No** Activation Confirmation (bound to same snapshot+revision). Re-enabling a disabled Installation repeats validation and confirmation; disabling preserves its Installation ID.
-- **管理已安裝 Plugin（Enable / Disable）…** — toggle Installation State; disabling preserves provenance, enabling re-validates under current profile/ruleset/budget.
-- **檢視 Effective State 與 Projected Skills…** — read-time derived Effective State (Global Scope enabled installations) and Projected Skills with Runtime Skill Collision resolution (`Pi → Global Scope` exact name layering: pre-existing Pi skills reserve their names; non-colliding Bridge skills are projected; colliding Bridge skills within the same layer are unavailable). Whole-Plugin Blocking Findings block the Plugin; collision affects only that skill; `Available` is established only by independent host evidence (`AVAIL-01`).
-- **Refresh / 更新 Registration… (Marketplace Refresh → Update Candidate → Update Plan Checklist → Apply Update)** — Refresh is non-mutating and produces an Update Candidate when the validated source state differs (Plugin version alone does not; full-commit Git selector ref movement alone does not). Update Plan Checklist requires fresh **Registration Confirmation** + one explicit outcome per Installation (`update` / `disable` / `remove`, with `update` only when a Compatible candidate exists) + **Activation Confirmation** per enabled installation that remains enabled. Commit is a single atomic Lifecycle Operation replacing the Registration's Validation Snapshot and applying every disclosed consequence without mixing revisions.
-- **Rebind Registration…** — explicitly replace a Registration's locator/selector with fresh validation, Registration Confirmation, and a complete Update Plan for every existing Installation; prior activation consent never carries over.
-- **移除 Registration / Installation…** — Registration Removal discloses that all associated Installations will be atomically removed; Installation Removal removes the selected Installation.
-- **檢視 Receipt Journal…** — bounded immutable Receipt Journal (redacted, non-authoritative, with active recovery chain preservation across restarts); degraded journal surfaces `JOURNAL-01/02` without changing Persistence Failed outcome, and Repair State can atomically reconstruct validated lines while preserving parsed active chains. An exact active Pending Application chain exposes an Attempt Fence-held Retry Application transaction bound to State Revision and Validation Snapshot; missing snapshots remain visible but Retry is disabled in favor of a fresh validated intent, interaction-time drift fails closed without reload, reload failure remains Pending Application, and the chain resolves only after exact post-reload verification.
-- **執行 State Repair…** — explicit, fence-guarded verification for an unreadable state or an exact Persistence Indeterminate recovery chain; it stays visibly disabled for Pending Application, Persistence Failed, and healthy states because those require a different Recovery Action. It is never auto-retried.
-
-Diagnostics throughout are shown with **synchronized ordering** `class → phase → target → pointer → rule` and **closed rule codes** (`CONT-01`, `COMP-02`, `FENCE-01`, `MIGRATE-01`, etc.), grouped by severity (`Blocking` / `Validation Warning` / `Operational Notice`). Closed **Recovery Actions** (`Retry` / `Revalidate` / `Refresh` / `Rebind` / `Retry Application` / `Disable` / `Remove` / `Repair State` / `Inspect`) list only the currently safe next step under the exact current State Revision. Every committed operation reports a **three-orthogonal Attempt Summary** (`Completed` / `Completed with diagnostics` / `Declined` / `Blocked` / `Rejected as Stale` / `Persistence Failed` / `Persistence Indeterminate` / `Pending Application`) with separate persistence, findings, and runtime (`Applied` / `Pending Application` / `none`) diagnostics. A post-commit `reload` is attempted immediately; if not host-verifiable at the expected revision it is reported as `Pending Application` and no inspection or Refresh supersedes it. Pending state is carried by active recovery chains (Retry Application and other Recovery Actions) and is reconciled at startup by producing a new reconciling receipt without implicit retry or rollback.
-
-## Bridge State storage & migration
-
-Bridge State is the sole authority, stored in a **single Global Scope document** at `{getAgentDir()}/codex-marketplace/state.json` (`~/.pi/agent/codex-marketplace/state.json`):
+Bridge State 是唯一權威，存於**單一 Global Scope 文件** `{getAgentDir()}/codex-marketplace/state.json`（`~/.pi/agent/codex-marketplace/state.json`）：
 
 ```jsonc
 {
-  "schemaVersion": 3,
-  "stateRevision": "1", // opaque monotonic (string "0" -> "1" -> "2" ...)
-  "registrations": [],  // immutable Registration ID = UUIDv4, with format: "codex" | "claude"
-  "installations": []   // Installed Plugins (enabled/disabled), each bound to a Validation Snapshot
+  "schemaVersion": 1,   // 固定，永不遷移
+  "registrations": [],  // immutable Registration ID = UUIDv4；sourceKind: "local" | "git"；git 帶 snapshot fingerprint（cache 位址）
+  "installations": []   // Installed Plugins（enabled/disabled），含 manifestName、skills 與 snapshot（git）
 }
 ```
 
-Only authoritative fields are persisted. `Effective State`, catalogs, compatibility results, diagnostics are **derived at read time**.
+- **重建＝重置**：壞檔或不認識的格式一律重置為空、重新註冊重裝；沒有 repair、沒有 migration、沒有 State Revision。
+- 寫入防護：`write-to-temp → fsync → rename`（原子）＋ 檔案鎖（`.lock` sibling，last-write-wins、無 stale 偵測）＋ read-after-verify。
+- Git marketplace 的 snapshot fingerprint 是 **Source Cache 位址鑰匙**（`cache/entries/<fingerprint>`）；投影直讀該 cache entry，指紋不可替換成別種身份值。Cache 只對非 pinned entry 做 LRU 驅逐。
 
-- `State Revision` increments monotonically under file lock; commit is CAS-guarded by `expectedStateRevision` when supplied.
-- Writes are **atomic**: `write-to-temp → fsync → rename` + `fsync` parent dir + **file lock** (`.lock` sibling) + **WAL** (`state.json.wal`) + **read-after-verify**.
-- Cross-process concurrency is safe: lock serializes RMW; rename prevents torn reads; per-fingerprint `flock` guards Source Cache fetches with `p50 <200ms` on cache hit.
-- **WAL migration** (`src/bridge-state/migrate.ts`): supported forward migrations are applied atomically via WAL (`state.json.wal` fsynced before commit, replayed on the next read after a crash, cleaned after commit success). Migrations are **non-waivable, opt-in per version**, require no implicit activation, and preserve the active recovery chain. Schema v1 → v2 migration strips legacy `scopeOverrides` (non-empty overrides generate a non-blocking `MIGRATE-01` diagnostic finding without fail-closed) and normalizes Installation IDs (stripping legacy `global/` prefix). Schema v2 → v3 migration populates `format: "codex"` on existing registrations without data loss while newly written registrations store `format: "codex" | "claude"`. Unknown/older-without-path and newer (`schemaVersion > CURRENT_SCHEMA_VERSION`) versions are treated as **incompatible** — fail-closed, no auto-migration, no rollback. **Downgrade never writes back** (`isDowngradeAttempt` guard): a newer durable file is never overwritten by an older Bridge Package; the operator must update the package first.
-- Corrupted / unknown `schemaVersion` → classified as **corrupted / incompatible (Persistence Indeterminate)**, **never auto-rollback** — fail-closed. `validateSchema` and `migrateForward` enforce the closed set `CORRUPTED_JSON` / `INVALID_SCHEMA` / `INCOMPATIBLE_SCHEMA_VERSION` / `UNKNOWN_OLD_VERSION` / `MIGRATION_FAILED`.
-
-See `src/bridge-state/` for `store.ts`, `atomic.ts`, `schema.ts`, `migrate.ts`, `paths.ts`.
+See `src/bridge/state.ts`（Minimal Bridge State）、`src/bridge-state/atomic.ts`（原子寫入＋檔案鎖）、`src/cache/source-cache.ts`。
 
 ## Support matrix
 
 | Dimension | Supported | Notes |
 |-----------|-----------|-------|
 | OS | **macOS**, **Linux** | Windows not supported (path containment, symlink, `flock` semantics are POSIX-only) |
-| Node | **>=22.19.0** | `engines.node` enforced; `npm-shrinkwrap.json` pins Pi 0.84.2 host |
+| Node | **>=22.19.0** | `engines.node` enforced |
 | Pi host | **0.84.2** | `peerDependencies` exact `0.84.2`; expected compatible range `^0.84.2` (devDeps). `pi-ai`/`pi-tui` peers `*` per Pi extension docs. |
 | Semantics | `pi install` / `pi -e` / `pi install -l` / `pi update` / `pi remove` / `pi list` / `pi config` | Single `pi` extension package; `files` ships `extensions/`, `src/`, `README.md`, `LICENSE` only |
 
@@ -93,34 +86,27 @@ Peer declaration (dual): **精確 `0.84.2`** in `peerDependencies` (exact host t
 
 - **Package**: `pi-codex-marketplace` published to **npm** as primary, **Git tag** `v*` as mirror.
 - **SemVer**: starts at `0.1.0`; `0.y` maintenance window until `1.0.0` signals a stable Bridge State contract.
-- **schemaVersion is bound to the package version**: bumping `schemaVersion` requires a package version bump and a WAL migration entry in `src/bridge-state/migrate.ts`; unknown `schemaVersion` is incompatible and never silently accepted.
 - **Publishing**: `v*` tag → CI **full matrix green** (below) is a **release gate** → `npm publish --provenance` (OIDC). `latest` tracks stable tags (`v0.*` stable line and later `v1.*`); `next` tracks pre-release tags. Provenance is required (`--provenance`) and verified post-publish by the publish workflow. See `.github/workflows/ci.yml` and `.github/workflows/publish.yml`.
-- **Maintenance windows**: `0.y` (current) may include additive schema migrations with WAL forward paths; `1.0` will freeze the `schemaVersion` contract and only accept forward-compatible additive changes via new `schemaVersion`s.
 
 ## Verification matrix (發版阻擋 gate)
 
 Every row is a **release blocker**: `v*` may not publish unless the full matrix is green.
 
-| Layer | Fixture | OS | Node | Pi host | What is covered |
-|-------|---------|----|------|---------|-----------------|
-| unit | **synthetic** | macOS + Linux | 22.19.0 | — | selector/locator normalization, Contained Path/Symlink, budget, compatibility atomic classification, precedence, collision, fence/sync ordering |
-| unit | **pinned** `SamWang32191/codex-plugins@98e78ca` | macOS + Linux | 22.19.0 | — | catalog parsing + validation against a real pinned marketplace snapshot (fingerprint-stable) |
-| unit | **adversarial** | macOS + Linux | 22.19.0 | — | malformed manifests, path-escapes, symlink loops, budget overflows, ID collisions, parser depth |
-| integration | synthetic | macOS + Linux | 22.19.0 | 0.84.2 | Bridge State atomic WAL + file lock + read-after-verify, Cache pinning/LRU/flock, Receipt Journal rebuild & prune (active chain) |
-| integration | pinned | macOS + Linux | 22.19.0 | 0.84.2 | Git acquisition (non-executing), Snapshot fingerprinting, Installation dual-path, Effective State, projection/collision, Refresh/Rebind/Removal WAL commit |
-| integration | adversarial | macOS + Linux | 22.19.0 | 0.84.2 | Source Drift (Blocking), Stale Snapshot rejection, Persistence Indeterminate fail-closed, Fence admission, Cache stale-snapshot never promotes |
-| E2E (highest seam — **TUI**) | synthetic | macOS + Linux | 22.19.0 | **0.84.2** | `/codex-marketplace` → Bridge Ledger custom component → structured object intent → transaction sheet → commit → authoritative reload → three-orthogonal Receipt |
-| E2E (highest seam — **TUI**) | pinned | macOS + Linux | 22.19.0 | **0.84.2** | full lifecycle (Register → Install Disabled / Install and Enable → Disable/Enable → Refresh → Update Plan Checklist → Apply Update / Rebind → Removal) with fence/cache/external observability |
-| E2E (highest seam — **TUI**) | adversarial | macOS + Linux | 22.19.0 | **0.84.2** | collision (`Pi → Global`), cache (`offline exact fingerprint hit` vs `stale never success`) |
+| Layer | What is covered |
+|-------|-----------------|
+| unit — 縫層 | `runCommand` 指令分派（add/list/install/update/disable/enable/remove/forget/help、重複註冊拒絕、重裝覆寫、衝突未投影清單、corrupt→重置、unavailable 顯示、git 重抓）、Minimal Bridge State 原子持久化 |
+| unit — 低層 | 雙格式 catalog 解析（codex＋claude、open 政策、unavailable entry）、git locator／selector／source-key、contained path／symlink、collision、投影（exposure）、source-cache（store/hit/LRU/pin/flock）、git acquisition（mock executor） |
+| integration | 真 Pi 縫：extension 註冊 `resources_discover` → 投影 skillPaths（startup/reload 一致、trust flag 無關、被動不變異） |
+| E2E | `/codex-marketplace` 薄 Pi adapter：overview/help 輸出路由、corrupt 重置通知、reload 門控 |
 
-Fixtures: `tests/fixtures/synthetic/` (including synthetic Claude and mattpocock-shaped marketplace fixtures), `tests/fixtures/pinned/` (captured `SamWang32191/codex-plugins@98e78ca` snapshot + fingerprint manifest), `tests/fixtures/adversarial/` (path-escape / symlink-loop / budget-overflow / malformed frontmatter corpora). See `tests/acceptance/` for the matrix runner that enforces per-row gating (any row failure blocks publish).
+Fixtures: `tests/fixtures/synthetic/`, `tests/fixtures/pinned/`（captured `SamWang32191/codex-plugins@98e78ca` snapshot）、`tests/fixtures/adversarial/`。See `tests/acceptance/` for the matrix runner that enforces per-row gating (any row failure blocks publish).
 
 Run locally:
 
 ```bash
 npm run typecheck
 npm test                          # full matrix (unit + integration + E2E)
-npm run test:acceptance           # acceptance matrix only (three-tier × three-fixture)
+npm run test:acceptance           # acceptance matrix only
 ```
 
 ## Development
@@ -134,7 +120,7 @@ npm run test:acceptance
 
 ## Domain vocabulary
 
-Canonical terms are defined in [`CONTEXT.md`](./CONTEXT.md) — use them verbatim (Bridge Package vs Bridge Extension, Bridge State vs Effective State, State Revision, Registration ID, Source Key, etc.).
+Canonical terms are defined in [`CONTEXT.md`](./CONTEXT.md) — use them verbatim (Bridge Package vs Bridge Extension, Bridge State vs Effective State, Marketplace Source, Source Key, Validation Snapshot, Projected Skill, etc.).
 
 ## Changelog & Releases
 

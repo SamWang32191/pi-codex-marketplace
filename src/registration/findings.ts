@@ -1,6 +1,6 @@
 /**
  * Registration findings — machine-readable validation results identified by stable rule codes.
- * See CONTEXT.md: Validation Finding, Blocking Finding, Validation Warning, Operational Notice.
+ * See CONTEXT.md: Validation Finding, Blocking Finding.
  *
  * Presentation is derived from the finding (not stored as authority); ordering follows
  * class → phase → target → pointer → rule (prototype Decision).
@@ -9,21 +9,13 @@
 export type FindingClass = 'blocking' | 'warning' | 'notice';
 
 export type FindingPhase =
-  | 'admission' // Attempt Fence checks
   | 'identity' // Source Key / duplicate / Registration ID
-  | 'validation' // catalog / path / symlink / budget / snapshot
-  | 'persistence' // commit / revision verify
-  | 'post-commit'; // receipt / runtime (not asserted here)
+  | 'validation'; // catalog / path / symlink / budget / snapshot
 
 export type FindingTarget =
   | 'source'
   | 'catalog'
-  | 'entry'
-  | 'plugin'
-  | 'skill'
-  | 'registration'
-  | 'installation'
-  | 'attempt';
+  | 'entry';
 
 export interface ValidationFinding {
   /** Stable rule code, e.g. "PATH_CONTAINMENT_VIOLATION". */
@@ -39,19 +31,12 @@ export interface ValidationFinding {
   outcome: string;
 }
 
-/** Closed rule ids (stable across versions, referenced by Validation Ruleset). */
+/** Closed rule ids (stable across versions). */
 export const RULE = {
-  ATTEMPT_IN_PROGRESS: 'FENCE-01',
-  REJECTED_AS_STALE: 'STALE-01',
-  REJECTED_AS_STALE_SNAPSHOT: 'STALE-02',
-  DUPLICATE_SOURCE_KEY: 'DUP-01',
-  SOURCE_NOT_EXISTS: 'SRC-01',
-  SOURCE_NOT_DIRECTORY: 'SRC-02',
   CATALOG_MISSING: 'CAT-01',
   CATALOG_MALFORMED: 'CAT-02',
   CATALOG_NAME_INVALID: 'CAT-03',
   CATALOG_ENTRY_MALFORMED: 'CAT-04',
-  CATALOG_UNKNOWN_FIELD: 'CAT-05',
   CATALOG_OWNER_INVALID: 'CAT-06',
   PATH_CONTAINMENT_VIOLATION: 'CONT-01',
   CONTAINED_SYMLINK_VIOLATION: 'CONT-02',
@@ -71,47 +56,17 @@ export const RULE = {
   GIT_TRUST_HOST_KEY: 'GIT-31',
   GIT_TRUST_REDIRECT: 'GIT-32',
   GIT_TRUST_CREDENTIAL_HELPER: 'GIT-33',
-  PLUGIN_MANIFEST_INVALID: 'COMP-01',
-  SKILL_DESCRIPTOR_INVALID: 'COMP-02',
-  UNSUPPORTED_ACTIVE_COMPONENT: 'COMP-03',
-  PLUGIN_ID_COLLISION: 'COMP-04',
-  SKILL_AGENT_PROFILE_INVALID: 'COMP-05',
-  INERT_METADATA_IGNORED: 'COMP-W01',
-  UNENFORCEABLE_INVOCATION_POLICY: 'COMP-W02',
-  REGISTRATION_NOT_FOUND: 'REG-01',
-  UPDATE_PLAN_INCOMPLETE: 'UPD-01',
-  INSTALLATION_NOT_FOUND: 'INSTALL-01',
-  INSTALLATION_ALREADY_EXISTS: 'INSTALL-02',
-  ACTIVATION_CONFIRMATION_REQUIRED: 'INSTALL-03',
-  SOURCE_REACQUISITION_REQUIRED: 'INSTALL-04',
-  RUNTIME_SKILL_COLLISION: 'COLLISION-01',
-  SOURCE_DRIFT: 'DRIFT-01',
-  RECEIPT_PERSISTENCE_FAILED: 'JOURNAL-01',
-  RECEIPT_CORRUPT: 'JOURNAL-02',
-  STATE_CORRUPT: 'PERSIST-01',
-  STATE_SCHEMA_UNKNOWN: 'SCHEMA-01',
-  SCOPE_OVERRIDES_STRIPPED: 'MIGRATE-01',
-  RECONCILIATION_REQUIRED: 'RECON-01',
 } as const;
 
 export const CODE = {
-  ATTEMPT_IN_PROGRESS: 'ATTEMPT_IN_PROGRESS',
-  REJECTED_AS_STALE: 'REJECTED_AS_STALE',
-  DUPLICATE_SOURCE_KEY: 'DUPLICATE_SOURCE_KEY',
-  SOURCE_NOT_EXISTS: 'SOURCE_NOT_EXISTS',
-  SOURCE_NOT_DIRECTORY: 'SOURCE_NOT_DIRECTORY',
   CATALOG_MISSING: 'CATALOG_MISSING',
   CATALOG_MALFORMED: 'CATALOG_MALFORMED',
   CATALOG_NAME_INVALID: 'CATALOG_NAME_INVALID',
   CATALOG_ENTRY_MALFORMED: 'CATALOG_ENTRY_MALFORMED',
-  CATALOG_UNKNOWN_FIELD: 'CATALOG_UNKNOWN_FIELD',
   CATALOG_OWNER_INVALID: 'CATALOG_OWNER_INVALID',
   PATH_CONTAINMENT_VIOLATION: 'PATH_CONTAINMENT_VIOLATION',
   CONTAINED_SYMLINK_VIOLATION: 'CONTAINED_SYMLINK_VIOLATION',
   BUDGET_EXCEEDED: 'BUDGET_EXCEEDED',
-  DECLINED: 'DECLINED',
-  PERSISTENCE_FAILED: 'PERSISTENCE_FAILED',
-  PERSISTENCE_INDETERMINATE: 'PERSISTENCE_INDETERMINATE',
   GIT_LOCATOR_INVALID: 'GIT_LOCATOR_INVALID',
   GIT_LOCATOR_PLAINTEXT: 'GIT_LOCATOR_PLAINTEXT',
   GIT_LOCATOR_CREDENTIAL: 'GIT_LOCATOR_CREDENTIAL',
@@ -127,36 +82,13 @@ export const CODE = {
   GIT_TRUST_HOST_KEY_UNKNOWN: 'GIT_TRUST_HOST_KEY_UNKNOWN',
   GIT_TRUST_HOST_KEY_CHANGED: 'GIT_TRUST_HOST_KEY_CHANGED',
   GIT_TRUST_REDIRECT: 'GIT_TRUST_REDIRECT',
-  PLUGIN_MANIFEST_INVALID: 'PLUGIN_MANIFEST_INVALID',
-  SKILL_DESCRIPTOR_INVALID: 'SKILL_DESCRIPTOR_INVALID',
-  UNSUPPORTED_ACTIVE_COMPONENT: 'UNSUPPORTED_ACTIVE_COMPONENT',
-  INERT_METADATA_IGNORED: 'INERT_METADATA_IGNORED',
-  UNENFORCEABLE_INVOCATION_POLICY: 'UNENFORCEABLE_INVOCATION_POLICY',
-  PLUGIN_ID_COLLISION: 'PLUGIN_ID_COLLISION',
-  SKILL_AGENT_PROFILE_INVALID: 'SKILL_AGENT_PROFILE_INVALID',
-  REGISTRATION_NOT_FOUND: 'REGISTRATION_NOT_FOUND',
-  UPDATE_PLAN_INCOMPLETE: 'UPDATE_PLAN_INCOMPLETE',
-  INSTALLATION_NOT_FOUND: 'INSTALLATION_NOT_FOUND',
-  INSTALLATION_ALREADY_EXISTS: 'INSTALLATION_ALREADY_EXISTS',
-  ACTIVATION_CONFIRMATION_REQUIRED: 'ACTIVATION_CONFIRMATION_REQUIRED',
-  SOURCE_REACQUISITION_REQUIRED: 'SOURCE_REACQUISITION_REQUIRED',
-  RUNTIME_SKILL_COLLISION: 'RUNTIME_SKILL_COLLISION',
-  SOURCE_DRIFT: 'SOURCE_DRIFT',
-  RECEIPT_PERSISTENCE_FAILED: 'RECEIPT_PERSISTENCE_FAILED',
-  RECEIPT_CORRUPT: 'RECEIPT_CORRUPT',
-  STATE_CORRUPT: 'STATE_CORRUPT',
-  STATE_SCHEMA_UNKNOWN: 'STATE_SCHEMA_UNKNOWN',
-  SCOPE_OVERRIDES_STRIPPED: 'SCOPE_OVERRIDES_STRIPPED',
-  RECONCILIATION_REQUIRED: 'RECONCILIATION_REQUIRED',
+  GIT_TRUST_CREDENTIAL_HELPER: 'GIT_TRUST_CREDENTIAL_HELPER',
 } as const;
 
 const CLASS_RANK: Record<FindingClass, number> = { blocking: 0, warning: 1, notice: 2 };
 const PHASE_RANK: Record<FindingPhase, number> = {
-  admission: 0,
-  identity: 1,
-  validation: 2,
-  persistence: 3,
-  'post-commit': 4,
+  identity: 0,
+  validation: 1,
 };
 
 /** Deterministic ordering: class → phase → target → pointer → rule. */
@@ -175,26 +107,3 @@ export function sortFindings(findings: ValidationFinding[]): ValidationFinding[]
 export function blocking(p: Omit<ValidationFinding, 'classification'>): ValidationFinding {
   return { ...p, classification: 'blocking' };
 }
-export function warning(p: Omit<ValidationFinding, 'classification'>): ValidationFinding {
-  return { ...p, classification: 'warning' };
-}
-export function notice(p: Omit<ValidationFinding, 'classification'>): ValidationFinding {
-  return { ...p, classification: 'notice' };
-}
-
-/** True if any finding is blocking (denies the Registration target). */
-export function hasBlocking(findings: ValidationFinding[]): boolean {
-  return findings.some((f) => f.classification === 'blocking');
-}
-
-export function scopeOverridesStrippedFinding(count: number): ValidationFinding {
-  return warning({
-    code: CODE.SCOPE_OVERRIDES_STRIPPED,
-    phase: 'persistence',
-    target: 'registration',
-    pointer: '/scopeOverrides',
-    rule: RULE.SCOPE_OVERRIDES_STRIPPED,
-    outcome: `Stripped ${count} legacy scopeOverride(s) during schema v1 → v2 migration (Project Scope retired)`,
-  });
-}
-

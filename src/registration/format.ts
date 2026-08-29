@@ -9,14 +9,14 @@
  * the registration flows turn that into the unchanged Blocking Finding.
  *
  * The detected format is fixed onto the Registration record; it never changes implicitly at
- * runtime. A later upstream flip can only surface as an Update Candidate produced by an explicit
- * Marketplace Refresh and change through an explicit Apply Update.
+ * runtime. A later upstream flip can only surface through an explicit `update`（重抓最新）,
+ * which re-reads and re-installs rather than converting the marketplace format.
  */
 
 import { statSync } from 'node:fs';
 import { join } from 'node:path';
 
-import type { MarketplaceFormat } from '../bridge-state/types.js';
+import type { MarketplaceFormat } from '../bridge/state.js';
 import { parseCatalog, type CatalogResult } from './catalog.js';
 import { CLAUDE_MARKETPLACE_CATALOG_RELPATH, parseClaudeCatalog } from './claude-catalog.js';
 

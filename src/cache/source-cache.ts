@@ -1,18 +1,15 @@
 /**
- * Source Cache — Git-only, fingerprint-addressed acquisition cache (#22).
- * See CONTEXT.md: Source Acquisition, Validation Snapshot, Stale Snapshot.
+ * Source Cache — Git-only, fingerprint-addressed acquisition cache (#22, 極簡 #94).
+ * See CONTEXT.md: Source Acquisition, Validation Snapshot, Source Cache.
  *
  * Guarantees:
  * - Entries are addressed by Validation Snapshot fingerprint under
  *   `${getAgentDir()}/codex-marketplace/cache/entries/<fingerprint>`.
- * - Pinned set = Bridge State referenced fingerprints (registrations + installations)
- *   + pending Update Candidate fingerprints + in-flight pins. Pinned entries are never evicted.
+ * - Pinned set = Minimal Bridge State referenced fingerprints (registrations + installations)
+ *   + in-flight pins. Pinned entries are never evicted.
  * - Total budget (default 2 GiB) applies LRU eviction over unpinned entries only,
  *   synchronously during store/prune. No background tasks, no TTL.
  * - Every entry mutation happens under a per-fingerprint lock (mutual exclusion).
- * - Offline reuse is allowed only on an exact fingerprint hit; a Stale Snapshot is never
- *   converted into success — verification is the caller's re-hashed snapshot comparison,
- *   and a mismatch is a Blocking Finding (Source Drift / Stale Snapshot), never reuse.
  */
 
 import {
@@ -25,17 +22,16 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { cpSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { acquireLock, acquireLockSync, releaseLock, atomicWriteFile } from '../bridge-state/atomic.js';
-import { readBridgeStateSync } from '../bridge-state/store.js';
-import type { BridgeState } from '../bridge-state/types.js';
+import { readMinimalBridgeState, type MinimalBridgeState } from '../bridge/state.js';
+import { STATE_FILENAME } from '../bridge-state/paths.js';
 import {
   getCacheDir,
   getCacheEntriesDir,
   getCacheIndexPath,
   getCacheLocksDir,
-  getCachePendingPath,
 } from './paths.js';
 
 /** Total cache budget: 2 GiB across all entries (unpinned only are evictable). */
@@ -54,13 +50,6 @@ export interface CacheIndexRecord {
   resolvedRevision: string;
   canonicalLocator: string;
   selectorCanonical: string;
-  recordedAtMs: number;
-}
-
-export interface PendingUpdateRecord {
-  registrationId: string;
-  entryId?: string;
-  fingerprint: string;
   recordedAtMs: number;
 }
 
@@ -205,13 +194,12 @@ export class SourceCache {
 
   /**
    * Synchronous LRU prune over unpinned entries only. Pinned set =
-   * Bridge State references + pending Update Candidates + in-flight pins + extraPinned.
+   * Bridge State references + in-flight pins + extraPinned.
    * No background tasks; called inline after stores.
    */
   async prune(extraPinned: Iterable<string> = []): Promise<void> {
     const pinned = new Set<string>(extraPinned);
     for (const fp of this.inFlight.keys()) pinned.add(fp);
-    for (const rec of this.pendingUpdates()) pinned.add(rec.fingerprint);
     for (const fp of await this.statePinnedFingerprints()) pinned.add(fp);
 
     type Cand = { fingerprint: string; bytes: number; lastAccessMs: number };
@@ -237,43 +225,15 @@ export class SourceCache {
     }
   }
 
-  /** Fingerprints referenced by authoritative Global Bridge State. Never evicted. */
+  /** Fingerprints referenced by authoritative Minimal Bridge State. Never evicted. */
   async statePinnedFingerprints(): Promise<Set<string>> {
     const pinned = new Set<string>();
-    const read = readBridgeStateSync({});
+    // The state document sits one level above the cache dir:
+    //   <agentDir>/codex-marketplace/state.json  vs  <agentDir>/codex-marketplace/cache
+    const statePath = join(dirname(this.root), STATE_FILENAME);
+    const read = readMinimalBridgeState({ statePath });
     collectPinned(read.state, pinned);
     return pinned;
-  }
-
-  /** Collect pinned fingerprints from already-read state documents (test seam, no I/O). */
-  static pinnedFromStates(states: (BridgeState | undefined)[]): Set<string> {
-    const pinned = new Set<string>();
-    for (const s of states) collectPinned(s, pinned);
-    return pinned;
-  }
-
-  // ---- Pending Update Candidate registry ---------------------------------
-
-  recordPendingUpdate(rec: Omit<PendingUpdateRecord, 'recordedAtMs'>): void {
-    const records = this.pendingUpdates().filter((r) => !(r.registrationId === rec.registrationId && r.entryId === rec.entryId));
-    records.push({ ...rec, recordedAtMs: this.now() });
-    atomicWriteFile(getCachePendingPath(this.root), JSON.stringify(records));
-  }
-
-  clearPendingUpdate(registrationId: string): void {
-    const records = this.pendingUpdates().filter((r) => !(r.registrationId === registrationId));
-    atomicWriteFile(getCachePendingPath(this.root), JSON.stringify(records));
-  }
-
-  pendingUpdates(): PendingUpdateRecord[] {
-    const p = getCachePendingPath(this.root);
-    if (!existsSync(p)) return [];
-    try {
-      const parsed: unknown = JSON.parse(readFileSync(p, 'utf-8'));
-      return Array.isArray(parsed) ? (parsed as PendingUpdateRecord[]) : [];
-    } catch {
-      return [];
-    }
   }
 
   // ---- Locator+selector → fingerprint index ------------------------------
@@ -293,25 +253,6 @@ export class SourceCache {
     } catch {
       return {};
     }
-  }
-
-  /**
-   * Offline reuse seam: only an exact fingerprint hit counts. Returns the cached tree only when
-   * the index records exactly `expectedFingerprint` for this locator+selector AND that exact
-   * entry is present in the cache. The hit refreshes LRU recency. Callers must still verify by
-   * re-hashing the tree; any mismatch is a Blocking Finding and never success.
-   */
-  async offlineHit(canonicalLocator: string, selectorCanonical: string, expectedFingerprint: string): Promise<CacheHit | null> {
-    if (!expectedFingerprint) return null;
-    const rec = this.readIndex()[indexKey(canonicalLocator, selectorCanonical)];
-    if (!rec || rec.fingerprint !== expectedFingerprint) return null;
-    const dir = this.entryPath(expectedFingerprint);
-    const meta = this.readMeta(expectedFingerprint);
-    if (!existsSync(dir) || !meta || meta.fingerprint !== expectedFingerprint) return null;
-    await this.withFingerprintLock(expectedFingerprint, () => {
-      this.touchMeta(expectedFingerprint);
-    });
-    return { path: dir, fingerprint: expectedFingerprint };
   }
 
   // ---- internals ----------------------------------------------------------
@@ -360,10 +301,10 @@ function copyTree(from: string, to: string): void {
   } catch {}
 }
 
-function collectPinned(state: BridgeState | undefined, pinned: Set<string>): void {
+function collectPinned(state: MinimalBridgeState | undefined, pinned: Set<string>): void {
   if (!state) return;
-  for (const r of state.registrations ?? []) if (r.validationSnapshot) pinned.add(r.validationSnapshot);
-  for (const i of state.installations ?? []) if (i.validationSnapshot) pinned.add(i.validationSnapshot);
+  for (const r of state.registrations ?? []) if (r.snapshot) pinned.add(r.snapshot);
+  for (const i of state.installations ?? []) if (i.snapshot) pinned.add(i.snapshot);
 }
 
 /** Recursive byte size of a tree (files only). */

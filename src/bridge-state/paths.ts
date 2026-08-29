@@ -1,7 +1,6 @@
 /**
  * Path helpers for the single Global Bridge State document.
- * - State:    {getAgentDir()}/codex-marketplace/state.json
- * - Journal:  {getAgentDir()}/codex-marketplace/receipts.jsonl
+ * - State: {getAgentDir()}/codex-marketplace/state.json
  *
  * getAgentDir() mirrors Pi's config.getAgentDir(): honors PI_CODING_AGENT_DIR,
  * otherwise ~/.pi/agent.
@@ -13,10 +12,7 @@ import { join } from 'node:path';
 export const CONFIG_DIR_NAME = '.pi';
 export const BRIDGE_SUBDIR = 'codex-marketplace';
 export const STATE_FILENAME = 'state.json';
-export const RECEIPTS_FILENAME = 'receipts.jsonl';
 export const LOCK_SUFFIX = '.lock';
-export const WAL_SUFFIX = '.wal';
-export const FENCE_SUFFIX = '.fence';
 
 /** Mirrors pi's getAgentDir() — env PI_CODING_AGENT_DIR wins, else ~/.pi/agent */
 export function getAgentDir(): string {
@@ -37,18 +33,6 @@ export function getGlobalStatePath(agentDir = getAgentDir()): string {
   return join(getGlobalStateDir(agentDir), STATE_FILENAME);
 }
 
-export function getReceiptsJournalPath(agentDir = getAgentDir()): string {
-  return join(getGlobalStateDir(agentDir), RECEIPTS_FILENAME);
-}
-
 export function getLockPath(statePath: string): string {
   return `${statePath}${LOCK_SUFFIX}`;
-}
-
-export function getWalPath(statePath: string): string {
-  return `${statePath}${WAL_SUFFIX}`;
-}
-
-export function getFencePath(statePath: string): string {
-  return `${statePath}${FENCE_SUFFIX}`;
 }

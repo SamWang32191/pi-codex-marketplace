@@ -10,7 +10,7 @@
 
 import { CODE, RULE, blocking, type ValidationFinding } from './findings.js';
 import { BUDGET } from './budget.js';
-import { parseGitEntrySpec } from './entry-acquisition.js';
+import { parseGitEntrySpec } from './entry-spec.js';
 
 /**
  * The disclosed Unavailable reason for git-family entries on the command surface: the minimal
