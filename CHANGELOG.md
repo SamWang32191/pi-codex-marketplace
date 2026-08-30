@@ -7,7 +7,7 @@ All notable changes to `pi-codex-marketplace` are documented here. Format follow
 ### Added
 - **分層、狀態感知 autocomplete（#121–#124，文件 #125）**：`/codex-marketplace` 以 Pi 原生 autocomplete 提供兩層候選——純文字指令表面與輸出語意不變，autocomplete 只是 discoverability 與輸入效率層：
   - **根層九個候選**（#121）：輸入完整 `/codex-marketplace` 後按 Tab，顯示 `add`／`list`／`install`／`update`／`disable`／`enable`／`remove`／`forget`／`help` 與說明，不分大小寫模糊搜尋；需參數的子命令套用後補尾隨空格，`update`／`help` 不加。
-  - **第二層狀態感知候選**（#122–#124）：再按一次 Tab 依 Bridge State 只列當下可執行選項——`install` 只給可安裝／可重裝 plugin（不含 Unavailable Entry，同名含 unavailable sibling 改插 enumeration 編號）；`enable` 只列已停用、`disable` 只列已啟用、`remove` 列全部已安裝 Installation；`list`／`forget` 列 Marketplace Registrations（名稱無法唯一解析改插 Registration id）——描述顯示 marketplace／格式／狀態來源。
+  - **第二層狀態感知候選**（#122–#124）：再按一次 Tab 依 Bridge State 只列當下可執行選項——`install` 只給可安裝／可重裝 plugin（不含 Unavailable Entry，同名含 unavailable sibling 改插 enumeration 編號）；`enable` 只列已停用、`disable` 只列已啟用、`remove` 列全部已安裝 Installation；`list`／`forget` 列 Marketplace Registrations（名稱無法唯一解析依序改插唯一可解析的 alias、其次 Registration id）——描述顯示 marketplace／格式／狀態來源。
   - **`add` 保持 Pi 原生**（#124）：不提供 Bridge 候選，Tab 委派 Pi 原生路徑 completion，Git locator 維持自由輸入。
   - **terminal-only 且被動**：provider 只在 TUI session 註冊（RPC／JSON／print 模式不受影響）；候選被動讀取 Bridge State，不重置／重寫損壞文件；未屬 Bridge 的輸入原樣委派 Pi 既有 provider（其他 slash 指令、文字、檔案補完）。
   - **文件與回歸驗證**（#125）：README 新增 Autocomplete 章節（兩層 Tab 流程、狀態篩選與歧義處理、`add` 委派、明示無 custom TUI／自動二層 selector、純文字輸入保留）；Pi adapter 測試涵蓋 command completion registration、exact-command interception、第二次 Tab、completion application 與 previous-provider delegation；全部 typecheck／unit／integration／E2E／acceptance 全綠。

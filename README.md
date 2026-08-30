@@ -67,7 +67,7 @@ Nine subcommands, no arguments = 總覽：
 | `enable` | 僅**已停用**的 Installation | 名稱無法唯一解析的記錄不給候選 |
 | `disable` | 僅**已啟用**的 Installation | 同上 |
 | `remove` | 全部已安裝 plugin（不分啟用／停用） | 同上 |
-| `list` | Marketplace Registrations | 名稱無法唯一解析＝插入 Registration id |
+| `list` | Marketplace Registrations | 名稱無法唯一解析＝依序改插唯一可解析的 alias、其次 Registration id |
 | `forget` | Marketplace Registrations | 同上 |
 | `add` | **不提供 Bridge 候選**：Tab 委派 Pi 原生路徑 completion，Git locator 維持自由輸入 | — |
 
