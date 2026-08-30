@@ -1,16 +1,17 @@
 /**
- * Bridge completion seam (#121, #122).
+ * Bridge completion seam (#121, #122, #123, #124).
  *
- * Pure autocomplete for `/codex-marketplace`: root-level subcommands (#121) plus
- * state-aware second-level `install` candidates (#122). This module owns no terminal, TUI,
- * rendering, or Pi host types: its input is the complete argument prefix plus replaceable
- * read-only options, and its output is only the insertion value, display label, and optional
- * description that Pi autocomplete needs — or `null` when the argument prefix is not
- * Bridge-owned syntax.
+ * Pure autocomplete for `/codex-marketplace`: root-level subcommands (#121), state-aware
+ * second-level `install` candidates (#122), Installation lifecycle `enable` / `disable` /
+ * `remove` candidates (#123), and Marketplace Registration candidates for `list` / `forget`
+ * (#124). This module owns no terminal, TUI, rendering, or Pi host types: its input is the
+ * complete argument prefix plus replaceable read-only options, and its output is only the
+ * insertion value, display label, and optional description that Pi autocomplete needs — or
+ * `null` when the argument prefix is not Bridge-owned syntax.
  *
- * Not owned: second-level candidates for subcommands other than `install`, arbitrary text,
- * file and path completion. When the module does not own the syntax, callers fall through to
- * Pi's normal behavior unchanged.
+ * Not owned: the `add` argument (arbitrary path or Git locator — free-form by design #124),
+ * arbitrary text, file and path completion. When the module does not own the syntax, callers
+ * fall through to Pi's normal behavior unchanged.
  */
 
 import { queryMarketplacePlugins, type MarketplacePluginInstallationState } from './plugin-query.js';
@@ -109,6 +110,16 @@ const INSTALL_SECOND_LEVEL_RE = /^install\s+(\S*)$/;
  * without a trailing space stays at the root level; a second token is not Bridge-owned.
  */
 const LIFECYCLE_SECOND_LEVEL_RE = /^(enable|disable|remove)\s+(\S*)$/;
+
+/**
+ * The owned Registration second-level syntax (#124): `list` / `forget` followed by
+ * whitespace and a single-token query. Both commands resolve their argument against the same
+ * Registration identity fields (marketplaceName OR alias OR id). Each command without a
+ * trailing space stays at the root level; a second token is not Bridge-owned. `add` is
+ * deliberately absent: its argument is free-form input (path or Git locator) and stays
+ * Pi-native.
+ */
+const REGISTRATION_SECOND_LEVEL_RE = /^(list|forget)\s+(\S*)$/;
 
 export type LifecycleAction = 'enable' | 'disable' | 'remove';
 
@@ -310,6 +321,118 @@ function toLifecycleItem(action: LifecycleAction, candidate: LifecycleCandidate)
   };
 }
 
+interface RegistrationCandidate {
+  /** Registration display name — marketplaceName, else alias, else id (command surface display). */
+  name: string;
+  /** Unique resolvable token the command executes on: the name, else its alias, else its id. */
+  insertion: string;
+  /** Marketplace format ('codex' | 'claude') shown as provenance. */
+  format: string;
+  /** 本地 / git source-kind vocabulary matching the `list` overview surface (#90). */
+  sourceKindLabel: string;
+  /** Raw source (local path or Git URL) shown as provenance. */
+  source: string;
+  /** Case-insensitive fuzzy search target: name + alias + format + source provenance. */
+  searchText: string;
+}
+
+/**
+ * Whether a name-typed `list|forget <token>` invocation would resolve exactly this
+ * Registration: the command matches marketplaceName OR alias OR id over every Registration
+ * (the same predicate as `matchesRegistration` in the command surface), so the token must be
+ * unique across all identity fields and survive the command's whitespace token split.
+ */
+function registrationTokenUsable(registrations: MinimalBridgeState['registrations'], token: string): boolean {
+  if (token.length === 0 || /\s/.test(token)) return false;
+  let matches = 0;
+  for (const reg of registrations) {
+    if (reg.marketplaceName === token || reg.alias === token || reg.id === token) matches += 1;
+  }
+  return matches === 1;
+}
+
+/**
+ * Compose Registration candidates directly from Bridge State (#124). `list` and `forget`
+ * both resolve their argument on Registration records, so a candidate is offered only when
+ * some token uniquely names that record — the readable name first, then its alias, then its
+ * Registration id — mirroring the exact predicate the commands execute with. Ambiguity uses
+ * the full predicate over every Registration identity field; a Registration with no uniquely
+ * resolvable token contributes no candidate, because the typed command could never select it.
+ */
+function composeRegistrationCandidates(state: MinimalBridgeState): RegistrationCandidate[] {
+  const candidates: RegistrationCandidate[] = [];
+  for (const reg of state.registrations) {
+    const name = reg.marketplaceName || reg.alias || reg.id;
+    const insertion =
+      (registrationTokenUsable(state.registrations, name) && name) ||
+      (reg.alias && reg.alias !== name && registrationTokenUsable(state.registrations, reg.alias) && reg.alias) ||
+      (registrationTokenUsable(state.registrations, reg.id) && reg.id);
+    if (!insertion) continue;
+    const format = reg.format ?? 'codex';
+    const sourceKindLabel = reg.sourceKind === 'local' ? '本地' : 'git';
+    candidates.push({
+      name,
+      insertion,
+      format,
+      sourceKindLabel,
+      source: reg.source,
+      searchText: [name, reg.alias, format, sourceKindLabel, reg.source].filter(Boolean).join(' '),
+    });
+  }
+  return candidates;
+}
+
+/**
+ * Compose the candidate label: the readable Registration name; when the insertion is not the
+ * name (ambiguous name, alias, or id), it stays visible so the user sees which token the
+ * candidate inserts.
+ */
+function registrationLabel(candidate: RegistrationCandidate): string {
+  return candidate.insertion === candidate.name
+    ? candidate.name
+    : `${candidate.name} (${candidate.insertion})`;
+}
+
+function toRegistrationItem(action: 'list' | 'forget', candidate: RegistrationCandidate): CompletionItem {
+  return {
+    value: `${action} ${candidate.insertion}`,
+    label: registrationLabel(candidate),
+    description: `[${candidate.format}] ${candidate.sourceKindLabel} ${candidate.source}`,
+  };
+}
+
+/**
+ * Second-level `list` / `forget` candidates for `/codex-marketplace <action> <query>` (#124).
+ *
+ * - Empty query → every Registration with a uniquely resolvable token, in state order.
+ * - A query → case-insensitive fuzzy match over the name, alias, and source/format
+ *   provenance; `[]` when nothing matches.
+ *
+ * The Bridge State read is passive: empty, damaged, unreadable, or incompatible state or
+ * marketplace material contributes no candidates and is never written, reset, or repaired
+ * (#119 stories 22–23). `add` is not owned here by design.
+ */
+function completeRegistrationArguments(
+  action: 'list' | 'forget',
+  query: string,
+  options: CompletionReadOptions,
+): CompletionItem[] {
+  const state = readMinimalBridgeStatePassive({ statePath: options.statePath, agentDir: options.agentDir });
+  const candidates = composeRegistrationCandidates(state);
+  if (query.length === 0) {
+    return candidates.map((candidate) => toRegistrationItem(action, candidate));
+  }
+  const scored: { item: CompletionItem; score: number }[] = [];
+  for (const candidate of candidates) {
+    const score = fuzzyScore(query, candidate.searchText);
+    if (score !== null) {
+      scored.push({ item: toRegistrationItem(action, candidate), score });
+    }
+  }
+  scored.sort((a, b) => a.score - b.score || a.item.label.localeCompare(b.item.label));
+  return scored.map((entry) => entry.item);
+}
+
 /**
  * Second-level `enable` / `disable` / `remove` candidates for `/codex-marketplace <action> <query>`.
  *
@@ -349,13 +472,15 @@ function completeLifecycleArguments(
  * Compose completion candidates for `/codex-marketplace <argumentPrefix>`.
  *
  * - `install ` / `install <query>` → state-aware second-level install candidates (#122).
+ * - `enable|disable|remove <query>` → Installation lifecycle candidates (#123).
+ * - `list|forget <query>` → Registration candidates (#124); `add` is never owned.
  * - Empty prefix → all nine root candidates (Pi's exact-command interception surface).
  * - A single token → case-insensitive fuzzy-filtered subcommands; `[]` when nothing matches.
  * - Any other whitespace-containing prefix (unowned second-level syntax) → `null`, so callers
  *   fall through to Pi's own completion unchanged.
  *
  * The module never writes Bridge State; root candidates are derived without reading it at all,
- * and install candidates read it passively.
+ * and state-aware candidates read it passively.
  */
 export function completeArguments(
   argumentPrefix: string,
@@ -368,6 +493,14 @@ export function completeArguments(
   const lifecycleMatch = LIFECYCLE_SECOND_LEVEL_RE.exec(argumentPrefix);
   if (lifecycleMatch) {
     return completeLifecycleArguments(lifecycleMatch[1] as LifecycleAction, lifecycleMatch[2], options);
+  }
+  const registrationMatch = REGISTRATION_SECOND_LEVEL_RE.exec(argumentPrefix);
+  if (registrationMatch) {
+    return completeRegistrationArguments(
+      registrationMatch[1] as 'list' | 'forget',
+      registrationMatch[2],
+      options,
+    );
   }
   if (/\s/.test(argumentPrefix)) return null;
 
