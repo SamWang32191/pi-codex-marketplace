@@ -299,6 +299,39 @@ describe('state-aware install completion (#122)', () => {
     }
   });
 
+  it('never inserts a name the command surface could not resolve (canonical integer or whitespace names use the enumeration number)', () => {
+    const fixture = makeFixture();
+    try {
+      const mktRoot = join(fixture.root, 'mkt-a');
+      mkdirSync(mktRoot, { recursive: true });
+      const spec: LocalMarketplaceSpec = { name: 'alpha-market', id: 'reg-a', root: mktRoot };
+      // Names are unique and structurally installable, but the command surface would
+      // misparse them when applied as INSERT <name>: "42" is read as enumeration number 42,
+      // and "my plugin" is split into two tokens.
+      makeLocalMarketplace(fixture, spec, [
+        { name: 'fine', source: { source: 'local', path: './plugins/fine' } },
+        { name: '42', source: { source: 'local', path: './plugins/forty-two' } },
+        { name: 'my plugin', source: { source: 'local', path: './plugins/my-plugin' } },
+      ]);
+      writeState(fixture, registrationsState(fixture, [registration(spec)]));
+
+      const result = completeArguments('install ', { statePath: fixture.statePath })!;
+
+      // Enumeration order: 1=fine(name-insertable), 2=42, 3=my plugin (both number-form).
+      expect(result.map((item) => item.label)).toEqual(['fine', '2', '3']);
+      expect(result[0].value).toBe('install fine');
+      const numericName = result.find((item) => item.label === '2')!;
+      expect(numericName.value).toBe('install 2');
+      expect(numericName.description).toContain('[alpha-market]');
+      const whitespaceName = result.find((item) => item.label === '3')!;
+      expect(whitespaceName.value).toBe('install 3');
+      expect(result.some((item) => item.value === 'install 42')).toBe(false);
+      expect(result.some((item) => item.value === 'install my plugin')).toBe(false);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   it('falls back to the number when a same-named sibling is unavailable (name resolution would be ambiguous)', () => {
     const fixture = makeFixture();
     try {

@@ -105,6 +105,23 @@ function installStatusLabel(state: MarketplacePluginInstallationState): string {
   return '可安裝';
 }
 
+/**
+ * Positive canonical integer without leading zeros — the exact argument shape `install`
+ * parses as an enumeration number (`String(Number(arg)) === arg && Number.isInteger && >= 1`),
+ * so a unique plugin name with this shape can never be resolved by name.
+ */
+const CANONICAL_INTEGER_RE = /^[1-9]\d*$/;
+
+/**
+ * Whether a name-typed `install <name>` invocation would actually resolve this candidate
+ * name: it must be unique in the full enumeration, contain no whitespace (the command splits
+ * arguments on whitespace), and not look like a canonical integer (the command parses those
+ * as enumeration numbers). Otherwise the insertion must be the enumeration number instead.
+ */
+function nameInsertionUsable(unique: boolean, name: string): boolean {
+  return unique && !/\s/.test(name) && !CANONICAL_INTEGER_RE.test(name);
+}
+
 interface InstallCandidate {
   /** Marketplace provenance shown in the candidate description. */
   marketplaceName: string;
@@ -121,10 +138,12 @@ interface InstallCandidate {
  * structurally installable entries. Unavailable Entries (unsupported source, unresolvable
  * source, invalid plugin, identity collision) never become candidates.
  *
- * Name uniqueness is judged against the *full* enumeration — the same domain `install <名稱>`
- * resolves against, so a same-named sibling that is unavailable still forces the number
- * insertion (the name would otherwise be rejected as ambiguous). The number is the plugin's
- * number in that full enumeration, matching `list` and `install <編號>` exactly.
+ * Name insertion is allowed only when a name-typed `install <名稱>` would actually resolve
+ * the plugin: the candidate name must be unique against the *full* enumeration (the same
+ * domain `install <名稱>` resolves against — a same-named sibling, even an unavailable one,
+ * forces the number insertion because the name would be rejected as ambiguous), contain no
+ * whitespace, and not parse as a canonical enumeration number. The inserted number is the
+ * plugin's number in that full enumeration, matching `list` and `install <編號>` exactly.
  */
 function composeInstallCandidates(state: MinimalBridgeState, options: CompletionReadOptions): InstallCandidate[] {
   const { plugins } = queryMarketplacePlugins(state, { agentDir: options.agentDir });
@@ -136,12 +155,13 @@ function composeInstallCandidates(state: MinimalBridgeState, options: Completion
   const candidates: InstallCandidate[] = [];
   for (const plugin of plugins) {
     if (!plugin.structurallyInstallable) continue;
-    const unique = (nameCounts.get(plugin.candidateName) ?? 0) === 1;
     candidates.push({
       marketplaceName: plugin.marketplaceName,
       status: installStatusLabel(plugin.installationState),
       searchText: `${plugin.candidateName} ${plugin.marketplaceName}`,
-      insertion: unique ? plugin.candidateName : String(plugin.number),
+      insertion: nameInsertionUsable((nameCounts.get(plugin.candidateName) ?? 0) === 1, plugin.candidateName)
+        ? plugin.candidateName
+        : String(plugin.number),
     });
   }
   return candidates;
