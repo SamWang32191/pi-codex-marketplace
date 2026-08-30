@@ -53,6 +53,28 @@ Nine subcommands, no arguments = 總覽：
 - 安裝成功後由指令層主動要求 reload；reload 失敗不影響已記錄狀態，下次 session start 或 `/reload` 仍生效。
 - `--no-skills` 啟動 Pi 不影響 Bridge 投影。
 
+### Autocomplete（Pi 原生，TUI 限定）
+
+互動（TUI）模式下，`/codex-marketplace` 以 **Pi 原生 autocomplete** 提供兩層、狀態感知的候選。**純文字指令表面維持權威不變**：九個子命令、指令參數、輸出與語意完全不受 autocomplete 影響；RPC／JSON／print 模式根本不註冊 terminal-only provider。
+
+**第一層——九個根層子命令。** 輸入完整的 `/codex-marketplace` 後按 Tab，候選清單顯示全部九個子命令（`add`／`list`／`install`／`update`／`disable`／`enable`／`remove`／`forget`／`help`）與各自說明，支援不分大小寫的模糊搜尋。選取需要參數的子命令（`add`／`list`／`install`／`disable`／`enable`／`remove`／`forget`）會自動補上一個尾隨空格，可直接繼續輸入；`update` 與 `help` 不加。
+
+**第二層——再按一次 Tab 開啟狀態感知候選。** 需要參數的子命令套用後，**再按一次 Tab** 依當下 Bridge State 只列出當下可執行的選項（空集合不給假候選）；**不承諾自動重開 selector**（Pi 0.84.2 在套用候選後不會自動再開一層補完選單，鍵盤流程固定是「輸入 command → Tab 選子命令 → 需要參數時再按一次 Tab」）：
+
+| 子命令 | 候選範圍 | 歧義處理 |
+|--------|----------|----------|
+| `install` | 可安裝／可重裝的 plugin（**不含 Unavailable Entry**） | 名稱在完整 enumeration 唯一＝插入名稱；同名（含 unavailable sibling）＝插入 enumeration 編號（`#N`），描述顯示 `[marketplace]` 與狀態 |
+| `enable` | 僅**已停用**的 Installation | 名稱無法唯一解析的記錄不給候選 |
+| `disable` | 僅**已啟用**的 Installation | 同上 |
+| `remove` | 全部已安裝 plugin（不分啟用／停用） | 同上 |
+| `list` | Marketplace Registrations | 名稱無法唯一解析＝插入 Registration id |
+| `forget` | Marketplace Registrations | 同上 |
+| `add` | **不提供 Bridge 候選**：Tab 委派 Pi 原生路徑 completion，Git locator 維持自由輸入 | — |
+
+補完只提議當下可執行的動作，候選反映最新 Bridge State，且**被動讀取**——按 Tab 絕不會重置或重寫損壞的 state 文件。其餘輸入（其他 slash 指令、一般文字、檔案／路徑補完）一律原樣委派 Pi 既有 provider；安裝本套件不影響任何其他指令的 autocomplete。
+
+> 沒有 custom TUI、沒有自動第二層 selector：所有操作也都可以照舊以純文字輸入完成，autocomplete 只是 discoverability 與輸入效率層。
+
 ### 私有 Git repo：Credentialed Acquisition（核准式取得）
 
 對私有 HTTPS repo，`add`／`update` **開箱即用**：預設會自動偵測本機已存在的憑證來源並逐次核准（**固定白名單**，不讀本機 gitconfig 的任意 helper；偵測結果只限該次呼叫、永不持久化）：

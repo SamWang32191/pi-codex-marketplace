@@ -29,9 +29,7 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - name: acceptance matrix fixture checks (synthetic / pinned @98e78ca / adversarial)
-        run: |
-          npm run test -- tests/unit/bridge/command.test.ts tests/unit/registration/git-selector.test.ts tests/unit/projection/collision.test.ts 2>&1 | tail -20
-          npm run test -- tests/integration/ 2>&1 | tail -20
+        run: npm run test:acceptance
 
   provenance-smoke:
     name: provenance smoke (no publish)
