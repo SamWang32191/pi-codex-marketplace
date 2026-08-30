@@ -2,7 +2,7 @@
 
 All notable changes to `pi-codex-marketplace` are documented here. Format follows Keep a Changelog and SemVer (starting at `0.1.0`; Git tags `v*` mirror npm versions).
 
-## [Unreleased]
+## [0.7.0] - 2026-08-30
 
 ### Added
 - **分層、狀態感知 autocomplete（#121–#124，文件 #125）**：`/codex-marketplace` 以 Pi 原生 autocomplete 提供兩層候選——純文字指令表面與輸出語意不變，autocomplete 只是 discoverability 與輸入效率層：
