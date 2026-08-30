@@ -1,15 +1,16 @@
 /**
- * Narrow Bridge autocomplete provider — thin Pi adapter (TUI session only) (#119, #121, #122).
+ * Narrow Bridge autocomplete provider — thin Pi adapter (TUI session only) (#119, #121–#123).
  *
  * Pi 0.84.2's built-in combined provider completes the slash-command name and inserts a
  * trailing space without exposing empty-prefix argument completion (root subcommands) when
  * the editor holds exactly `/codex-marketplace`. This wrapper intercepts that exact editor
- * content and presents the nine root candidates. It also owns the second-level `install`
- * argument context on forced (Tab) requests, which Pi 0.84.2 routes to file completion
- * instead of slash-command argument completion (its argument path only runs when `force` is
- * false) — the wrapper returns the state-aware install candidates there. Everything else —
- * other slash commands, text, file/path completion, suggestion generation and completion
- * application — delegates unchanged to the host's current provider.
+ * content and presents the nine root candidates. It also owns the second-level argument
+ * contexts (`install` #122 and the Installation lifecycle `enable` / `disable` / `remove`
+ * #123) on forced (Tab) requests, which Pi 0.84.2 routes to file completion instead of
+ * slash-command argument completion (its argument path only runs when `force` is false) —
+ * the wrapper returns the state-aware candidates there. Everything else — other slash
+ * commands, text, file/path completion, suggestion generation and completion application —
+ * delegates unchanged to the host's current provider.
  *
  * The wrapper is installed from a `session_start` handler via `ctx.ui.addAutocompleteProvider`,
  * which interactive (TUI) mode wires into the editor and RPC/JSON/print modes no-op, so a
@@ -23,8 +24,11 @@ import { completeArguments, type CompletionReadOptions } from '../../src/bridge/
 /** The exact editor content this provider owns. */
 export const EXACT_COMMAND = '/codex-marketplace';
 
-/** The second-level install argument context owned on forced requests: `/codex-marketplace install `. */
-export const INSTALL_ARGUMENT_PREFIX = `${EXACT_COMMAND} install `;
+/**
+ * The Bridge-owned second-level argument contexts on forced requests: `install` plus the
+ * installation lifecycle actions — each followed by the trailing space root candidates insert.
+ */
+export const SECOND_LEVEL_ARGUMENT_RE = /^\/codex-marketplace (?:install|enable|disable|remove) /;
 
 /**
  * Wrap the host's current autocomplete provider. Suggestion generation intercepts only the
@@ -53,19 +57,15 @@ export function createBridgeAutocompleteProvider(
           };
         }
       }
-      // Second-level install interception (#122): forced (Tab) requests inside `install `
-      // are Bridge-owned — the host's combined provider would route them to file completion.
+      // Second-level argument interception (#122, #123): forced (Tab) requests inside a
+      // Bridge-owned argument context (`install ` / `enable ` / `disable ` / `remove `) are
+      // Bridge-owned — the host's combined provider would route them to file completion.
       // Natural typing (force=false) is delegated and reaches the same candidates through the
       // command's getArgumentCompletions. Like the root branch, the cursor must be at the end
       // of the line: a mid-line cursor with trailing text would otherwise produce a malformed
       // line after applying a candidate. The prefix returned is the text after the command
-      // name (`install ` or `install <query>`), matching the host's argument-text semantics.
-      if (
-        options.force
-        && cursorCol === line.length
-        && line.startsWith(INSTALL_ARGUMENT_PREFIX)
-        && cursorCol >= INSTALL_ARGUMENT_PREFIX.length
-      ) {
+      // name (`install <query>` etc.), matching the host's argument-text semantics.
+      if (options.force && cursorCol === line.length && SECOND_LEVEL_ARGUMENT_RE.test(line)) {
         const argumentText = line.slice(EXACT_COMMAND.length + 1, cursorCol);
         const items = completeArguments(argumentText, readOptions);
         if (items) {

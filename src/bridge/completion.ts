@@ -14,7 +14,12 @@
  */
 
 import { queryMarketplacePlugins, type MarketplacePluginInstallationState } from './plugin-query.js';
-import { readMinimalBridgeStatePassive, type MinimalBridgeState } from './state.js';
+import {
+  isInstallationEnabled,
+  readMinimalBridgeStatePassive,
+  type MinimalBridgeState,
+  type MinimalInstallation,
+} from './state.js';
 
 export interface CompletionItem {
   /** Insertion value. Argument-taking subcommands carry a trailing space (#121). */
@@ -97,6 +102,15 @@ function fuzzyScore(query: string, label: string): number | null {
  * root candidate can be applied first.
  */
 const INSTALL_SECOND_LEVEL_RE = /^install\s+(\S*)$/;
+
+/**
+ * The owned Installation lifecycle second-level syntax (#123): `enable` / `disable` /
+ * `remove` followed by whitespace and a single-token query. Like `install`, each command
+ * without a trailing space stays at the root level; a second token is not Bridge-owned.
+ */
+const LIFECYCLE_SECOND_LEVEL_RE = /^(enable|disable|remove)\s+(\S*)$/;
+
+export type LifecycleAction = 'enable' | 'disable' | 'remove';
 
 /** Status vocabulary aligned with the `list` command surface (#90). */
 function installStatusLabel(state: MarketplacePluginInstallationState): string {
@@ -217,6 +231,120 @@ function completeInstallArguments(query: string, options: CompletionReadOptions)
   return scored.map((entry) => entry.item);
 }
 
+interface LifecycleCandidate {
+  /** The Installation name the command surface resolves on (manifestName → pluginId → id). */
+  name: string;
+  /** Marketplace provenance shown in the candidate description. */
+  marketplaceName: string;
+  /** 已裝啟用 / 已裝停用 — the Installation lifecycle status (#123). */
+  status: string;
+  /** Case-insensitive fuzzy search target: plugin name + marketplace provenance. */
+  searchText: string;
+  /** Durable Installation state — consumed by the action filter, not rendered. */
+  enabled: boolean;
+}
+
+function lifecycleStatusLabel(enabled: boolean): string {
+  return enabled ? '已裝啟用' : '已裝停用';
+}
+
+function installationName(inst: MinimalInstallation): string {
+  return inst.manifestName || inst.pluginId || inst.id;
+}
+
+/**
+ * Whether a name-typed `enable|disable|remove <name>` invocation would resolve exactly this
+ * Installation: the command matches `manifestName` OR `pluginId` OR `id` over every
+ * Installation (#93), so the token must be unique across all records, and must survive the
+ * command's whitespace token split.
+ */
+function lifecycleNameUsable(state: MinimalBridgeState, name: string): boolean {
+  if (name.length === 0 || /\s/.test(name)) return false;
+  let matches = 0;
+  for (const other of state.installations) {
+    if (other.manifestName === name || other.pluginId === name || other.id === name) matches += 1;
+  }
+  return matches === 1;
+}
+
+/**
+ * Compose Installation lifecycle candidates directly from Bridge State (#123). Lifecycle
+ * commands resolve on Installation records — not on catalog entries — so a record stays
+ * selectable even when its registration or marketplace material has become unreadable; only
+ * the provenance display degrades to the registration id.
+ *
+ * Ambiguity uses the full command resolution predicate over every Installation: a token that
+ * could resolve more than one record (cross-Marketplace same name, or a pluginId/id
+ * collision) is never offered, because the typed command would be rejected as ambiguous.
+ */
+function composeLifecycleCandidates(state: MinimalBridgeState): LifecycleCandidate[] {
+  const regNames = new Map(state.registrations.map((reg) => [reg.id, reg.marketplaceName || reg.alias || reg.id]));
+  const candidates: LifecycleCandidate[] = [];
+  for (const inst of state.installations) {
+    const name = installationName(inst);
+    if (!lifecycleNameUsable(state, name)) continue;
+    const marketplaceName = regNames.get(inst.registrationId) ?? inst.registrationId;
+    const enabled = isInstallationEnabled(inst);
+    candidates.push({
+      name,
+      marketplaceName,
+      status: lifecycleStatusLabel(enabled),
+      searchText: `${name} ${marketplaceName}`,
+      enabled,
+    });
+  }
+  return candidates;
+}
+
+function lifecycleCandidateIncluded(action: LifecycleAction, enabled: boolean): boolean {
+  if (action === 'enable') return !enabled;
+  if (action === 'disable') return enabled;
+  return true; // remove: every Installed Plugin, regardless of state
+}
+
+function toLifecycleItem(action: LifecycleAction, candidate: LifecycleCandidate): CompletionItem {
+  return {
+    value: `${action} ${candidate.name}`,
+    label: candidate.name,
+    description: `[${candidate.marketplaceName}] ${candidate.status}`,
+  };
+}
+
+/**
+ * Second-level `enable` / `disable` / `remove` candidates for `/codex-marketplace <action> <query>`.
+ *
+ * - `enable <query>` → disabled Installations only.
+ * - `disable <query>` → enabled Installations only.
+ * - `remove <query>` → every Installed Plugin, whatever its state.
+ * - Empty query → every actionable Installation in state order; a query → case-insensitive
+ *   fuzzy match over the name and Marketplace provenance; `[]` when nothing matches.
+ *
+ * The Bridge State read is passive: empty, damaged, unreadable, or incompatible state
+ * contributes no candidates and is never written, reset, or repaired (#119 stories 22–23).
+ */
+function completeLifecycleArguments(
+  action: LifecycleAction,
+  query: string,
+  options: CompletionReadOptions,
+): CompletionItem[] {
+  const state = readMinimalBridgeStatePassive({ statePath: options.statePath, agentDir: options.agentDir });
+  const candidates = composeLifecycleCandidates(state).filter((candidate) =>
+    lifecycleCandidateIncluded(action, candidate.enabled),
+  );
+  if (query.length === 0) {
+    return candidates.map((candidate) => toLifecycleItem(action, candidate));
+  }
+  const scored: { item: CompletionItem; score: number }[] = [];
+  for (const candidate of candidates) {
+    const score = fuzzyScore(query, candidate.searchText);
+    if (score !== null) {
+      scored.push({ item: toLifecycleItem(action, candidate), score });
+    }
+  }
+  scored.sort((a, b) => a.score - b.score || a.item.label.localeCompare(b.item.label));
+  return scored.map((entry) => entry.item);
+}
+
 /**
  * Compose completion candidates for `/codex-marketplace <argumentPrefix>`.
  *
@@ -236,6 +364,10 @@ export function completeArguments(
   const installMatch = INSTALL_SECOND_LEVEL_RE.exec(argumentPrefix);
   if (installMatch) {
     return completeInstallArguments(installMatch[1], options);
+  }
+  const lifecycleMatch = LIFECYCLE_SECOND_LEVEL_RE.exec(argumentPrefix);
+  if (lifecycleMatch) {
+    return completeLifecycleArguments(lifecycleMatch[1] as LifecycleAction, lifecycleMatch[2], options);
   }
   if (/\s/.test(argumentPrefix)) return null;
 

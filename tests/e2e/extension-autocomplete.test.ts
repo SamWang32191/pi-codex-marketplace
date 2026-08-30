@@ -424,3 +424,179 @@ describe('state-aware install autocomplete thin Pi adapter (#122)', () => {
     }
   });
 });
+
+// ---- #123 fixture: two marketplaces, one enabled and one disabled Installation ----
+function makeLifecycleFixture(): { root: string; statePath: string; cleanup(): void } {
+  const root = mkdtempSync(join(tmpdir(), 'bridge-e2e-lifecycle-'));
+  const statePath = join(root, 'state.json');
+  writeFileSync(
+    statePath,
+    JSON.stringify(
+      {
+        schemaVersion: 1,
+        registrations: [
+          { id: 'reg-a', marketplaceName: 'alpha-market', format: 'codex', sourceKind: 'local', source: join(root, 'mkt-a') },
+          { id: 'reg-b', marketplaceName: 'beta-market', format: 'codex', sourceKind: 'local', source: join(root, 'mkt-b') },
+        ],
+        installations: [
+          { id: 'inst-demo', pluginId: 'demo', enabled: true, installationState: 'enabled', registrationId: 'reg-a', manifestName: 'demo', sourceKind: 'local', source: join(root, 'mkt-a'), skills: [] },
+          { id: 'inst-paused', pluginId: 'paused', enabled: false, installationState: 'disabled', registrationId: 'reg-b', manifestName: 'paused', sourceKind: 'local', source: join(root, 'mkt-b'), skills: [] },
+        ],
+      },
+      null,
+      2,
+    ),
+  );
+  return { root, statePath, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+}
+
+describe('Installation lifecycle autocomplete thin Pi adapter (#123)', () => {
+  it('intercepts a forced Tab inside `enable ` / `disable ` / `remove ` with state-aware candidates', async () => {
+    const fixture = makeLifecycleFixture();
+    try {
+      const current = fakeCurrentProvider();
+      const wrapper = createBridgeAutocompleteProvider(current, { statePath: fixture.statePath });
+
+      const disable = await wrapper.getSuggestions(['/codex-marketplace disable '], 0, '/codex-marketplace disable '.length, {
+        signal: new AbortController().signal,
+        force: true,
+      });
+      expect(current.calls).toEqual([]);
+      expect(disable!.prefix).toBe('disable ');
+      expect(disable!.items.map((item) => item.value)).toEqual(['disable demo']);
+      expect(disable!.items[0].description).toContain('[alpha-market]');
+
+      const enable = await wrapper.getSuggestions(['/codex-marketplace enable '], 0, '/codex-marketplace enable '.length, {
+        signal: new AbortController().signal,
+        force: true,
+      });
+      expect(enable!.prefix).toBe('enable ');
+      expect(enable!.items.map((item) => item.value)).toEqual(['enable paused']);
+      expect(enable!.items[0].description).toContain('[beta-market]');
+
+      const remove = await wrapper.getSuggestions(['/codex-marketplace remove '], 0, '/codex-marketplace remove '.length, {
+        signal: new AbortController().signal,
+        force: true,
+      });
+      expect(remove!.prefix).toBe('remove ');
+      expect(remove!.items.map((item) => item.value)).toEqual(['remove demo', 'remove paused']);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('filters forced lifecycle candidates by the typed query and returns the matching argument prefix', async () => {
+    const fixture = makeLifecycleFixture();
+    try {
+      const captured = captureExtension();
+      const current = fakeCurrentProvider();
+      const wrapper = createBridgeAutocompleteProvider(current, { statePath: fixture.statePath });
+
+      const line = '/codex-marketplace disable dem';
+      const result = await wrapper.getSuggestions([line], 0, line.length, {
+        signal: new AbortController().signal,
+        force: true,
+      });
+
+      expect(current.calls).toEqual([]);
+      expect(result!.prefix).toBe('disable dem');
+      expect(result!.items.map((item) => item.label)).toEqual(['demo']);
+      expect(result!.items[0].value).toBe('disable demo');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('does not intercept a forced lifecycle request with a mid-line cursor and trailing text', async () => {
+    const fixture = makeLifecycleFixture();
+    try {
+      const captured = captureExtension();
+      const current = fakeCurrentProvider({
+        suggestions: { items: [{ value: 'x', label: 'x' }], prefix: 'x' },
+      });
+      const wrapper = createBridgeAutocompleteProvider(current, { statePath: fixture.statePath });
+
+      const line = '/codex-marketplace disable dem junk';
+      const result = await wrapper.getSuggestions([line], 0, '/codex-marketplace disable dem'.length, {
+        signal: new AbortController().signal,
+        force: true,
+      });
+
+      expect(current.calls).toEqual(['getSuggestions']);
+      expect(result).toEqual({ items: [{ value: 'x', label: 'x' }], prefix: 'x' });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('delegates natural (non-forced) requests inside a lifecycle argument context to the host provider', async () => {
+    const captured = captureExtension();
+    const current = fakeCurrentProvider({
+      suggestions: { items: [{ value: 'x', label: 'x' }], prefix: 'x' },
+    });
+    const wrapper = installFactory(captured)(current) as AutocompleteProvider;
+
+    const line = '/codex-marketplace disable dem';
+    const result = await wrapper.getSuggestions([line], 0, line.length, {
+      signal: new AbortController().signal,
+      force: false,
+    });
+
+    // force=false is the host's natural argument-completion path (getArgumentCompletions
+    // owns it); the wrapper must not double-intercept.
+    expect(current.calls).toEqual(['getSuggestions']);
+    expect(result).toEqual({ items: [{ value: 'x', label: 'x' }], prefix: 'x' });
+  });
+
+  it('applies a lifecycle candidate through Pi 0.84.2 real combined provider, cursor at the inserted argument end', async () => {
+    const fixture = makeLifecycleFixture();
+    try {
+      const captured = captureExtension();
+      const command = captured.commands.get('codex-marketplace')!;
+      const wrapper = createBridgeAutocompleteProvider(
+        new CombinedAutocompleteProvider(
+          [{ name: 'codex-marketplace', getArgumentCompletions: command.getArgumentCompletions }],
+          '/tmp',
+          null,
+        ),
+        { statePath: fixture.statePath },
+      );
+
+      const line = '/codex-marketplace disable ';
+      const suggestions = await wrapper.getSuggestions([line], 0, line.length, {
+        signal: new AbortController().signal,
+        force: true,
+      });
+      const demo = suggestions!.items.find((item) => item.value === 'disable demo')!;
+      const applied = wrapper.applyCompletion([line], 0, line.length, demo, suggestions!.prefix);
+      expect(applied.lines[0]).toBe('/codex-marketplace disable demo');
+      expect(applied.cursorCol).toBe('/codex-marketplace disable demo'.length);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('does not chain-reopen the root subcommand list after an applied lifecycle argument (#123)', async () => {
+    const fixture = makeLifecycleFixture();
+    try {
+      const captured = captureExtension();
+      const current = fakeCurrentProvider();
+      const wrapper = createBridgeAutocompleteProvider(current, { statePath: fixture.statePath });
+
+      // After applying "disable " the editor holds "/codex-marketplace disable "; a subsequent
+      // Tab is a forced request. It must not re-intercept the line as the exact root command
+      // (that would chain-reopen the nine subcommands); it owns the second-level lifecycle
+      // context instead.
+      const result = await wrapper.getSuggestions(['/codex-marketplace disable '], 0, '/codex-marketplace disable '.length, {
+        signal: new AbortController().signal,
+        force: true,
+      });
+
+      expect(current.calls).toEqual([]);
+      expect(result!.prefix).toBe('disable ');
+      expect(result!.items.map((item) => item.label)).toEqual(['demo']);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+});
