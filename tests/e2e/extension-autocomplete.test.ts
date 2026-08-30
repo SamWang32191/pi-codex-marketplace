@@ -312,7 +312,7 @@ describe('state-aware install autocomplete thin Pi adapter (#122)', () => {
 
       expect(current.calls).toEqual([]);
       expect(result!.prefix).toBe('install ');
-      expect(result!.items.map((item) => item.label)).toEqual(['1', 'demo']);
+      expect(result!.items.map((item) => item.label)).toEqual(['shared (#1)', 'demo']);
       // Same-named `shared` (with an unavailable sibling) inserts its enumeration number.
       expect(result!.items[0].value).toBe('install 1');
       expect(result!.items[0].description).toContain('[alpha-market]');
@@ -341,6 +341,31 @@ describe('state-aware install autocomplete thin Pi adapter (#122)', () => {
       expect(result!.prefix).toBe('install dem');
       expect(result!.items.map((item) => item.label)).toEqual(['demo']);
       expect(result!.items[0].value).toBe('install demo');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('does not intercept a forced install request with a mid-line cursor and trailing text', async () => {
+    const fixture = makeInstallFixture();
+    try {
+      const captured = captureExtension();
+      const current = fakeCurrentProvider({
+        suggestions: { items: [{ value: 'x', label: 'x' }], prefix: 'x' },
+      });
+      const wrapper = createBridgeAutocompleteProvider(current, { statePath: fixture.statePath });
+
+      // Cursor in the middle of the line, text after it: applying a candidate would produce
+      // a malformed line, so the wrapper must not own this context (root branch has the same
+      // end-of-line guard) and delegates to the host provider.
+      const line = '/codex-marketplace install dem junk';
+      const result = await wrapper.getSuggestions([line], 0, '/codex-marketplace install dem'.length, {
+        signal: new AbortController().signal,
+        force: true,
+      });
+
+      expect(current.calls).toEqual(['getSuggestions']);
+      expect(result).toEqual({ items: [{ value: 'x', label: 'x' }], prefix: 'x' });
     } finally {
       fixture.cleanup();
     }

@@ -276,11 +276,12 @@ describe('state-aware install completion (#122)', () => {
 
       // Same-named `shared` plugins insert their current enumeration numbers (1 and 4 — the
       // full enumeration counts the unavailable `edge` entry at 3 in between, exactly like
-      // `list` and `install <編號>`), each showing its Marketplace provenance.
+      // `list` and `install <編號>`), each showing its Marketplace provenance and a label that
+      // identifies which plugin the number selects.
       const shared = result.filter((item) => item.label === 'shared');
       expect(shared).toHaveLength(0); // numbers are inserted instead of the ambiguous name
       const sharedByValue = result.filter((item) => item.value === 'install 1' || item.value === 'install 4');
-      expect(sharedByValue.map((item) => item.label)).toEqual(['1', '4']);
+      expect(sharedByValue.map((item) => item.label)).toEqual(['shared (#1)', 'shared (#4)']);
       for (const item of sharedByValue) {
         expect(item.description).toMatch(/\[(alpha-market|beta-market)\]/);
       }
@@ -318,12 +319,12 @@ describe('state-aware install completion (#122)', () => {
       const result = completeArguments('install ', { statePath: fixture.statePath })!;
 
       // Enumeration order: 1=fine(name-insertable), 2=42, 3=my plugin (both number-form).
-      expect(result.map((item) => item.label)).toEqual(['fine', '2', '3']);
+      expect(result.map((item) => item.label)).toEqual(['fine', '42 (#2)', 'my plugin (#3)']);
       expect(result[0].value).toBe('install fine');
-      const numericName = result.find((item) => item.label === '2')!;
+      const numericName = result.find((item) => item.label === '42 (#2)')!;
       expect(numericName.value).toBe('install 2');
       expect(numericName.description).toContain('[alpha-market]');
-      const whitespaceName = result.find((item) => item.label === '3')!;
+      const whitespaceName = result.find((item) => item.label === 'my plugin (#3)')!;
       expect(whitespaceName.value).toBe('install 3');
       expect(result.some((item) => item.value === 'install 42')).toBe(false);
       expect(result.some((item) => item.value === 'install my plugin')).toBe(false);
@@ -357,7 +358,7 @@ describe('state-aware install completion (#122)', () => {
       // rejected as ambiguous, so the installable candidate must insert its enumeration number.
       expect(result.find((item) => item.label === 'shared')).toBeUndefined();
       const shared = result.find((item) => item.value === 'install 1');
-      expect(shared!.label).toBe('1');
+      expect(shared!.label).toBe('shared (#1)');
       expect(shared!.description).toContain('[alpha-market]');
       expect(result.find((item) => item.value === 'install shared')).toBeUndefined();
       expect(result.find((item) => item.label === 'other')!.value).toBe('install other');

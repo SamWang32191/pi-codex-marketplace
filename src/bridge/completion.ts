@@ -123,13 +123,15 @@ function nameInsertionUsable(unique: boolean, name: string): boolean {
 }
 
 interface InstallCandidate {
+  /** Plugin candidate name (entry name → path basename → ordinal fallback). */
+  name: string;
   /** Marketplace provenance shown in the candidate description. */
   marketplaceName: string;
   /** 可安裝 / 已裝啟用 / 已裝停用 — install and reinstall are both selectable. */
   status: string;
   /** Case-insensitive fuzzy search target: plugin name + marketplace provenance. */
   searchText: string;
-  /** Insertion token: the name when unique in the full enumeration, else the enumeration number. */
+  /** Insertion token: the name when usable, else the enumeration number. */
   insertion: string;
 }
 
@@ -156,6 +158,7 @@ function composeInstallCandidates(state: MinimalBridgeState, options: Completion
   for (const plugin of plugins) {
     if (!plugin.structurallyInstallable) continue;
     candidates.push({
+      name: plugin.candidateName,
       marketplaceName: plugin.marketplaceName,
       status: installStatusLabel(plugin.installationState),
       searchText: `${plugin.candidateName} ${plugin.marketplaceName}`,
@@ -167,10 +170,21 @@ function composeInstallCandidates(state: MinimalBridgeState, options: Completion
   return candidates;
 }
 
+/**
+ * Compose the candidate label. A name insertion shows the name itself; a number insertion
+ * keeps the enumeration number visible but labels the plugin so the user can tell which
+ * same-named entry each candidate selects (the description carries provenance + status).
+ */
+function installLabel(candidate: InstallCandidate): string {
+  return candidate.insertion === candidate.name
+    ? candidate.name
+    : `${candidate.name} (#${candidate.insertion})`;
+}
+
 function toInstallItem(candidate: InstallCandidate): CompletionItem {
   return {
     value: `install ${candidate.insertion}`,
-    label: candidate.insertion,
+    label: installLabel(candidate),
     description: `[${candidate.marketplaceName}] ${candidate.status}`,
   };
 }
