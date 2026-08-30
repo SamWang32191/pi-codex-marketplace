@@ -63,7 +63,9 @@ export interface CommandResult {
 
 const USAGE_LINE = '用法：/codex-marketplace <add|list|install|update|disable|enable|remove|forget|help>';
 
-const HELP_TEXT = [
+// Exported so the Bridge completion seam can be verified against the same description
+// vocabulary it mirrors (#121) — alignment is pinned by tests, not by manual syncing.
+export const HELP_TEXT = [
   '用法：/codex-marketplace <子命令> [參數]',
   '',
   '子命令：',
