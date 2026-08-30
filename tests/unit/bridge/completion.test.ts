@@ -140,11 +140,12 @@ describe('Bridge completion seam (#121)', () => {
   });
 
   it('returns null when the argument prefix is not Bridge-owned syntax', () => {
-    // Non-install second-level argument text is not Bridge-owned (#121, #122) — the module
-    // must not own it, and callers fall through to Pi's own completion.
+    // Non-lifecycle second-level argument text is not Bridge-owned (#121–#123) — the module
+    // must not own it, and callers fall through to Pi's own completion. `forget` stays unowned:
+    // its registration candidates belong to #124, not the Installation lifecycle (#123).
     expect(completeArguments('list ')).toBeNull();
     expect(completeArguments('add some/path')).toBeNull();
-    expect(completeArguments('disable my-plugin')).toBeNull();
+    expect(completeArguments('forget my-market')).toBeNull();
   });
 
   it('mirrors the command surface description vocabulary without drift', () => {
@@ -481,5 +482,292 @@ describe('state-aware install completion (#122)', () => {
   it('returns null for a second token after the plugin query (not Bridge-owned)', () => {
     expect(completeArguments('install foo bar')).toBeNull();
     expect(completeArguments('install   baz qux')).toBeNull();
+  });
+});
+
+describe('state-aware Installation lifecycle completion (#123)', () => {
+  function lifecycleReg(id: string, name: string): MinimalBridgeState['registrations'][number] {
+    return { id, marketplaceName: name, format: 'codex', sourceKind: 'local', source: `/tmp/${id}` };
+  }
+
+  function installation(
+    fields: Partial<MinimalBridgeState['installations'][number]>,
+  ): MinimalBridgeState['installations'][number] {
+    return {
+      id: 'inst-x',
+      pluginId: 'plugin-x',
+      enabled: true,
+      installationState: 'enabled',
+      registrationId: 'reg-a',
+      manifestName: 'plugin-x',
+      sourceKind: 'local',
+      source: '/tmp/plugin-x',
+      skills: [],
+      ...fields,
+    };
+  }
+
+  function lifecycleState(
+    fixture: StateFixture,
+    regs: MinimalBridgeState['registrations'],
+    insts: MinimalBridgeState['installations'],
+  ): void {
+    writeState(fixture, { schemaVersion: 1, registrations: regs, installations: insts });
+  }
+
+  it('`enable ` lists only disabled Installations and `disable ` only enabled ones', () => {
+    const fixture = makeFixture();
+    try {
+      lifecycleState(
+        fixture,
+        [lifecycleReg('reg-a', 'alpha-market'), lifecycleReg('reg-b', 'beta-market')],
+        [
+          installation({ id: 'inst-a', pluginId: 'alpha-plugin', manifestName: 'alpha-plugin', registrationId: 'reg-a' }),
+          installation({ id: 'inst-b', pluginId: 'beta-plugin', manifestName: 'beta-plugin', registrationId: 'reg-b', enabled: false, installationState: 'disabled' }),
+        ],
+      );
+
+      const enable = completeArguments('enable ', { statePath: fixture.statePath })!;
+      expect(enable.map((item) => item.value)).toEqual(['enable beta-plugin']);
+      expect(enable.map((item) => item.label)).toEqual(['beta-plugin']);
+      for (const item of enable) {
+        expect(item.description).toContain('[beta-market]');
+      }
+
+      const disable = completeArguments('disable ', { statePath: fixture.statePath })!;
+      expect(disable.map((item) => item.value)).toEqual(['disable alpha-plugin']);
+      for (const item of disable) {
+        expect(item.description).toContain('[alpha-market]');
+      }
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('`remove ` lists every Installed Plugin regardless of state, with provenance in the description', () => {
+    const fixture = makeFixture();
+    try {
+      lifecycleState(
+        fixture,
+        [lifecycleReg('reg-a', 'alpha-market'), lifecycleReg('reg-b', 'beta-market')],
+        [
+          installation({ id: 'inst-a', pluginId: 'alpha-plugin', manifestName: 'alpha-plugin', registrationId: 'reg-a' }),
+          installation({ id: 'inst-b', pluginId: 'beta-plugin', manifestName: 'beta-plugin', registrationId: 'reg-b', enabled: false, installationState: 'disabled' }),
+        ],
+      );
+
+      const remove = completeArguments('remove ', { statePath: fixture.statePath })!;
+      expect(remove.map((item) => item.value)).toEqual(['remove alpha-plugin', 'remove beta-plugin']);
+      expect(remove[0].description).toContain('[alpha-market]');
+      expect(remove[0].description).toContain('已裝啟用');
+      expect(remove[1].description).toContain('[beta-market]');
+      expect(remove[1].description).toContain('已裝停用');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('omits cross-Marketplace same-named Installations that a name command cannot resolve uniquely', () => {
+    const fixture = makeFixture();
+    try {
+      lifecycleState(
+        fixture,
+        [lifecycleReg('reg-a', 'alpha-market'), lifecycleReg('reg-b', 'beta-market')],
+        [
+          installation({ id: 'inst-a', pluginId: 'shared', manifestName: 'shared', registrationId: 'reg-a' }),
+          installation({ id: 'inst-b', pluginId: 'shared', manifestName: 'shared', registrationId: 'reg-b', enabled: false, installationState: 'disabled' }),
+          installation({ id: 'inst-c', pluginId: 'other', manifestName: 'other', registrationId: 'reg-b' }),
+        ],
+      );
+
+      // `disable shared` would match both Installations and be rejected as ambiguous (#93),
+      // so neither same-named record may be offered as a candidate on any lifecycle action.
+      expect(completeArguments('disable ', { statePath: fixture.statePath })!.map((i) => i.value)).toEqual(['disable other']);
+      expect(completeArguments('enable ', { statePath: fixture.statePath })!.map((i) => i.value)).toEqual([]);
+      expect(completeArguments('remove ', { statePath: fixture.statePath })!.map((i) => i.value)).toEqual(['remove other']);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('applies the ambiguity rule across every identity field the command resolves on', () => {
+    const fixture = makeFixture();
+    try {
+      // A resolves by manifestName `x`; B carries the same token as its pluginId. A name-typed
+      // `disable x` matches both records (manifestName OR pluginId OR id, #93), so A is
+      // ambiguous and omitted, while B stays selectable through its own unique manifestName.
+      lifecycleState(
+        fixture,
+        [lifecycleReg('reg-a', 'alpha-market')],
+        [
+          installation({ id: 'inst-a', pluginId: 'a', manifestName: 'x', registrationId: 'reg-a' }),
+          installation({ id: 'inst-b', pluginId: 'x', manifestName: 'b', registrationId: 'reg-a' }),
+        ],
+      );
+
+      expect(completeArguments('disable ', { statePath: fixture.statePath })!.map((i) => i.value)).toEqual(['disable b']);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('keeps candidates when the registration record is gone, showing registrationId as provenance', () => {
+    const fixture = makeFixture();
+    try {
+      lifecycleState(
+        fixture,
+        [],
+        [installation({ id: 'inst-a', pluginId: 'orphan', manifestName: 'orphan', registrationId: 'reg-gone', enabled: false, installationState: 'disabled' })],
+      );
+
+      const enable = completeArguments('enable ', { statePath: fixture.statePath })!;
+      expect(enable.map((item) => item.value)).toEqual(['enable orphan']);
+      expect(enable[0].description).toContain('[reg-gone]');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('filters by case-insensitive fuzzy match over plugin name and Marketplace provenance', () => {
+    const fixture = makeFixture();
+    try {
+      lifecycleState(
+        fixture,
+        [lifecycleReg('reg-a', 'alpha-market'), lifecycleReg('reg-b', 'beta-market')],
+        [
+          installation({ id: 'inst-a', pluginId: 'my-plugin', manifestName: 'my-plugin', registrationId: 'reg-a' }),
+          installation({ id: 'inst-b', pluginId: 'alpha-tool', manifestName: 'alpha-tool', registrationId: 'reg-b', enabled: false, installationState: 'disabled' }),
+        ],
+      );
+
+      // Mixed-case partial over the plugin name.
+      const byName = completeArguments('remove MyPln', { statePath: fixture.statePath })!;
+      expect(byName.map((item) => item.label)).toEqual(['my-plugin']);
+
+      // Fuzzy partial over the Marketplace provenance.
+      const byMarket = completeArguments('remove bta', { statePath: fixture.statePath })!;
+      expect(byMarket.map((item) => item.label)).toEqual(['alpha-tool']);
+
+      // Non-contiguous query over the combined name＋provenance search text.
+      const nonContig = completeArguments('remove mlp', { statePath: fixture.statePath })!;
+      expect(nonContig.map((item) => item.label)).toEqual(['my-plugin']);
+
+      // A query that matches only the enabled candidate is still within the remove action.
+      const removeAll = completeArguments('remove ', { statePath: fixture.statePath })!;
+      expect(removeAll.map((item) => item.label)).toEqual(['my-plugin', 'alpha-tool']);
+
+      expect(completeArguments('remove zzz', { statePath: fixture.statePath })).toEqual([]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('returns no candidates for an empty actionable set or an empty state', () => {
+    const fixture = makeFixture();
+    try {
+      lifecycleState(fixture, [lifecycleReg('reg-a', 'alpha-market')], [
+        installation({ id: 'inst-a', pluginId: 'only', manifestName: 'only', registrationId: 'reg-a' }),
+      ]);
+      // The only Installation is enabled: `enable ` has nothing actionable.
+      expect(completeArguments('enable ', { statePath: fixture.statePath })).toEqual([]);
+      expect(completeArguments('enable only', { statePath: fixture.statePath })).toEqual([]);
+
+      lifecycleState(fixture, [lifecycleReg('reg-a', 'alpha-market')], [
+        installation({ id: 'inst-a', pluginId: 'only', manifestName: 'only', registrationId: 'reg-a', enabled: false, installationState: 'disabled' }),
+      ]);
+      expect(completeArguments('disable ', { statePath: fixture.statePath })).toEqual([]);
+
+      lifecycleState(fixture, [], []);
+      expect(completeArguments('enable ', { statePath: fixture.statePath })).toEqual([]);
+      expect(completeArguments('disable ', { statePath: fixture.statePath })).toEqual([]);
+      expect(completeArguments('remove ', { statePath: fixture.statePath })).toEqual([]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('reflects the latest Installation State on every completion request', () => {
+    const fixture = makeFixture();
+    try {
+      const regs = [lifecycleReg('reg-a', 'alpha-market')];
+      lifecycleState(fixture, regs, [
+        installation({ id: 'inst-a', pluginId: 'toggle', manifestName: 'toggle', registrationId: 'reg-a' }),
+      ]);
+      expect(completeArguments('disable ', { statePath: fixture.statePath })!.map((i) => i.value)).toEqual(['disable toggle']);
+      expect(completeArguments('enable ', { statePath: fixture.statePath })).toEqual([]);
+
+      // Simulate the user running `disable` between requests: the next completion reflects it.
+      lifecycleState(fixture, regs, [
+        installation({ id: 'inst-a', pluginId: 'toggle', manifestName: 'toggle', registrationId: 'reg-a', enabled: false, installationState: 'disabled' }),
+      ]);
+      expect(completeArguments('disable ', { statePath: fixture.statePath })).toEqual([]);
+      expect(completeArguments('enable ', { statePath: fixture.statePath })!.map((i) => i.value)).toEqual(['enable toggle']);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('is passive for damaged Bridge State: no candidates and the file content is untouched', () => {
+    const fixture = makeFixture();
+    try {
+      const damaged = 'INVALID JSON CONTENT';
+      writeFileSync(fixture.statePath, damaged, 'utf-8');
+
+      for (const prefix of ['enable ', 'disable ', 'remove ']) {
+        expect(completeArguments(prefix, { statePath: fixture.statePath })).toEqual([]);
+        // Malformed Bridge State must be byte-identical before and after completion (#123).
+        expect(readFileSync(fixture.statePath, 'utf-8')).toBe(damaged);
+      }
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('keeps a bare `enable` / `disable` / `remove` at the root level so the trailing-space candidate can apply first', () => {
+    const fixture = makeFixture();
+    try {
+      for (const label of ['enable', 'disable', 'remove']) {
+        const result = completeArguments(label, { statePath: fixture.statePath })!;
+        expect(result.map((item) => item.label)).toEqual([label]);
+        expect(result[0].value).toBe(`${label} `);
+      }
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('never offers an Installation whose name the whitespace-splitting command cannot resolve', () => {
+    const fixture = makeFixture();
+    try {
+      lifecycleState(
+        fixture,
+        [lifecycleReg('reg-a', 'alpha-market')],
+        [
+          installation({ id: 'inst-a', pluginId: 'good', manifestName: 'good', registrationId: 'reg-a', enabled: false, installationState: 'disabled' }),
+          installation({ id: 'inst-b', pluginId: 'my plugin', manifestName: 'my plugin', registrationId: 'reg-a' }),
+        ],
+      );
+
+      // `remove my plugin` splits into two tokens and never resolves an Installation; the
+      // candidate must not be offered.
+      expect(completeArguments('remove ', { statePath: fixture.statePath })!.map((i) => i.value)).toEqual(['remove good']);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('returns null for a third token and for unowned second-level syntax', () => {
+    const fixture = makeFixture();
+    try {
+      lifecycleState(fixture, [], []);
+      // A single-token argument query is Bridge-owned; a second token is not.
+      expect(completeArguments('remove foo bar', { statePath: fixture.statePath })).toBeNull();
+      expect(completeArguments('disable   baz qux', { statePath: fixture.statePath })).toBeNull();
+      // `forget` and `list` second-level arguments are not owned by #123.
+      expect(completeArguments('forget mkt', { statePath: fixture.statePath })).toBeNull();
+      expect(completeArguments('list ', { statePath: fixture.statePath })).toBeNull();
+    } finally {
+      fixture.cleanup();
+    }
   });
 });
