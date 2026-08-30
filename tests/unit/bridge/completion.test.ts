@@ -141,11 +141,12 @@ describe('Bridge completion seam (#121)', () => {
 
   it('returns null when the argument prefix is not Bridge-owned syntax', () => {
     // Non-lifecycle second-level argument text is not Bridge-owned (#121–#123) — the module
-    // must not own it, and callers fall through to Pi's own completion. `forget` stays unowned:
-    // its registration candidates belong to #124, not the Installation lifecycle (#123).
-    expect(completeArguments('list ')).toBeNull();
+    // must not own it, and callers fall through to Pi's own completion. `add` stays unowned
+    // (#124): its argument is free-form input (path or Git locator) and must never be
+    // constrained by Bridge-owned candidates, so Pi's native completion keeps working.
     expect(completeArguments('add some/path')).toBeNull();
-    expect(completeArguments('forget my-market')).toBeNull();
+    expect(completeArguments('add https://github.com/acme/skills')).toBeNull();
+    expect(completeArguments('add owner/repo')).toBeNull();
   });
 
   it('mirrors the command surface description vocabulary without drift', () => {
@@ -756,16 +757,266 @@ describe('state-aware Installation lifecycle completion (#123)', () => {
     }
   });
 
-  it('returns null for a third token and for unowned second-level syntax', () => {
+  it('returns null for a second token after the query (not Bridge-owned)', () => {
     const fixture = makeFixture();
     try {
       lifecycleState(fixture, [], []);
       // A single-token argument query is Bridge-owned; a second token is not.
       expect(completeArguments('remove foo bar', { statePath: fixture.statePath })).toBeNull();
       expect(completeArguments('disable   baz qux', { statePath: fixture.statePath })).toBeNull();
-      // `forget` and `list` second-level arguments are not owned by #123.
-      expect(completeArguments('forget mkt', { statePath: fixture.statePath })).toBeNull();
-      expect(completeArguments('list ', { statePath: fixture.statePath })).toBeNull();
+      // `list`/`forget` own only a single-token query too (#124); `add` stays unowned
+      // entirely, exactly like #123's lifecycle commands.
+      expect(completeArguments('forget mkt extra', { statePath: fixture.statePath })).toBeNull();
+      expect(completeArguments('list a b', { statePath: fixture.statePath })).toBeNull();
+      expect(completeArguments('add some/path extra', { statePath: fixture.statePath })).toBeNull();
+    } finally {
+      fixture.cleanup();
+    }
+  });
+});
+
+describe('state-aware Registration completion (#124)', () => {
+  function reg(
+    id: string,
+    marketplaceName: string,
+    fields: Partial<MinimalBridgeState['registrations'][number]> = {},
+  ): MinimalBridgeState['registrations'][number] {
+    return {
+      id,
+      marketplaceName,
+      format: 'codex',
+      sourceKind: 'local',
+      source: `/tmp/${id}`,
+      ...fields,
+    };
+  }
+
+  function regState(fixture: StateFixture, regs: MinimalBridgeState['registrations']): void {
+    writeState(fixture, { schemaVersion: 1, registrations: regs, installations: [] });
+  }
+
+  it('`list ` and `forget ` list every Registration, resolving unique names to readable insertions with source/format provenance', () => {
+    const fixture = makeFixture();
+    try {
+      regState(fixture, [
+        reg('reg-a', 'alpha-market'),
+        reg('reg-b', 'beta-market', { format: 'claude', sourceKind: 'git', source: 'https://github.com/acme/skills' }),
+      ]);
+
+      const list = completeArguments('list ', { statePath: fixture.statePath })!;
+      expect(list.map((item) => item.label)).toEqual(['alpha-market', 'beta-market']);
+      expect(list.map((item) => item.value)).toEqual(['list alpha-market', 'list beta-market']);
+      expect(list[0].description).toContain('[codex]');
+      expect(list[0].description).toContain('本地');
+      expect(list[0].description).toContain('/tmp/reg-a');
+      expect(list[1].description).toContain('[claude]');
+      expect(list[1].description).toContain('git');
+      expect(list[1].description).toContain('https://github.com/acme/skills');
+
+      const forget = completeArguments('forget ', { statePath: fixture.statePath })!;
+      expect(forget.map((item) => item.value)).toEqual(['forget alpha-market', 'forget beta-market']);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('inserts the Registration ID when the name is not uniquely resolvable, with provenance in the description', () => {
+    const fixture = makeFixture();
+    try {
+      regState(fixture, [
+        reg('reg-a', 'demo-market'),
+        reg('reg-b', 'demo-market', { format: 'claude', sourceKind: 'git', source: 'https://github.com/acme/demo' }),
+      ]);
+
+      const result = completeArguments('list ', { statePath: fixture.statePath })!;
+      // A typed `list demo-market` would match both records and be rejected as ambiguous
+      // (#93 semantics), so the candidates insert their Registration IDs — tokens the
+      // command resolves by id exactly like `list <id>`.
+      expect(result.map((item) => item.value)).toEqual(['list reg-a', 'list reg-b']);
+      expect(result.map((item) => item.label)).toEqual(['demo-market (reg-a)', 'demo-market (reg-b)']);
+      expect(result[0].description).toContain('[codex] 本地');
+      expect(result[1].description).toContain('[claude] git');
+      expect(result[0].description).not.toBe(result[1].description);
+
+      const forget = completeArguments('forget ', { statePath: fixture.statePath })!;
+      expect(forget.map((item) => item.value)).toEqual(['forget reg-a', 'forget reg-b']);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('applies the ambiguity rule across every identity field the command resolves on', () => {
+    const fixture = makeFixture();
+    try {
+      // A resolves by marketplaceName `x`; B carries the same token as its alias. A name-typed
+      // `list x` matches both records (marketplaceName OR alias OR id), so A's name is
+      // ambiguous and its id is inserted; B's own name `x` is ambiguous too, but B has a
+      // unique alias `b-alias` that resolves exactly it.
+      regState(fixture, [
+        reg('reg-a', 'x'),
+        reg('reg-b', 'x', { alias: 'b-alias' }),
+      ]);
+
+      const result = completeArguments('list ', { statePath: fixture.statePath })!;
+      const byValue = new Map(result.map((item) => [item.value, item]));
+      expect(byValue.has('list x')).toBe(false);
+      expect(byValue.get('list reg-a')!.label).toBe('x (reg-a)');
+      // A typed `list b-alias` resolves exactly B, so the unique alias is the insertion.
+      expect(byValue.get('list b-alias')!.label).toBe('x (b-alias)');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('drops a Registration whose id is itself ambiguous (collides with a sibling identity)', () => {
+    const fixture = makeFixture();
+    try {
+      // reg-a's id `collide` equals reg-c's alias, and both register under the same name:
+      // no token uniquely resolves reg-a (name `same` matches both; id `collide` matches
+      // both), so it must not be offered. reg-c stays selectable through its unique id.
+      regState(fixture, [
+        reg('collide', 'same'),
+        reg('reg-c', 'same', { alias: 'collide' }),
+      ]);
+
+      const result = completeArguments('list ', { statePath: fixture.statePath })!;
+      const byValue = new Map(result.map((item) => [item.value, item]));
+      expect(byValue.has('list same')).toBe(false);
+      expect(byValue.has('list collide')).toBe(false);
+      expect(byValue.get('list reg-c')!.label).toBe('same (reg-c)');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('never offers a Registration whose name the whitespace-splitting command cannot resolve', () => {
+    const fixture = makeFixture();
+    try {
+      regState(fixture, [
+        reg('reg-a', 'good-market'),
+        reg('reg-b', 'my market'),
+        reg('reg-c', 'my market', { alias: 'my-market' }),
+      ]);
+
+      const result = completeArguments('list ', { statePath: fixture.statePath })!;
+      const byValue = new Map(result.map((item) => [item.value, item]));
+      // `list my market` splits into two tokens and never resolves a Registration; the
+      // unique alias (when present) or the Registration id (otherwise) is inserted instead.
+      expect(byValue.get('list good-market')!.label).toBe('good-market');
+      expect(byValue.get('list reg-b')!.label).toBe('my market (reg-b)');
+      expect(byValue.get('list my-market')!.label).toBe('my market (my-market)');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('filters by case-insensitive fuzzy match over Registration name and source/format provenance', () => {
+    const fixture = makeFixture();
+    try {
+      regState(fixture, [
+        reg('reg-a', 'alpha-market'),
+        reg('reg-b', 'beta-market', { format: 'claude', sourceKind: 'git', source: 'https://github.com/acme/skills' }),
+      ]);
+
+      // Mixed-case partial over the Registration name.
+      const byName = completeArguments('list Bta', { statePath: fixture.statePath })!;
+      expect(byName.map((item) => item.value)).toEqual(['list beta-market']);
+
+      // Fuzzy partial over the raw git source.
+      const bySource = completeArguments('list gthb', { statePath: fixture.statePath })!;
+      expect(bySource.map((item) => item.value)).toEqual(['list beta-market']);
+
+      // Non-contiguous query a-l-p-…-‘-’ across the combined name＋provenance: only the
+      // alpha name matches (`alp-` needs a trailing `-` after the non-contiguous `alp`,
+      // which beta's provenance lacks).
+      const nonContig = completeArguments('list alp-', { statePath: fixture.statePath })!;
+      expect(nonContig.map((item) => item.value)).toEqual(['list alpha-market']);
+
+      expect(completeArguments('list zzz', { statePath: fixture.statePath })).toEqual([]);
+      expect(completeArguments('forget zzz', { statePath: fixture.statePath })).toEqual([]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('returns no candidates for an empty Registration set', () => {
+    const fixture = makeFixture();
+    try {
+      regState(fixture, []);
+      expect(completeArguments('list ', { statePath: fixture.statePath })).toEqual([]);
+      expect(completeArguments('list anything', { statePath: fixture.statePath })).toEqual([]);
+      expect(completeArguments('forget ', { statePath: fixture.statePath })).toEqual([]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('reflects the latest Registrations on every completion request', () => {
+    const fixture = makeFixture();
+    try {
+      regState(fixture, [reg('reg-a', 'alpha-market')]);
+      expect(completeArguments('list ', { statePath: fixture.statePath })!.map((i) => i.value)).toEqual(['list alpha-market']);
+
+      // Simulate the user running `add` (or `forget`) between requests: the next completion
+      // re-reads Bridge State and immediately reflects the current Registration set.
+      regState(fixture, [reg('reg-a', 'alpha-market'), reg('reg-b', 'beta-market')]);
+      expect(completeArguments('list ', { statePath: fixture.statePath })!.map((i) => i.value)).toEqual([
+        'list alpha-market',
+        'list beta-market',
+      ]);
+      expect(completeArguments('forget ', { statePath: fixture.statePath })!.map((i) => i.value)).toEqual([
+        'forget alpha-market',
+        'forget beta-market',
+      ]);
+
+      regState(fixture, [reg('reg-b', 'beta-market')]);
+      expect(completeArguments('forget ', { statePath: fixture.statePath })!.map((i) => i.value)).toEqual(['forget beta-market']);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('is passive for damaged Bridge State: no candidates and the file content is untouched', () => {
+    const fixture = makeFixture();
+    try {
+      const damaged = 'INVALID JSON CONTENT';
+      writeFileSync(fixture.statePath, damaged, 'utf-8');
+
+      for (const prefix of ['list ', 'list some', 'forget ', 'forget some']) {
+        expect(completeArguments(prefix, { statePath: fixture.statePath })).toEqual([]);
+        // Malformed Bridge State must be byte-identical before and after completion (#124).
+        expect(readFileSync(fixture.statePath, 'utf-8')).toBe(damaged);
+      }
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('keeps a bare `list` / `forget` at the root level so the trailing-space candidate can apply first', () => {
+    const fixture = makeFixture();
+    try {
+      regState(fixture, [reg('reg-a', 'alpha-market')]);
+      for (const label of ['list', 'forget']) {
+        const result = completeArguments(label, { statePath: fixture.statePath })!;
+        expect(result.map((item) => item.label)).toEqual([label]);
+        expect(result[0].value).toBe(`${label} `);
+      }
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('returns null for a second token and for `add` (which stays free-form)', () => {
+    const fixture = makeFixture();
+    try {
+      regState(fixture, [reg('reg-a', 'alpha-market')]);
+      expect(completeArguments('list foo bar', { statePath: fixture.statePath })).toBeNull();
+      expect(completeArguments('forget a b', { statePath: fixture.statePath })).toBeNull();
+      // `add ` must never be owned: its second-level argument is a path or Git locator and
+      // belongs to Pi's native completion and the command's own free-form parsing (#124).
+      expect(completeArguments('add ', { statePath: fixture.statePath })).toBeNull();
+      expect(completeArguments('add some/path', { statePath: fixture.statePath })).toBeNull();
+      expect(completeArguments('add owner/repo', { statePath: fixture.statePath })).toBeNull();
     } finally {
       fixture.cleanup();
     }

@@ -140,9 +140,10 @@ describe('/codex-marketplace autocomplete thin Pi adapter (#121)', () => {
     const narrowed = command.getArgumentCompletions!('INSTL');
     expect(narrowed!.map((item) => item.label)).toEqual(['install']);
 
-    // Non-install argument text is not Bridge-owned; second-token install text neither.
-    expect(command.getArgumentCompletions!('list ')).toBeNull();
+    // The `add` argument is free-form (path or Git locator) and never Bridge-owned (#124);
+    // second-token install text is not owned either.
     expect(command.getArgumentCompletions!('add some/path')).toBeNull();
+    expect(command.getArgumentCompletions!('add https://github.com/acme/skills')).toBeNull();
     expect(command.getArgumentCompletions!('install foo bar')).toBeNull();
   });
 
@@ -595,6 +596,231 @@ describe('Installation lifecycle autocomplete thin Pi adapter (#123)', () => {
       expect(current.calls).toEqual([]);
       expect(result!.prefix).toBe('disable ');
       expect(result!.items.map((item) => item.label)).toEqual(['demo']);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+});
+
+// ---- #124 fixture: two same-named marketplaces plus a unique one, one git-sourced ----
+function makeRegistrationFixture(): { root: string; statePath: string; cleanup(): void } {
+  const root = mkdtempSync(join(tmpdir(), 'bridge-e2e-registration-'));
+  const statePath = join(root, 'state.json');
+  writeFileSync(
+    statePath,
+    JSON.stringify(
+      {
+        schemaVersion: 1,
+        registrations: [
+          { id: 'reg-a', marketplaceName: 'shared-market', format: 'codex', sourceKind: 'local', source: join(root, 'mkt-a') },
+          { id: 'reg-b', marketplaceName: 'shared-market', format: 'claude', sourceKind: 'git', source: 'https://github.com/acme/skills' },
+          { id: 'reg-c', marketplaceName: 'unique-market', format: 'codex', sourceKind: 'local', source: join(root, 'mkt-c') },
+        ],
+        installations: [],
+      },
+      null,
+      2,
+    ),
+  );
+  return { root, statePath, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+}
+
+describe('Marketplace Registration autocomplete thin Pi adapter (#124)', () => {
+  it('intercepts a forced Tab inside `list ` / `forget ` with Registration candidates and does not consult the current provider', async () => {
+    const fixture = makeRegistrationFixture();
+    try {
+      const current = fakeCurrentProvider();
+      const wrapper = createBridgeAutocompleteProvider(current, { statePath: fixture.statePath });
+
+      const list = await wrapper.getSuggestions(['/codex-marketplace list '], 0, '/codex-marketplace list '.length, {
+        signal: new AbortController().signal,
+        force: true,
+      });
+      expect(current.calls).toEqual([]);
+      expect(list!.prefix).toBe('list ');
+      // `shared-market` is ambiguous in the fixture (reg-a + reg-b), so the ids are inserted;
+      // only unique names keep the readable form.
+      expect(list!.items[0].value).toBe('list reg-a');
+      expect(list!.items[1].value).toBe('list reg-b');
+      expect(list!.items[0].description).toContain('[codex]');
+      expect(list!.items[1].description).toContain('[claude]');
+      expect(list!.items[2].value).toBe('list unique-market');
+
+      const forget = await wrapper.getSuggestions(['/codex-marketplace forget '], 0, '/codex-marketplace forget '.length, {
+        signal: new AbortController().signal,
+        force: true,
+      });
+      expect(current.calls).toEqual([]);
+      expect(forget!.prefix).toBe('forget ');
+      expect(forget!.items.map((item) => item.value)).toEqual(['forget reg-a', 'forget reg-b', 'forget unique-market']);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('filters forced Registration candidates by the typed query and returns the matching argument prefix', async () => {
+    const fixture = makeRegistrationFixture();
+    try {
+      const current = fakeCurrentProvider();
+      const wrapper = createBridgeAutocompleteProvider(current, { statePath: fixture.statePath });
+
+      const line = '/codex-marketplace list uni';
+      const result = await wrapper.getSuggestions([line], 0, line.length, {
+        signal: new AbortController().signal,
+        force: true,
+      });
+
+      expect(current.calls).toEqual([]);
+      expect(result!.prefix).toBe('list uni');
+      expect(result!.items.map((item) => item.label)).toEqual(['unique-market']);
+      expect(result!.items[0].value).toBe('list unique-market');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('keeps a forced Tab inside `add ` under Pi native filesystem completion (#124)', async () => {
+    const fixture = makeRegistrationFixture();
+    try {
+      const current = fakeCurrentProvider({
+        suggestions: { items: [{ value: '/some/root/path', label: '/some/root/path' }], prefix: '' },
+      });
+      const wrapper = createBridgeAutocompleteProvider(current, { statePath: fixture.statePath });
+
+      // `add ` is not Bridge-owned: a forced Tab must consult the host provider exactly like
+      // any other stacked provider (Pi's filesystem completion), never Bridge candidates.
+      const line = '/codex-marketplace add ';
+      const result = await wrapper.getSuggestions([line], 0, line.length, {
+        signal: new AbortController().signal,
+        force: true,
+      });
+
+      expect(current.calls).toEqual(['getSuggestions']);
+      expect(result).toEqual({ items: [{ value: '/some/root/path', label: '/some/root/path' }], prefix: '' });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('never constrains a free-form Git locator typed after `add ` (#124)', async () => {
+    const fixture = makeRegistrationFixture();
+    try {
+      const current = fakeCurrentProvider({
+        suggestions: { items: [], prefix: 'add https://github.com/acme/skills' },
+      });
+      const wrapper = createBridgeAutocompleteProvider(current, { statePath: fixture.statePath });
+
+      const line = '/codex-marketplace add https://github.com/acme/skills';
+      const result = await wrapper.getSuggestions([line], 0, line.length, {
+        signal: new AbortController().signal,
+        force: true,
+      });
+
+      expect(current.calls).toEqual(['getSuggestions']);
+      expect(result!.prefix).toBe('add https://github.com/acme/skills');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('does not intercept a forced Registration request with a mid-line cursor and trailing text', async () => {
+    const fixture = makeRegistrationFixture();
+    try {
+      const current = fakeCurrentProvider({
+        suggestions: { items: [{ value: 'x', label: 'x' }], prefix: 'x' },
+      });
+      const wrapper = createBridgeAutocompleteProvider(current, { statePath: fixture.statePath });
+
+      const line = '/codex-marketplace list uni junk';
+      const result = await wrapper.getSuggestions([line], 0, '/codex-marketplace list uni'.length, {
+        signal: new AbortController().signal,
+        force: true,
+      });
+
+      expect(current.calls).toEqual(['getSuggestions']);
+      expect(result).toEqual({ items: [{ value: 'x', label: 'x' }], prefix: 'x' });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('delegates natural (non-forced) requests inside a Registration argument context to the host provider', async () => {
+    const captured = captureExtension();
+    const current = fakeCurrentProvider({
+      suggestions: { items: [{ value: 'x', label: 'x' }], prefix: 'x' },
+    });
+    const wrapper = installFactory(captured)(current) as AutocompleteProvider;
+
+    const line = '/codex-marketplace list uni';
+    const result = await wrapper.getSuggestions([line], 0, line.length, {
+      signal: new AbortController().signal,
+      force: false,
+    });
+
+    // force=false is the host's natural argument-completion path (getArgumentCompletions
+    // owns it); the wrapper must not double-intercept.
+    expect(current.calls).toEqual(['getSuggestions']);
+    expect(result).toEqual({ items: [{ value: 'x', label: 'x' }], prefix: 'x' });
+  });
+
+  it('applies a Registration candidate through Pi 0.84.2 real combined provider, cursor at the inserted argument end', async () => {
+    const fixture = makeRegistrationFixture();
+    try {
+      const captured = captureExtension();
+      const command = captured.commands.get('codex-marketplace')!;
+      const wrapper = createBridgeAutocompleteProvider(
+        new CombinedAutocompleteProvider(
+          [{ name: 'codex-marketplace', getArgumentCompletions: command.getArgumentCompletions }],
+          '/tmp',
+          null,
+        ),
+        { statePath: fixture.statePath },
+      );
+
+      const line = '/codex-marketplace list ';
+      const suggestions = await wrapper.getSuggestions([line], 0, line.length, {
+        signal: new AbortController().signal,
+        force: true,
+      });
+      const unique = suggestions!.items.find((item) => item.value === 'list unique-market')!;
+      const applied = wrapper.applyCompletion([line], 0, line.length, unique, suggestions!.prefix);
+      expect(applied.lines[0]).toBe('/codex-marketplace list unique-market');
+      expect(applied.cursorCol).toBe('/codex-marketplace list unique-market'.length);
+
+      // The id insertion for the same-named Registration candidate resolves to a working
+      // `forget <id>` command too (the command resolves by id exactly like `forget <名稱>`).
+      const forgetLine = '/codex-marketplace forget ';
+      const forgetSuggestions = await wrapper.getSuggestions([forgetLine], 0, forgetLine.length, {
+        signal: new AbortController().signal,
+        force: true,
+      });
+      const byId = forgetSuggestions!.items.find((item) => item.value === 'forget reg-b')!;
+      const appliedForget = wrapper.applyCompletion([forgetLine], 0, forgetLine.length, byId, forgetSuggestions!.prefix);
+      expect(appliedForget.lines[0]).toBe('/codex-marketplace forget reg-b');
+      expect(appliedForget.cursorCol).toBe('/codex-marketplace forget reg-b'.length);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('does not chain-reopen the root subcommand list after an applied Registration argument (#124)', async () => {
+    const fixture = makeRegistrationFixture();
+    try {
+      const current = fakeCurrentProvider();
+      const wrapper = createBridgeAutocompleteProvider(current, { statePath: fixture.statePath });
+
+      const result = await wrapper.getSuggestions(['/codex-marketplace list '], 0, '/codex-marketplace list '.length, {
+        signal: new AbortController().signal,
+        force: true,
+      });
+
+      expect(current.calls).toEqual([]);
+      expect(result!.prefix).toBe('list ');
+      expect(result!.items.map((item) => item.label)).toEqual([
+        'shared-market (reg-a)',
+        'shared-market (reg-b)',
+        'unique-market',
+      ]);
     } finally {
       fixture.cleanup();
     }
