@@ -1,11 +1,56 @@
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import type { AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions } from '@earendil-works/pi-tui';
 import { CombinedAutocompleteProvider } from '@earendil-works/pi-tui';
 
 import registerBridgeExtension from '../../extensions/pi/index.js';
+import { createBridgeAutocompleteProvider } from '../../extensions/pi/autocomplete.js';
 
 const ROOT_LABELS = ['add', 'list', 'install', 'update', 'disable', 'enable', 'remove', 'forget', 'help'];
+
+// ---- #122 fixture: two local marketplaces (one same-named sibling unavailable #91) ----
+// Full enumeration: 1=shared(alpha, local), 2=demo(alpha, local, installed+enabled) and
+// 3=shared(beta, github → unavailable). Candidates: `shared` inserts its enumeration number
+// (name is ambiguous in the full enumeration), `demo` keeps its unique name.
+function makeInstallFixture(): { root: string; statePath: string; cleanup(): void } {
+  const root = mkdtempSync(join(tmpdir(), 'bridge-e2e-install-'));
+  const statePath = join(root, 'state.json');
+  const mktA = join(root, 'mkt-a');
+  const mktB = join(root, 'mkt-b');
+  const writeCatalog = (mktRoot: string, name: string, entries: unknown[]): void => {
+    const dir = join(mktRoot, '.agents', 'plugins');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'marketplace.json'), JSON.stringify({ name, plugins: entries }));
+  };
+  writeCatalog(mktA, 'alpha-market', [
+    { name: 'shared', source: { source: 'local', path: './plugins/shared-a' } },
+    { name: 'demo', source: { source: 'local', path: './plugins/demo' } },
+  ]);
+  writeCatalog(mktB, 'beta-market', [
+    { name: 'shared', source: { source: 'github', repo: 'acme/shared-b' } },
+  ]);
+  writeFileSync(
+    statePath,
+    JSON.stringify(
+      {
+        schemaVersion: 1,
+        registrations: [
+          { id: 'reg-a', marketplaceName: 'alpha-market', format: 'codex', sourceKind: 'local', source: mktA },
+          { id: 'reg-b', marketplaceName: 'beta-market', format: 'codex', sourceKind: 'local', source: mktB },
+        ],
+        installations: [
+          { id: 'inst-demo', pluginId: 'demo', enabled: true, installationState: 'enabled', registrationId: 'reg-a', manifestName: 'demo', sourceKind: 'local', source: mktA, skills: [] },
+        ],
+      },
+      null,
+      2,
+    ),
+  );
+  return { root, statePath, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+}
 
 interface CapturedCommand {
   handler(args: string, ctx: unknown): Promise<void>;
@@ -95,7 +140,10 @@ describe('/codex-marketplace autocomplete thin Pi adapter (#121)', () => {
     const narrowed = command.getArgumentCompletions!('INSTL');
     expect(narrowed!.map((item) => item.label)).toEqual(['install']);
 
-    expect(command.getArgumentCompletions!('install my-plugin')).toBeNull();
+    // Non-install argument text is not Bridge-owned; second-token install text neither.
+    expect(command.getArgumentCompletions!('list ')).toBeNull();
+    expect(command.getArgumentCompletions!('add some/path')).toBeNull();
+    expect(command.getArgumentCompletions!('install foo bar')).toBeNull();
   });
 
   it('installs an autocomplete provider factory through session_start', () => {
@@ -198,19 +246,24 @@ describe('/codex-marketplace autocomplete thin Pi adapter (#121)', () => {
     expect(current.calls).toEqual(['getSuggestions']);
   });
 
-  it('does not chain-reopen the subcommand list after an applied argument (next Tab is delegated, force path)', async () => {
+  it('does not chain-reopen the root subcommand list after an applied argument — the next forced Tab owns the install context (#122)', async () => {
     const captured = captureExtension();
     const current = fakeCurrentProvider();
-    const wrapper = installFactory(captured)(current) as AutocompleteProvider;
 
     // After applying "install " the editor holds "/codex-marketplace install "; a subsequent
-    // Tab is a forced request and must not re-intercept the line as the exact command.
-    await wrapper.getSuggestions(['/codex-marketplace install '], 0, 25, {
+    // Tab is a forced request. It must not re-intercept the line as the exact root command
+    // (that would chain-reopen the nine subcommands); it owns the second-level install
+    // context instead, reading the (empty, hermetic) state passively.
+    const wrapper = createBridgeAutocompleteProvider(current, { statePath: join(tmpdir(), 'bridge-e2e-no-such-state.json') });
+
+    const result = await wrapper.getSuggestions(['/codex-marketplace install '], 0, '/codex-marketplace install '.length, {
       signal: new AbortController().signal,
       force: true,
     });
 
-    expect(current.calls).toEqual(['getSuggestions']);
+    expect(current.calls).toEqual([]);
+    expect(result!.prefix).toBe('install ');
+    expect(result!.items).toEqual([]);
   });
 
   it('registers nothing terminal-only and keeps command execution when the host ui no-ops (RPC/JSON/print modes)', () => {
@@ -239,5 +292,110 @@ describe('/codex-marketplace autocomplete thin Pi adapter (#121)', () => {
     expect(typeof command!.getArgumentCompletions).toBe('function');
     // Command execution behavior is unaffected by the no-op ui.
     expect(typeof command!.handler).toBe('function');
+  });
+});
+
+describe('state-aware install autocomplete thin Pi adapter (#122)', () => {
+  it('intercepts a forced Tab inside `install ` with state-aware candidates and does not consult the current provider', async () => {
+    const fixture = makeInstallFixture();
+    try {
+      const captured = captureExtension();
+      const current = fakeCurrentProvider();
+      // Explicit readOptions keep the test hermetic (defaults would read the real agent dir).
+      const wrapper = createBridgeAutocompleteProvider(current, { statePath: fixture.statePath });
+
+      const line = '/codex-marketplace install ';
+      const result = await wrapper.getSuggestions([line], 0, line.length, {
+        signal: new AbortController().signal,
+        force: true,
+      });
+
+      expect(current.calls).toEqual([]);
+      expect(result!.prefix).toBe('install ');
+      expect(result!.items.map((item) => item.label)).toEqual(['1', 'demo']);
+      // Same-named `shared` (with an unavailable sibling) inserts its enumeration number.
+      expect(result!.items[0].value).toBe('install 1');
+      expect(result!.items[0].description).toContain('[alpha-market]');
+      // Unique name keeps the name form; reinstall of the enabled plugin is offered.
+      expect(result!.items[1].value).toBe('install demo');
+      expect(result!.items[1].description).toContain('已裝啟用');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('filters forced install candidates by the typed query and returns the matching argument prefix', async () => {
+    const fixture = makeInstallFixture();
+    try {
+      const captured = captureExtension();
+      const current = fakeCurrentProvider();
+      const wrapper = createBridgeAutocompleteProvider(current, { statePath: fixture.statePath });
+
+      const line = '/codex-marketplace install dem';
+      const result = await wrapper.getSuggestions([line], 0, line.length, {
+        signal: new AbortController().signal,
+        force: true,
+      });
+
+      expect(current.calls).toEqual([]);
+      expect(result!.prefix).toBe('install dem');
+      expect(result!.items.map((item) => item.label)).toEqual(['demo']);
+      expect(result!.items[0].value).toBe('install demo');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('delegates natural (non-forced) requests inside the install argument context to the host provider', async () => {
+    const captured = captureExtension();
+    const current = fakeCurrentProvider({
+      suggestions: { items: [{ value: 'x', label: 'x' }], prefix: 'x' },
+    });
+    const wrapper = installFactory(captured)(current) as AutocompleteProvider;
+
+    const line = '/codex-marketplace install dem';
+    const result = await wrapper.getSuggestions([line], 0, line.length, {
+      signal: new AbortController().signal,
+      force: false,
+    });
+
+    // force=false is the host's natural argument-completion path (getArgumentCompletions
+    // owns it); the wrapper must not double-intercept.
+    expect(current.calls).toEqual(['getSuggestions']);
+    expect(result).toEqual({ items: [{ value: 'x', label: 'x' }], prefix: 'x' });
+  });
+
+  it('applies an install candidate through Pi 0.84.2 real combined provider, cursor at the inserted argument end', async () => {
+    const fixture = makeInstallFixture();
+    try {
+      const captured = captureExtension();
+      const command = captured.commands.get('codex-marketplace')!;
+      const wrapper = createBridgeAutocompleteProvider(
+        new CombinedAutocompleteProvider(
+          [{ name: 'codex-marketplace', getArgumentCompletions: command.getArgumentCompletions }],
+          '/tmp',
+          null,
+        ),
+        { statePath: fixture.statePath },
+      );
+
+      const line = '/codex-marketplace install ';
+      const suggestions = await wrapper.getSuggestions([line], 0, line.length, {
+        signal: new AbortController().signal,
+        force: true,
+      });
+      const demo = suggestions!.items.find((item) => item.value === 'install demo')!;
+      const applied = wrapper.applyCompletion([line], 0, line.length, demo, suggestions!.prefix);
+      expect(applied.lines[0]).toBe('/codex-marketplace install demo');
+      expect(applied.cursorCol).toBe('/codex-marketplace install demo'.length);
+
+      // Number insertion for the same-named candidate resolves to a working command too.
+      const shared = suggestions!.items.find((item) => item.value === 'install 1')!;
+      const appliedShared = wrapper.applyCompletion([line], 0, line.length, shared, suggestions!.prefix);
+      expect(appliedShared.lines[0]).toBe('/codex-marketplace install 1');
+      expect(appliedShared.cursorCol).toBe('/codex-marketplace install 1'.length);
+    } finally {
+      fixture.cleanup();
+    }
   });
 });
