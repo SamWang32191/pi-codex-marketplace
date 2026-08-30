@@ -1,16 +1,20 @@
 /**
- * Bridge completion seam (#121).
+ * Bridge completion seam (#121, #122).
  *
- * Pure root-level autocomplete for `/codex-marketplace` subcommands. This module owns no
- * terminal, TUI, rendering, or Pi host types: its input is the complete argument prefix plus
- * replaceable read-only options, and its output is only the insertion value, display label,
- * and optional description that Pi autocomplete needs — or `null` when the argument prefix is
- * not Bridge-owned syntax.
+ * Pure autocomplete for `/codex-marketplace`: root-level subcommands (#121) plus
+ * state-aware second-level `install` candidates (#122). This module owns no terminal, TUI,
+ * rendering, or Pi host types: its input is the complete argument prefix plus replaceable
+ * read-only options, and its output is only the insertion value, display label, and optional
+ * description that Pi autocomplete needs — or `null` when the argument prefix is not
+ * Bridge-owned syntax.
  *
- * Not owned (#121 scope): state-dependent second-level candidates, arbitrary text, file and
- * path completion. When the module does not own the syntax, callers fall through to Pi's
- * normal behavior unchanged.
+ * Not owned: second-level candidates for subcommands other than `install`, arbitrary text,
+ * file and path completion. When the module does not own the syntax, callers fall through to
+ * Pi's normal behavior unchanged.
  */
+
+import { queryMarketplacePlugins, type MarketplacePluginInstallationState } from './plugin-query.js';
+import { readMinimalBridgeStatePassive, type MinimalBridgeState } from './state.js';
 
 export interface CompletionItem {
   /** Insertion value. Argument-taking subcommands carry a trailing space (#121). */
@@ -24,10 +28,10 @@ export interface CompletionItem {
 /**
  * Replaceable read-only options for composing candidates (Bridge State read seam).
  *
- * Root-level (#121) candidates never read Bridge State, so these options have no effect on
- * the current output — the seam exists so state-dependent second-level candidates can be
- * composed passively without ever writing or resetting a damaged document (#119 stories
- * 22–23). The adapter passes them through from registrable sources only.
+ * Root-level (#121) candidates never read Bridge State; state-aware `install` candidates
+ * (#122) read it passively through `readMinimalBridgeStatePassive`, so a damaged document is
+ * never written, reset, or repaired (#119 stories 22–23). The adapter passes them through
+ * from registrable sources only.
  */
 export interface CompletionReadOptions {
   statePath?: string;
@@ -87,20 +91,152 @@ function fuzzyScore(query: string, label: string): number | null {
 }
 
 /**
- * Compose root-level completion candidates for `/codex-marketplace <argumentPrefix>`.
+ * The owned second-level syntax: `install` followed by whitespace and a single-token query
+ * (plugin names are lowercase kebab-case; a second token is not Bridge-owned and falls
+ * through). `install` without a trailing space stays at the root level so the trailing-space
+ * root candidate can be applied first.
+ */
+const INSTALL_SECOND_LEVEL_RE = /^install\s+(\S*)$/;
+
+/** Status vocabulary aligned with the `list` command surface (#90). */
+function installStatusLabel(state: MarketplacePluginInstallationState): string {
+  if (state === 'enabled') return '已裝啟用';
+  if (state === 'disabled') return '已裝停用';
+  return '可安裝';
+}
+
+/**
+ * Positive canonical integer without leading zeros — the exact argument shape `install`
+ * parses as an enumeration number (`String(Number(arg)) === arg && Number.isInteger && >= 1`),
+ * so a unique plugin name with this shape can never be resolved by name.
+ */
+const CANONICAL_INTEGER_RE = /^[1-9]\d*$/;
+
+/**
+ * Whether a name-typed `install <name>` invocation would actually resolve this candidate
+ * name: it must be unique in the full enumeration, contain no whitespace (the command splits
+ * arguments on whitespace), and not look like a canonical integer (the command parses those
+ * as enumeration numbers). Otherwise the insertion must be the enumeration number instead.
+ */
+function nameInsertionUsable(unique: boolean, name: string): boolean {
+  return unique && !/\s/.test(name) && !CANONICAL_INTEGER_RE.test(name);
+}
+
+interface InstallCandidate {
+  /** Plugin candidate name (entry name → path basename → ordinal fallback). */
+  name: string;
+  /** Marketplace provenance shown in the candidate description. */
+  marketplaceName: string;
+  /** 可安裝 / 已裝啟用 / 已裝停用 — install and reinstall are both selectable. */
+  status: string;
+  /** Case-insensitive fuzzy search target: plugin name + marketplace provenance. */
+  searchText: string;
+  /** Insertion token: the name when usable, else the enumeration number. */
+  insertion: string;
+}
+
+/**
+ * Compose install candidates from the shared Marketplace Plugin enumeration, restricted to
+ * structurally installable entries. Unavailable Entries (unsupported source, unresolvable
+ * source, invalid plugin, identity collision) never become candidates.
  *
+ * Name insertion is allowed only when a name-typed `install <名稱>` would actually resolve
+ * the plugin: the candidate name must be unique against the *full* enumeration (the same
+ * domain `install <名稱>` resolves against — a same-named sibling, even an unavailable one,
+ * forces the number insertion because the name would be rejected as ambiguous), contain no
+ * whitespace, and not parse as a canonical enumeration number. The inserted number is the
+ * plugin's number in that full enumeration, matching `list` and `install <編號>` exactly.
+ */
+function composeInstallCandidates(state: MinimalBridgeState, options: CompletionReadOptions): InstallCandidate[] {
+  const { plugins } = queryMarketplacePlugins(state, { agentDir: options.agentDir });
+  const nameCounts = new Map<string, number>();
+  for (const plugin of plugins) {
+    nameCounts.set(plugin.candidateName, (nameCounts.get(plugin.candidateName) ?? 0) + 1);
+  }
+
+  const candidates: InstallCandidate[] = [];
+  for (const plugin of plugins) {
+    if (!plugin.structurallyInstallable) continue;
+    candidates.push({
+      name: plugin.candidateName,
+      marketplaceName: plugin.marketplaceName,
+      status: installStatusLabel(plugin.installationState),
+      searchText: `${plugin.candidateName} ${plugin.marketplaceName}`,
+      insertion: nameInsertionUsable((nameCounts.get(plugin.candidateName) ?? 0) === 1, plugin.candidateName)
+        ? plugin.candidateName
+        : String(plugin.number),
+    });
+  }
+  return candidates;
+}
+
+/**
+ * Compose the candidate label. A name insertion shows the name itself; a number insertion
+ * keeps the enumeration number visible but labels the plugin so the user can tell which
+ * same-named entry each candidate selects (the description carries provenance + status).
+ */
+function installLabel(candidate: InstallCandidate): string {
+  return candidate.insertion === candidate.name
+    ? candidate.name
+    : `${candidate.name} (#${candidate.insertion})`;
+}
+
+function toInstallItem(candidate: InstallCandidate): CompletionItem {
+  return {
+    value: `install ${candidate.insertion}`,
+    label: installLabel(candidate),
+    description: `[${candidate.marketplaceName}] ${candidate.status}`,
+  };
+}
+
+/**
+ * Second-level `install` candidates for `/codex-marketplace install <query>`.
+ *
+ * - Empty query → every currently installable or reinstallable plugin in enumeration order.
+ * - A query → case-insensitive fuzzy match over the plugin name and Marketplace provenance;
+ *   `[]` when nothing matches (the syntax is still Bridge-owned, there are simply no
+ *   candidates).
+ *
+ * The Bridge State read is passive: empty, damaged, unreadable, or incompatible state or
+ * marketplace material contributes no candidates and is never written, reset, or repaired.
+ */
+function completeInstallArguments(query: string, options: CompletionReadOptions): CompletionItem[] {
+  const state = readMinimalBridgeStatePassive({ statePath: options.statePath, agentDir: options.agentDir });
+  const candidates = composeInstallCandidates(state, options);
+  if (query.length === 0) {
+    return candidates.map(toInstallItem);
+  }
+  const scored: { item: CompletionItem; score: number }[] = [];
+  for (const candidate of candidates) {
+    const score = fuzzyScore(query, candidate.searchText);
+    if (score !== null) {
+      scored.push({ item: toInstallItem(candidate), score });
+    }
+  }
+  scored.sort((a, b) => a.score - b.score || a.item.label.localeCompare(b.item.label));
+  return scored.map((entry) => entry.item);
+}
+
+/**
+ * Compose completion candidates for `/codex-marketplace <argumentPrefix>`.
+ *
+ * - `install ` / `install <query>` → state-aware second-level install candidates (#122).
  * - Empty prefix → all nine root candidates (Pi's exact-command interception surface).
- * - A single token → case-insensitive fuzzy-filtered subcommands; `[]` when nothing matches
- *   (the syntax is still Bridge-owned, there are simply no candidates).
- * - Whitespace-containing prefixes (second-level argument text) are not Bridge-owned in #121 → `null`,
- *   so callers fall through to Pi's own completion unchanged.
+ * - A single token → case-insensitive fuzzy-filtered subcommands; `[]` when nothing matches.
+ * - Any other whitespace-containing prefix (unowned second-level syntax) → `null`, so callers
+ *   fall through to Pi's own completion unchanged.
  *
- * The module never writes Bridge State; root candidates are derived without reading it at all.
+ * The module never writes Bridge State; root candidates are derived without reading it at all,
+ * and install candidates read it passively.
  */
 export function completeArguments(
   argumentPrefix: string,
-  _options: CompletionReadOptions = {},
+  options: CompletionReadOptions = {},
 ): CompletionItem[] | null {
+  const installMatch = INSTALL_SECOND_LEVEL_RE.exec(argumentPrefix);
+  if (installMatch) {
+    return completeInstallArguments(installMatch[1], options);
+  }
   if (/\s/.test(argumentPrefix)) return null;
 
   const query = argumentPrefix.trim();
