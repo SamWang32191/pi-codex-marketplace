@@ -113,13 +113,13 @@ Credentialed Acquisition 語意（安全線）：
 - 自動偵測或已核准的 helper 仍被遠端拒絕（401）時，錯誤訊息提示檢查登入（`gh auth status`／keychain）或設環境變數核准其他 helper；本機偵測不到任何憑證來源時提示設環境變數或改用 SSH。
 - 設定的 helper 名稱無效時（例如直接寫 `gh`——它不是 git 原生的 credential helper 執行檔），錯誤訊息指出正確寫法：原生 helper 名稱（`osxkeychain`／`store`）或 shell form（`!gh auth git-credential`）。
 
-##### SSH 定位器：私有 repo 的替代路徑
+#### SSH 定位器：私有 repo 的替代路徑
 
 私有 repo 可以完全繞過此環境變數，直接用 SSH 定位器註冊（HTTPS 與 SSH 同屬允許的 credential-free 定位器）：
 
 ```
 /codex-marketplace add git@github.com:acme/private-mkt       # scp-like 簡寫（canonical：ssh://git@github.com/acme/private-mkt）
-/codex-marketplace add ssh://git@github.com:acme/private-mkt
+/codex-marketplace add ssh://git@github.com/acme/private-mkt
 ```
 
 前提（與既有 Acquisition Trust Base 一致）：
