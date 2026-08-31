@@ -2,7 +2,10 @@
 
 All notable changes to `pi-codex-marketplace` are documented here. Format follows Keep a Changelog and SemVer (starting at `0.1.0`; Git tags `v*` mirror npm versions).
 
-## [Unreleased]
+## [1.0.0] - 2026-08-31
+
+### Changed
+- **穩定 Bridge State 契約（SemVer 1.0.0）**：0.y 維護視窗結束，`1.0.0` 起宣示 Bridge State storage（`schemaVersion` 固定 1、永不遷移）為穩定契約；後續破壞性變更以 major bump 表達。
 
 ### Docs
 - **文件結構化重構**：README.md 瘦身為入口（Quickstart＋子命令速查＋文件地圖），完整內容拆分至 `docs/`（installation、usage、cli、private-repos、architecture、development），並同步更新 release skill 與 ADR 0002 指向 README 章節的交叉引用。功能無變更。
