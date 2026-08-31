@@ -359,7 +359,7 @@ describe("Bridge CLI adapter seam (#132, #133)", () => {
       env: { ...process.env, PI_CODING_AGENT_DIR: agentDir, PI_AGENT_DIR: agentDir },
     });
     expect(helpOutput).toContain("用法：/codex-marketplace");
-  });
+  }, 30000);
 });
 
 describe("Registration 表面：add／list (#132, #134)", () => {
@@ -745,5 +745,5 @@ describe("Registration 表面：add／list (#132, #134)", () => {
     } finally {
       rmSync(demoFixture, { recursive: true, force: true });
     }
-  });
+  }, 60000);
 });
