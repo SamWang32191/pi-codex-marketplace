@@ -1,7 +1,7 @@
 {
   "name": "pi-codex-marketplace",
-  "version": "0.7.0",
-  "description": "Bridge Package for Codex and Claude Marketplace compatibility in Pi — 極簡 /codex-marketplace 純文字指令（add/list/install/update/disable/enable/remove/forget）、單一 Global Bridge State、當下最新安裝與即時投影",
+  "version": "0.8.0",
+  "description": "Bridge Package for Codex and Claude Marketplace compatibility in Pi — 極簡 /codex-marketplace 純文字指令與 Headless CLI（add/list/install/update/disable/enable/remove/forget）、單一 Global Bridge State、當下最新安裝與即時投影",
   "type": "module",
   "keywords": [
     "pi-package",
