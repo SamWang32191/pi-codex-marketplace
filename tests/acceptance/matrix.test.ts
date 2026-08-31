@@ -48,8 +48,11 @@ describe('Acceptance matrix — per-row gates (smoke that each layer is covered)
     expect(createEmptyMinimalState().schemaVersion).toBe(1);
   });
 
-  it('E2E row — synthetic: /codex-marketplace thin adapter highest seam is exposed', async () => {
-    const mod = await import('../../extensions/pi/index.js');
-    expect(mod.default).toBeDefined();
+  it('E2E row — synthetic: /codex-marketplace thin adapter and Bridge CLI seam are exposed', async () => {
+    const extensionMod = await import('../../extensions/pi/index.js');
+    expect(extensionMod.default).toBeDefined();
+
+    const cliMod = await import('../../src/cli/index.js');
+    expect(cliMod.runCli).toBeDefined();
   });
 });

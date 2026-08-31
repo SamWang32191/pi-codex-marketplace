@@ -12,6 +12,10 @@ _Avoid_: Pi plugin, importer, converter
 The runtime portion of the Bridge Package that presents marketplace and plugin capabilities inside Pi.
 _Avoid_: Bridge Package, Codex plugin, Claude plugin
 
+**Bridge CLI**:
+The command-line management entry (`pi-codex-marketplace`) provided by the Bridge Package for headless and CI environments. It executes directly via Node without Pi runtime APIs, operates over the exact same single Global Scope Bridge State as the Bridge Extension, and delivers TUI-parity command semantics under a deterministic stdout/stderr/exit code output contract.
+_Avoid_: Pi CLI, standalone daemon, separate state store
+
 **Bridge State**:
 The Bridge-owned durable desired state stored in a single Global Scope document. It contains a schema version and Registration and Installation records; source-derived catalogs, projection results, effective precedence, and diagnostics are recomputed.
 _Avoid_: Pi settings, runtime snapshot, cache
