@@ -6,8 +6,9 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { basename, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 import { parseFrontmatter } from '@earendil-works/pi-coding-agent';
 
@@ -59,6 +60,17 @@ export interface CommandResult {
   output: string;
   reload: boolean;
   stateReset?: boolean;
+  ok: boolean;
+}
+
+export function getPackageVersion(): string {
+  try {
+    const pkgPath = resolve(dirname(fileURLToPath(import.meta.url)), '../../package.json');
+    const pkgJson = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+    return pkgJson.version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
 }
 
 const USAGE_LINE = '用法：/codex-marketplace <add|list|install|update|disable|enable|remove|forget|help>';
@@ -495,7 +507,7 @@ export async function runCommand(
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     const messages = [`錯誤：讀取 Bridge State 失敗：${msg}`];
-    return { messages, lines: messages, output: messages.join('\n\n'), reload: false, stateReset: false };
+    return { messages, lines: messages, output: messages.join('\n\n'), reload: false, stateReset: false, ok: false };
   }
 
   const messages: string[] = [];
@@ -513,6 +525,12 @@ export async function runCommand(
     const subargs = rawArgs.slice(1);
 
     switch (subcmd) {
+      case '--version':
+      case '-v':
+      case 'version': {
+        messages.push(getPackageVersion());
+        break;
+      }
       case 'help':
       case '-h':
       case '--help': {
@@ -1274,11 +1292,26 @@ export async function runCommand(
     }
   }
 
+  const ok = !messages.some(
+    (m) =>
+      m.startsWith('錯誤：') ||
+      m.startsWith('未知子命令') ||
+      m.startsWith('用法：/codex-marketplace add') ||
+      m.startsWith('用法：/codex-marketplace install') ||
+      m.startsWith('用法：/codex-marketplace disable') ||
+      m.startsWith('用法：/codex-marketplace enable') ||
+      m.startsWith('用法：/codex-marketplace remove') ||
+      m.startsWith('用法：/codex-marketplace forget') ||
+      m.startsWith('已註冊過相同來源') ||
+      m.startsWith('找不到 marketplace'),
+  );
+
   return {
     messages,
     lines: messages,
     output: messages.join('\n\n'),
     reload,
     stateReset: wasReset,
+    ok,
   };
 }

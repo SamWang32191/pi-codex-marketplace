@@ -20,6 +20,9 @@
   "engines": {
     "node": ">=22.19.0"
   },
+  "bin": {
+    "pi-codex-marketplace": "./bin/pi-codex-marketplace.js"
+  },
   "pi": {
     "extensions": [
       "./extensions/pi/index.ts"
@@ -56,6 +59,7 @@
     "prepublishOnly": "npm run typecheck && npm test"
   },
   "files": [
+    "bin",
     "extensions",
     "src",
     "README.md",
