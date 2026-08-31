@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 
 import { runCli, type CliIO, RELOAD_NOTICE } from "../../src/cli/index.js";
 import { readMinimalBridgeState, writeMinimalBridgeState } from "../../src/bridge/state.js";
+import { discoverProjectedSkillPaths } from "../../src/projection/exposure.js";
 import type { GitExecutor } from "../../src/registration/git-acquisition.js";
 import { CREDENTIAL_HELPERS_ENV, type CredentialHelperDetector } from "../../src/registration/credential-helpers.js";
 
@@ -747,3 +748,387 @@ describe("Registration 表面：add／list (#132, #134)", () => {
     }
   }, 60000);
 });
+
+function addSkillToSyntheticPlugin(pluginDir: string, skill: string): void {
+  const sdir = join(pluginDir, "skills", skill);
+  mkdirSync(sdir, { recursive: true });
+  writeFileSync(
+    join(sdir, "SKILL.md"),
+    `---\nname: ${skill}\ndescription: Desc for ${skill}\n---\n\nBody for ${skill}\n`,
+  );
+}
+
+describe("Installation 表面：install／update (#132, #135)", () => {
+  let cwd: string;
+  let agentDir: string;
+  let statePath: string;
+
+  beforeEach(() => {
+    delete process.env[CREDENTIAL_HELPERS_ENV];
+    cwd = mkdtempSync(join(tmpdir(), "cli-inst-cwd-"));
+    agentDir = mkdtempSync(join(tmpdir(), "cli-inst-agent-"));
+    statePath = join(agentDir, "codex-marketplace", "state.json");
+    mkdirSync(join(agentDir, "codex-marketplace"), { recursive: true });
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    process.env.PI_AGENT_DIR = agentDir;
+  });
+
+  afterEach(() => {
+    delete process.env[CREDENTIAL_HELPERS_ENV];
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(agentDir, { recursive: true, force: true });
+    delete process.env.PI_CODING_AGENT_DIR;
+    delete process.env.PI_AGENT_DIR;
+  });
+
+  it("install resolves a plugin by enumeration number, reports installed skills, updates state, and exits 0 to stdout", async () => {
+    const mktRoot = mkdtempSync(join(tmpdir(), "cli-inst-num-"));
+    makeSyntheticMarketplace(mktRoot, "num-mkt", [
+      { name: "plugin-alpha", path: "./plugins/plugin-alpha", skills: ["alpha-skill-1", "alpha-skill-2"] },
+      { name: "plugin-beta", path: "./plugins/plugin-beta", skills: ["beta-skill"] },
+    ]);
+
+    try {
+      await runCli(["add", mktRoot], createMockIo().io, { cwd, agentDir });
+
+      const mockInstall = createMockIo();
+      const codeInstall = await runCli(["install", "1"], mockInstall.io, { cwd, agentDir });
+
+      expect(codeInstall).toBe(0);
+      expect(mockInstall.exitCodes).toEqual([0]);
+      expect(mockInstall.stderr).toHaveLength(0);
+      const out = mockInstall.stdout.join("");
+      expect(out).toContain("安裝 \"plugin-alpha\"（2 skills：alpha-skill-1, alpha-skill-2）");
+      expect(out).toContain(RELOAD_NOTICE);
+      expect(out).not.toContain("已重新載入生效");
+
+      // Verify Bridge State and Projection
+      const st = readMinimalBridgeState({ agentDir });
+      expect(st.state.installations).toHaveLength(1);
+      expect(st.state.installations[0].manifestName).toBe("plugin-alpha");
+      expect(st.state.installations[0].enabled).toBe(true);
+      expect(st.state.installations[0].skills).toEqual(["alpha-skill-1", "alpha-skill-2"]);
+
+      const proj = discoverProjectedSkillPaths({ agentDir });
+      expect(proj.skillPaths.some((p) => p.includes("alpha-skill-1"))).toBe(true);
+      expect(proj.skillPaths.some((p) => p.includes("alpha-skill-2"))).toBe(true);
+    } finally {
+      rmSync(mktRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("install resolves a plugin by unique name, succeeds without prompt, and exits 0 to stdout", async () => {
+    const mktRoot = mkdtempSync(join(tmpdir(), "cli-inst-name-"));
+    makeSyntheticMarketplace(mktRoot, "name-mkt", [
+      { name: "plugin-one", path: "./plugins/plugin-one", skills: ["skill-1"] },
+      { name: "plugin-two", path: "./plugins/plugin-two", skills: ["skill-2"] },
+    ]);
+
+    try {
+      await runCli(["add", mktRoot], createMockIo().io, { cwd, agentDir });
+
+      const mockInstall = createMockIo();
+      const codeInstall = await runCli(["install", "plugin-two"], mockInstall.io, { cwd, agentDir });
+
+      expect(codeInstall).toBe(0);
+      expect(mockInstall.exitCodes).toEqual([0]);
+      expect(mockInstall.stderr).toHaveLength(0);
+      const out = mockInstall.stdout.join("");
+      expect(out).toContain("安裝 \"plugin-two\"（1 skills：skill-2）");
+      expect(out).toContain(RELOAD_NOTICE);
+
+      const st = readMinimalBridgeState({ agentDir });
+      expect(st.state.installations).toHaveLength(1);
+      expect(st.state.installations[0].manifestName).toBe("plugin-two");
+    } finally {
+      rmSync(mktRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("install fails gracefully with non-zero exit code to stderr on ambiguous name, non-existent target, or out-of-range number", async () => {
+    const mktA = mkdtempSync(join(tmpdir(), "cli-amb-a-"));
+    const mktB = mkdtempSync(join(tmpdir(), "cli-amb-b-"));
+    makeSyntheticMarketplace(mktA, "mkt-a", [
+      { name: "shared-plugin", path: "./plugins/shared-plugin", skills: ["s-a"] },
+    ]);
+    makeSyntheticMarketplace(mktB, "mkt-b", [
+      { name: "shared-plugin", path: "./plugins/shared-plugin", skills: ["s-b"] },
+    ]);
+
+    try {
+      await runCli(["add", mktA], createMockIo().io, { cwd, agentDir });
+      await runCli(["add", mktB], createMockIo().io, { cwd, agentDir });
+
+      // 1. Ambiguous name across 2 marketplaces
+      const mockAmb = createMockIo();
+      const codeAmb = await runCli(["install", "shared-plugin"], mockAmb.io, { cwd, agentDir });
+      expect(codeAmb).toBe(1);
+      expect(mockAmb.stdout).toHaveLength(0);
+      const errAmb = mockAmb.stderr.join("");
+      expect(errAmb).toContain("錯誤：名稱 \"shared-plugin\" 對應多個 plugin");
+      expect(errAmb).toContain("請改用編號安裝");
+
+      // 2. Non-existent name
+      const mockMissing = createMockIo();
+      const codeMissing = await runCli(["install", "unknown-plugin"], mockMissing.io, { cwd, agentDir });
+      expect(codeMissing).toBe(1);
+      expect(mockMissing.stdout).toHaveLength(0);
+      expect(mockMissing.stderr.join("")).toContain("錯誤：找不到名稱 \"unknown-plugin\" 對應的 plugin");
+
+      // 3. Out-of-range number
+      const mockOutOfRange = createMockIo();
+      const codeOutOfRange = await runCli(["install", "99"], mockOutOfRange.io, { cwd, agentDir });
+      expect(codeOutOfRange).toBe(1);
+      expect(mockOutOfRange.stdout).toHaveLength(0);
+      expect(mockOutOfRange.stderr.join("")).toContain("錯誤：找不到編號 99 對應的 plugin（可用編號 1–2）");
+    } finally {
+      rmSync(mktA, { recursive: true, force: true });
+      rmSync(mktB, { recursive: true, force: true });
+    }
+  });
+
+  it("install refuses unavailable entry and exits 1 to stderr", async () => {
+    const claudeRoot = mkdtempSync(join(tmpdir(), "cli-unavail-claude-"));
+    makeClaudeMarketplace(claudeRoot, "claude-unavail", [
+      { name: "unsupported-ext", unavailable: true },
+    ]);
+
+    try {
+      await runCli(["add", claudeRoot], createMockIo().io, { cwd, agentDir });
+
+      const mockInstall = createMockIo();
+      const codeInstall = await runCli(["install", "1"], mockInstall.io, { cwd, agentDir });
+      expect(codeInstall).toBe(1);
+      expect(mockInstall.stdout).toHaveLength(0);
+      const err = mockInstall.stderr.join("");
+      expect(err).toContain("錯誤：plugin \"unsupported-ext\" unavailable，無法安裝");
+      expect(err).toContain("external git-family entry sources");
+    } finally {
+      rmSync(claudeRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("repeated install of the same plugin re-fetches latest and overwrites (重裝＝更新) with exit 0", async () => {
+    const mktRoot = mkdtempSync(join(tmpdir(), "cli-reinstall-"));
+    makeSyntheticMarketplace(mktRoot, "reinstall-mkt", [
+      { name: "evolving-plugin", path: "./plugins/evolving-plugin", skills: ["v1-skill"] },
+    ]);
+
+    try {
+      await runCli(["add", mktRoot], createMockIo().io, { cwd, agentDir });
+
+      // First install
+      const mock1 = createMockIo();
+      const code1 = await runCli(["install", "evolving-plugin"], mock1.io, { cwd, agentDir });
+      expect(code1).toBe(0);
+      expect(mock1.stdout.join("")).toContain("1 skills：v1-skill");
+
+      const stBefore = readMinimalBridgeState({ agentDir });
+      expect(stBefore.state.installations).toHaveLength(1);
+      expect(stBefore.state.installations[0].skills).toEqual(["v1-skill"]);
+
+      // Material evolves on disk
+      addSkillToSyntheticPlugin(join(mktRoot, "plugins", "evolving-plugin"), "v2-skill");
+
+      // Repeated install (重裝＝更新)
+      const mock2 = createMockIo();
+      const code2 = await runCli(["install", "evolving-plugin"], mock2.io, { cwd, agentDir });
+      expect(code2).toBe(0);
+      expect(mock2.stderr).toHaveLength(0);
+      const out2 = mock2.stdout.join("");
+      expect(out2).toContain("2 skills：v1-skill, v2-skill");
+      expect(out2).toContain(RELOAD_NOTICE);
+
+      const stAfter = readMinimalBridgeState({ agentDir });
+      expect(stAfter.state.installations).toHaveLength(1);
+      expect(stAfter.state.installations[0].skills).toEqual(["v1-skill", "v2-skill"]);
+    } finally {
+      rmSync(mktRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("install reports skill collision warning and preserves successful installation", async () => {
+    const mktA = mkdtempSync(join(tmpdir(), "cli-col-a-"));
+    const mktB = mkdtempSync(join(tmpdir(), "cli-col-b-"));
+    makeSyntheticMarketplace(mktA, "mkt-alpha", [
+      { name: "p-alpha", path: "./plugins/p-alpha", skills: ["shared-skill", "unique-a"] },
+    ]);
+    makeSyntheticMarketplace(mktB, "mkt-beta", [
+      { name: "p-beta", path: "./plugins/p-beta", skills: ["shared-skill", "unique-b"] },
+    ]);
+
+    try {
+      await runCli(["add", mktA], createMockIo().io, { cwd, agentDir });
+      await runCli(["add", mktB], createMockIo().io, { cwd, agentDir });
+
+      // Install p-alpha
+      await runCli(["install", "1"], createMockIo().io, { cwd, agentDir });
+
+      // Install p-beta (collides on shared-skill)
+      const mockBeta = createMockIo();
+      const codeBeta = await runCli(["install", "2"], mockBeta.io, { cwd, agentDir });
+      expect(codeBeta).toBe(0);
+      expect(mockBeta.stderr).toHaveLength(0);
+      const outBeta = mockBeta.stdout.join("");
+      expect(outBeta).toContain("安裝 \"p-beta\"");
+      expect(outBeta).toContain("⚠ skill \"shared-skill\" 與既有同名，未投影（名稱衝突）");
+      expect(outBeta).toContain(RELOAD_NOTICE);
+    } finally {
+      rmSync(mktA, { recursive: true, force: true });
+      rmSync(mktB, { recursive: true, force: true });
+    }
+  });
+
+  it("update re-fetches all registered marketplaces and reports change status per marketplace", async () => {
+    // Empty state case
+    const mockEmpty = createMockIo();
+    const codeEmpty = await runCli(["update"], mockEmpty.io, { cwd, agentDir });
+    expect(codeEmpty).toBe(0);
+    expect(mockEmpty.stdout.join("")).toContain("尚無已註冊的 marketplace。");
+    expect(mockEmpty.stdout.join("")).not.toContain(RELOAD_NOTICE);
+
+    const mktA = mkdtempSync(join(tmpdir(), "cli-upd-a-"));
+    const mktB = mkdtempSync(join(tmpdir(), "cli-upd-b-"));
+    makeSyntheticMarketplace(mktA, "mkt-alpha", [
+      { name: "plugin-a", path: "./plugins/plugin-a", skills: ["s-a"] },
+    ]);
+    makeSyntheticMarketplace(mktB, "mkt-beta", [
+      { name: "plugin-b", path: "./plugins/plugin-b", skills: ["s-b"] },
+    ]);
+
+    try {
+      await runCli(["add", mktA], createMockIo().io, { cwd, agentDir });
+      await runCli(["add", mktB], createMockIo().io, { cwd, agentDir });
+      await runCli(["install", "1"], createMockIo().io, { cwd, agentDir });
+      await runCli(["install", "2"], createMockIo().io, { cwd, agentDir });
+
+      // 1. Initial update with no changes
+      const mockNoChange = createMockIo();
+      const codeNoChange = await runCli(["update"], mockNoChange.io, { cwd, agentDir });
+      expect(codeNoChange).toBe(0);
+      expect(mockNoChange.stderr).toHaveLength(0);
+      const outNoChange = mockNoChange.stdout.join("");
+      expect(outNoChange).toContain("mkt-alpha  重新抓取… 無變化");
+      expect(outNoChange).toContain("mkt-beta  重新抓取… 無變化");
+      expect(outNoChange).not.toContain(RELOAD_NOTICE);
+
+      // 2. Modify mkt-beta material on disk
+      addSkillToSyntheticPlugin(join(mktB, "plugins", "plugin-b"), "s-b-new");
+
+      // 3. Update reflects changes per marketplace with single CLI reload notice
+      const mockChanged = createMockIo();
+      const codeChanged = await runCli(["update"], mockChanged.io, { cwd, agentDir });
+      expect(codeChanged).toBe(0);
+      expect(mockChanged.stderr).toHaveLength(0);
+      const outChanged = mockChanged.stdout.join("");
+      expect(outChanged).toContain("mkt-alpha  重新抓取… 無變化");
+      expect(outChanged).toContain("mkt-beta  重新抓取… plugin-b 有新版本");
+      expect(outChanged).toContain(RELOAD_NOTICE);
+      expect(outChanged).not.toContain("已重新載入生效");
+
+      const st = readMinimalBridgeState({ agentDir });
+      const instB = st.state.installations.find((i) => i.manifestName === "plugin-b")!;
+      expect(instB.skills).toEqual(["s-b", "s-b-new"]);
+    } finally {
+      rmSync(mktA, { recursive: true, force: true });
+      rmSync(mktB, { recursive: true, force: true });
+    }
+  });
+
+  it("update does not abort mid-catalog on a single failure and continues processing remaining marketplaces", async () => {
+    const mktA = mkdtempSync(join(tmpdir(), "cli-tol-a-"));
+    const mktB = mkdtempSync(join(tmpdir(), "cli-tol-b-"));
+    const mktC = mkdtempSync(join(tmpdir(), "cli-tol-c-"));
+    makeSyntheticMarketplace(mktA, "mkt-one", [{ name: "p1", path: "./plugins/p1", skills: ["s1"] }]);
+    makeSyntheticMarketplace(mktB, "mkt-two", [{ name: "p2", path: "./plugins/p2", skills: ["s2"] }]);
+    makeSyntheticMarketplace(mktC, "mkt-three", [{ name: "p3", path: "./plugins/p3", skills: ["s3"] }]);
+
+    try {
+      await runCli(["add", mktA], createMockIo().io, { cwd, agentDir });
+      await runCli(["add", mktB], createMockIo().io, { cwd, agentDir });
+      await runCli(["add", mktC], createMockIo().io, { cwd, agentDir });
+      await runCli(["install", "1"], createMockIo().io, { cwd, agentDir });
+      await runCli(["install", "3"], createMockIo().io, { cwd, agentDir });
+
+      // Corrupt mktB catalog
+      writeFileSync(join(mktB, ".agents", "plugins", "marketplace.json"), "{ invalid json");
+
+      const mockUpd = createMockIo();
+      const codeUpd = await runCli(["update"], mockUpd.io, { cwd, agentDir });
+      expect(codeUpd).toBe(0);
+      const out = mockUpd.stdout.join("");
+      expect(out).toContain("mkt-one  重新抓取… 無變化");
+      expect(out).toMatch(/⚠ marketplace \[mkt-two\]/);
+      expect(out).toContain("mkt-three  重新抓取… 無變化");
+    } finally {
+      rmSync(mktA, { recursive: true, force: true });
+      rmSync(mktB, { recursive: true, force: true });
+      rmSync(mktC, { recursive: true, force: true });
+    }
+  });
+
+  it("demonstrates end-to-end demo flow via bin/pi-codex-marketplace.js child process: add -> install -> update (with evolution and reinstall)", () => {
+    const binPath = join(process.cwd(), "bin", "pi-codex-marketplace.js");
+    const demoFixture = mkdtempSync(join(tmpdir(), "cli-demo-inst-fixture-"));
+    makeSyntheticMarketplace(demoFixture, "demo-suite", [
+      { name: "calc-plugin", path: "./plugins/calc-plugin", skills: ["add-skill", "sub-skill"] },
+      { name: "format-plugin", path: "./plugins/format-plugin", skills: ["json-skill"] },
+    ]);
+
+    try {
+      // Step 1: add marketplace
+      const addOut = execFileSync(process.execPath, [binPath, "add", demoFixture], {
+        encoding: "utf-8",
+        env: { ...process.env, PI_CODING_AGENT_DIR: agentDir, PI_AGENT_DIR: agentDir },
+      });
+      expect(addOut).toContain("已註冊 \"demo-suite\"");
+
+      // Step 2: install by enumeration number (1)
+      const inst1Out = execFileSync(process.execPath, [binPath, "install", "1"], {
+        encoding: "utf-8",
+        env: { ...process.env, PI_CODING_AGENT_DIR: agentDir, PI_AGENT_DIR: agentDir },
+      });
+      expect(inst1Out).toContain("安裝 \"calc-plugin\"（2 skills：add-skill, sub-skill）");
+      expect(inst1Out).toContain(RELOAD_NOTICE);
+
+      // Step 3: install by candidate name (format-plugin)
+      const inst2Out = execFileSync(process.execPath, [binPath, "install", "format-plugin"], {
+        encoding: "utf-8",
+        env: { ...process.env, PI_CODING_AGENT_DIR: agentDir, PI_AGENT_DIR: agentDir },
+      });
+      expect(inst2Out).toContain("安裝 \"format-plugin\"（1 skills：json-skill）");
+      expect(inst2Out).toContain(RELOAD_NOTICE);
+
+      // Step 4: update initially shows "無變化"
+      const upd1Out = execFileSync(process.execPath, [binPath, "update"], {
+        encoding: "utf-8",
+        env: { ...process.env, PI_CODING_AGENT_DIR: agentDir, PI_AGENT_DIR: agentDir },
+      });
+      expect(upd1Out).toContain("demo-suite  重新抓取… 無變化");
+      expect(upd1Out).not.toContain(RELOAD_NOTICE);
+
+      // Step 5: add a new skill to calc-plugin
+      addSkillToSyntheticPlugin(join(demoFixture, "plugins", "calc-plugin"), "mul-skill");
+
+      // Step 6: update detects "有新版本"
+      const upd2Out = execFileSync(process.execPath, [binPath, "update"], {
+        encoding: "utf-8",
+        env: { ...process.env, PI_CODING_AGENT_DIR: agentDir, PI_AGENT_DIR: agentDir },
+      });
+      expect(upd2Out).toContain("demo-suite  重新抓取… calc-plugin, format-plugin 有新版本");
+      expect(upd2Out).toContain(RELOAD_NOTICE);
+
+      // Step 7: repeated install on format-plugin after adding xml-skill (重裝＝更新)
+      addSkillToSyntheticPlugin(join(demoFixture, "plugins", "format-plugin"), "xml-skill");
+      const reinstallOut = execFileSync(process.execPath, [binPath, "install", "format-plugin"], {
+        encoding: "utf-8",
+        env: { ...process.env, PI_CODING_AGENT_DIR: agentDir, PI_AGENT_DIR: agentDir },
+      });
+      expect(reinstallOut).toContain("安裝 \"format-plugin\"（2 skills：json-skill, xml-skill）");
+      expect(reinstallOut).toContain(RELOAD_NOTICE);
+    } finally {
+      rmSync(demoFixture, { recursive: true, force: true });
+    }
+  }, 60000);
+});
+
