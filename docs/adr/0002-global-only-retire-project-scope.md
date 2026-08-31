@@ -8,10 +8,10 @@ Bridge 原本以雙範圍架構交付（Global Scope 基準線 + Project Scope o
 
 - **只砍「多範圍」維度**：生命週期機制不重新設計。Scope Override、Project Trust、Global Pending Barrier、project precedence 全數移除；Runtime Skill Collision 改為 `Pi → Global` 兩層；Installation ID 不再含 scope 分量（即 Plugin ID）。
 - **既有 project state 檔完全無視**：不讀、不提示、不刪。fail-closed 只作用於 Bridge 實際讀取的檔案；使用者磁碟上殘留的 project 資料由使用者自行處置。`.pi/` 已在 `.gitignore`，無 repo 清理問題。
-- **schemaVersion 升為 2**：v1→v2 WAL migration 剝除 `scopeOverrides`。該欄位在 global 語意中定義即為死欄位，故非空 overrides 一律剝除並記 diagnostic finding，**不** fail-closed——避免把正常 Registration 卡死在語意已死的欄位上。（後收斂：極簡 Bridge State 已於 #95 起固定 `schemaVersion = 1`、永不遷移、無 WAL migration——本條僅為 v2 時點之歷史決策，見 README「Bridge State storage」。）
+- **schemaVersion 升為 2**：v1→v2 WAL migration 剝除 `scopeOverrides`。該欄位在 global 語意中定義即為死欄位，故非空 overrides 一律剝除並記 diagnostic finding，**不** fail-closed——避免把正常 Registration 卡死在語意已死的欄位上。（後收斂：極簡 Bridge State 已於 #95 起固定 `schemaVersion = 1`、永不遷移、無 WAL migration——本條僅為 v2 時點之歷史決策，見 docs/architecture.md「Bridge State storage」。）
 - **內部 API 移除 scope 參數**：刪除 `Scope` type 與所有 `'global' | 'project'` 分支；路徑／收據／fence helpers 只剩 global 系列（後於 #95 全數拆除）。不為「未來可能回頭」保留死參數——需要時 git 歷史與本 ADR 就是接點。
 - **TUI 單軌收斂**：Bridge Ledger 只有 Global 分區；移除 `g`／`p` 瀏覽焦點鍵與「Scope & inheritance」導航群組；Trust／Barrier 指示區移除；導航收斂為 Observe / Sources / Plugins / Recovery & receipts。（TUI 已於 #95 整層移除，本條僅為歷史。）
-- **版本 0.2.0**：0.y 視窗內以 minor bump 表達 breaking；schemaVersion 綁版號 bump 依 README 既有流程。
+- **版本 0.2.0**：0.y 視窗內以 minor bump 表達 breaking；schemaVersion 綁版號 bump 依 docs/development.md 既有流程。
 - **順序**：本次簡化先行，Claude 雙格式路線圖（#43–#52）在其後——簡化先縮小 Profile v2 每張 ticket 的表面積。
 
 ## Considered Options（拒絕）

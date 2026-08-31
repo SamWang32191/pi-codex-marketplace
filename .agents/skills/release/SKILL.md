@@ -77,5 +77,5 @@ gh release view vX.Y.Z --json tagName,url
 
 ### 來源
 
-- 唯一規範：`README.md#Versioning & release flow`、`CHANGELOG.md`、`package.json: version/engines/pi`、`.github/workflows/ci.yml`、`.github/workflows/publish.yml`
+- 唯一規範：`docs/development.md#versioning--release-flow`、`CHANGELOG.md`、`package.json: version/engines/pi`、`.github/workflows/ci.yml`、`.github/workflows/publish.yml`
 - `schemaVersion` 綁定規則見 `src/bridge-state/migrate.ts` 與 `src/bridge-state/schema.ts`
