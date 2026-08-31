@@ -750,13 +750,17 @@ export async function runCommand(
           const filteredRegs = state.registrations.filter(
             (r) => r.marketplaceName === filter || r.alias === filter || r.id === filter,
           );
-          if (filteredRegs.length === 0 && state.registrations.length > 0) {
+          if (filteredRegs.length === 0) {
             messages.push(`找不到 marketplace "${filter}"`);
-            // Still show all for discoverability
-            messages.push(...formatOverview(state));
-            const pluginLines = formatPluginListLines(state, undefined, opts);
-            if (pluginLines.length > 0) messages.push(pluginLines.join('\n'));
-          } else if (filteredRegs.length > 0) {
+            if (state.registrations.length > 0) {
+              // Still show all for discoverability
+              messages.push(...formatOverview(state));
+              const pluginLines = formatPluginListLines(state, undefined, opts);
+              if (pluginLines.length > 0) messages.push(pluginLines.join('\n'));
+            } else {
+              messages.push(USAGE_LINE);
+            }
+          } else {
             // Show filtered overview (reuse format but only filtered regs)
             const filteredState: MinimalBridgeState = {
               ...state,
@@ -766,10 +770,6 @@ export async function runCommand(
             messages.push(...formatOverview(filteredState));
             const pluginLines = formatPluginListLines(state, filter, opts);
             if (pluginLines.length > 0) messages.push(pluginLines.join('\n'));
-          } else {
-            // No registrations at all
-            messages.push('尚無可列出的 plugin 或 marketplace。');
-            messages.push(USAGE_LINE);
           }
         } else {
           if (state.registrations.length === 0 && state.installations.length === 0) {
