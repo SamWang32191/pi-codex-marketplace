@@ -2,9 +2,11 @@
 
 Bridge Package for Codex and Claude Marketplace compatibility in Pi (`Pi 0.84.2`).
 
-> **One-line:** `pi install npm:pi-codex-marketplace` → `/codex-marketplace add <本機資料夾|GitHub 網址>` 註冊 marketplace → `install <編號>` 裝到當下最新並立刻在 Pi 可用。
+> **One-line:** `pi install npm:pi-codex-marketplace` → `/codex-marketplace add <本機資料夾|GitHub 網址>`（或 Shell 下 `npx pi-codex-marketplace add ...`）註冊 marketplace → `install <編號>` 裝到當下最新並在 Pi 可用。
 
 ## Install
+
+### Pi Extension（TUI / 互動環境）
 
 ```bash
 pi install npm:pi-codex-marketplace                    # Global package (writes to ~/.pi/agent/settings.json)
@@ -17,6 +19,17 @@ pi update --all                                        # Update pi + all package
 pi remove npm:pi-codex-marketplace                     # Remove package
 pi list                                                # List installed packages
 pi config                                              # Enable/disable resources
+```
+
+### Headless CLI（Shell / CI/CD 自動化）
+
+```bash
+# 免安裝直接以 npx 執行
+npx pi-codex-marketplace [subcommand]
+
+# 或全域安裝使用
+npm install -g pi-codex-marketplace
+pi-codex-marketplace [subcommand]
 ```
 
 Source types follow `docs/packages.md`: `npm:` for registry, `git:`/`https://` for git, and absolute/relative paths for local. Ephemeral runs use `pi -e <source>` (not `pi install -e`). This package declares a single `pi` extension entry (`extensions/pi/index.ts`) loaded via `jiti` and requires no build step.
@@ -100,13 +113,13 @@ Credentialed Acquisition 語意（安全線）：
 - 自動偵測或已核准的 helper 仍被遠端拒絕（401）時，錯誤訊息提示檢查登入（`gh auth status`／keychain）或設環境變數核准其他 helper；本機偵測不到任何憑證來源時提示設環境變數或改用 SSH。
 - 設定的 helper 名稱無效時（例如直接寫 `gh`——它不是 git 原生的 credential helper 執行檔），錯誤訊息指出正確寫法：原生 helper 名稱（`osxkeychain`／`store`）或 shell form（`!gh auth git-credential`）。
 
-#### SSH 定位器：私有 repo 的替代路徑
+##### SSH 定位器：私有 repo 的替代路徑
 
 私有 repo 可以完全繞過此環境變數，直接用 SSH 定位器註冊（HTTPS 與 SSH 同屬允許的 credential-free 定位器）：
 
 ```
 /codex-marketplace add git@github.com:acme/private-mkt       # scp-like 簡寫（canonical：ssh://git@github.com/acme/private-mkt）
-/codex-marketplace add ssh://git@github.com/acme/private-mkt
+/codex-marketplace add ssh://git@github.com:acme/private-mkt
 ```
 
 前提（與既有 Acquisition Trust Base 一致）：
@@ -114,6 +127,61 @@ Credentialed Acquisition 語意（安全線）：
 - host key 必須**預先存在** `~/.ssh/known_hosts`——安全線以 `StrictHostKeyChecking=yes` 只信任既有 host key，遇到未知或變更的主機金鑰直接拒絕，不會提示接受；
 - 憑證由 SSH agent 提供，整個取得過程不互動（`BatchMode=yes`）、無任何提示；
 - SSH 定位器本身仍維持 credential-free：不得內嵌密碼（`user:pass@` 拒絕）；憑證只能經由 SSH agent 或 Credentialed Acquisition 到達取得流程。
+
+## Headless Bridge CLI — `pi-codex-marketplace`
+
+Bridge Package 除了提供 Pi Extension TUI 指令，亦內建純 Node 輕量 CLI bin shim（`pi-codex-marketplace` / `npx pi-codex-marketplace`），專為 CI/CD 流程、自動化腳本與純 Shell 環境設計。無須啟動 Pi TUI 或 Pi runtime，即可直接管理 Marketplace 註冊與外掛安裝。
+
+### 執行方式
+
+```bash
+# 1. 無參數：總覽（列出已註冊 Marketplace、已安裝外掛與指令用法）
+npx pi-codex-marketplace
+
+# 2. 版本與說明
+npx pi-codex-marketplace --version    # 或 -v
+npx pi-codex-marketplace help
+
+# 3. 執行子命令（與 TUI 指令完全一致）
+npx pi-codex-marketplace add <路徑|網址>
+npx pi-codex-marketplace list [名稱]
+npx pi-codex-marketplace install <編號|名稱>
+npx pi-codex-marketplace update
+npx pi-codex-marketplace disable <名稱>
+npx pi-codex-marketplace enable <名稱>
+npx pi-codex-marketplace remove <名稱>
+npx pi-codex-marketplace forget <名稱>
+```
+
+### 九個子命令一覽
+
+| 子命令 | 行為 |
+|--------|------|
+| `add <路徑\|網址>` | 註冊 marketplace（本機資料夾、GitHub 完整網址、`owner/repo` 簡寫或 SSH 定位器），自動偵測並回報格式。重複來源拒絕。私有 HTTPS repo 支援固定白名單自動偵測與 `PI_CODEX_MARKETPLACE_CREDENTIAL_HELPERS` 環境變數。 |
+| `list [名稱]` | 列出 plugins（編號／所屬 marketplace／狀態：可安裝・已裝啟用・已裝停用・unavailable＋原因），支援 marketplace 名稱過濾。 |
+| `install <編號\|名稱>` | 裝到當下最新並自動啟用。重複安裝＝重抓最新覆寫（重裝＝更新）。衝突時提示同名未投影警告。 |
+| `update` | 對全部已註冊 marketplace 重抓最新並更新有變化的外掛。 |
+| `disable <名稱>` / `enable <名稱>` | 停用／啟用 plugin。 |
+| `remove <名稱>` | 移除單支 plugin（不動 marketplace 與來源資料）。 |
+| `forget <名稱>` | 移除整個 marketplace 及其全部安裝。 |
+| `help` | 輸出子命令清單與用法。 |
+
+### 輸出與退出代碼契約（Output & Exit Contract）
+
+CLI 遵循嚴格的標準命令列契約，確保 CI/CD 與腳本整合的確定性：
+
+- **標準輸出（stdout）**：所有正常操作輸出（總覽、說明、版本、查詢清單、成功訊息）寫入 `stdout`，退出代碼為 `0`。
+- **標準錯誤（stderr）**：所有錯誤情況（未知子命令、缺少或非法參數、重複註冊、目標不存在或歧義、Git 取得失敗等）寫入 `stderr`，退出代碼為非零（`1`）。
+- **絕對免提示（Never prompt）**：全流程不發起任何終端互動提示（no interactive prompts），遇到歧義或錯誤立即明確報錯並退出，背景執行安全無虞。
+
+### 狀態生效時機（Same-State Caveat）
+
+- **單一 Global Scope 一致性**：CLI 與 Extension 共用相同的 `getAgentDir()` 與 Bridge State 儲存位址（`~/.pi/agent/codex-marketplace/state.json`），完全支援 `PI_CODING_AGENT_DIR` / `PI_AGENT_DIR` 環境變數覆寫。
+- **無 In-process Reload 提示語轉換**：CLI 執行於 Pi 外部獨立 Node 行程，無 Pi runtime 內部的即時 reload 機制（`ctx.reload`）。狀態變更指令（`install`、`enable`、`update`）輸出將 TUI 的「已重新載入生效」替換為：
+  ```
+  已寫入 Bridge State · 下次 pi session／/reload 生效
+  ```
+- **投影時機**：CLI 寫入的變更已持久化至 Bridge State，將在下次啟動 Pi session 或於 Pi TUI 內執行 `/reload` 時，經由 Pi host 資源發現接縫（`resources_discover`）自動完成技能投影。
 
 ## Bridge State storage
 
@@ -140,7 +208,7 @@ See `src/bridge/state.ts`（Minimal Bridge State）、`src/bridge-state/atomic.t
 | OS | **macOS**, **Linux** | Windows not supported (path containment, symlink, `flock` semantics are POSIX-only) |
 | Node | **>=22.19.0** | `engines.node` enforced |
 | Pi host | **0.84.2** | `peerDependencies` exact `0.84.2`; expected compatible range `^0.84.2` (devDeps). `pi-ai`/`pi-tui` peers `*` per Pi extension docs. |
-| Semantics | `pi install` / `pi -e` / `pi install -l` / `pi update` / `pi remove` / `pi list` / `pi config` | Single `pi` extension package; `files` ships `extensions/`, `src/`, `README.md`, `LICENSE` only |
+| Semantics | `pi install` / `pi -e` / `pi install -l` / `pi update` / `pi remove` / `pi list` / `pi config` ＋ `npx pi-codex-marketplace` / `bin/pi-codex-marketplace.js` CLI | Single `pi` extension package + headless CLI bin; `files` ships `bin/`, `extensions/`, `src/`, `README.md`, `LICENSE` only |
 
 Peer declaration (dual): **精確 `0.84.2`** in `peerDependencies` (exact host that this version was validated against) + **預期 `^0.84.2`** in `devDependencies` (range expected to remain compatible). `pi-ai` and `pi-tui` remain `*` because they are bundled by Pi.
 
@@ -159,7 +227,7 @@ Every row is a **release blocker**: `v*` may not publish unless the full matrix 
 | unit — 縫層 | `runCommand` 指令分派（add/list/install/update/disable/enable/remove/forget/help、重複註冊拒絕、重裝覆寫、衝突未投影清單、corrupt→重置、unavailable 顯示、git 重抓）、Minimal Bridge State 原子持久化 |
 | unit — 低層 | 雙格式 catalog 解析（codex＋claude、open 政策、unavailable entry）、git locator／source-key（fixed `default` selector）、contained path／symlink、collision、投影（exposure）、source-cache（store/hit/LRU/pin/flock）、git acquisition（mock executor） |
 | integration | 真 Pi 縫：extension 註冊 `resources_discover` → 投影 skillPaths（startup/reload 一致、trust flag 無關、被動不變異） |
-| E2E | `/codex-marketplace` 薄 Pi adapter：overview/help 輸出路由、corrupt 重置通知、reload 門控 |
+| E2E | `/codex-marketplace` 薄 Pi adapter 與 `pi-codex-marketplace` CLI 適配層（overview/help、--version、雙格式 add/list、install/update、lifecycle 停用啟用移除、狀態變更 reload 提示轉換、確定性退出碼與環境隔離） |
 
 Fixtures: `tests/fixtures/synthetic/`, `tests/fixtures/pinned/`（captured `SamWang32191/codex-plugins@98e78ca` snapshot）、`tests/fixtures/adversarial/`。See `tests/acceptance/` for the matrix runner that enforces per-row gating (any row failure blocks publish).
 

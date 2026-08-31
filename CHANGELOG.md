@@ -2,6 +2,16 @@
 
 All notable changes to `pi-codex-marketplace` are documented here. Format follows Keep a Changelog and SemVer (starting at `0.1.0`; Git tags `v*` mirror npm versions).
 
+## [0.8.0] - 2026-08-31
+
+### Added
+- **Headless Bridge CLI（#132–#136，文件與發版 #137，ADR 0007）**：提供純 Node 輕量 CLI bin shim（`npx pi-codex-marketplace` / `bin/pi-codex-marketplace.js`），在 shell 與 CI/CD 環境下無須啟動 Pi TUI 即可直接管理 Marketplace 註冊與外掛安裝：
+  - **CLI 骨架與適配層**（#133）：純 Node ≥22.19 原生 type stripping 執行（no build step），`runCli(argv, io)` 純粹適配層與確定性輸出／退出代碼契約（stdout＝0、stderr＝1、never prompt、狀態變更明確提示「已寫入 Bridge State · 下次 pi session／/reload 生效」）；支援 `--version` / `-v` 與 `help`；支援 `PI_CODING_AGENT_DIR` / `PI_AGENT_DIR` 環境變數覆寫。
+  - **Registration 表面**（#134）：`add` 支援本機資料夾、GitHub 完整網址、`owner/repo` 簡寫與 SSH 定位器，雙格式自動偵測，重複註冊拒絕，私有 repo 支援 Credentialed Acquisition（固定白名單自動偵測與 `PI_CODEX_MARKETPLACE_CREDENTIAL_HELPERS`）；`list [名稱]` 完整列出編號、所屬 marketplace、狀態（可安裝／已裝啟用／已裝停用／unavailable 原因），支援 marketplace 名稱過濾。
+  - **Installation 表面**（#135）：`install <編號|名稱>` 支援編號與唯一名稱解析、衝突檢驗與同名未投影警告、重複安裝＝重抓最新覆寫、拒絕 unavailable entry；`update` 對全部 marketplace 重抓最新，個別回報變更狀態與容錯。
+  - **Lifecycle 表面**（#136）：`disable`／`enable` 停用與重新投影切換、`remove` 移除單支 plugin、`forget` 原子移除整個 marketplace 及其全部安裝；歧義與未知名稱免提示錯誤回報。
+  - **文件與發版**（#137）：README 完整納入 CLI 使用說明、九個子命令、`--version`、輸出/退出代碼契約與狀態生效時機說明；`CONTEXT.md` 固化 Bridge CLI 正典術語；全驗證矩陣（typecheck、unit、integration、E2E、acceptance）全綠。
+
 ## [0.7.0] - 2026-08-30
 
 ### Added
@@ -220,7 +230,13 @@ Initial Bridge Package release — single `pi` extension, Pi `0.84.2` baseline.
 - **TUI management flow** (`/codex-marketplace`): single aggregated command faithful to `prototype/tui-management-flow@c9107d2` — hybrid discovery/guided, explicit scope choice per operation, Registration/Activation separated snapshot+revision bound Default No confirmations, Update Plan Checklist, partitioned Global/Project lists, skill-granular diagnostics, synchronized Findings, closed Recovery Actions, immediate-reload three-orthogonal Receipt report, Pending/Global Barrier blocking hints.
 - **Verification matrix**: synthetic / pinned `SamWang32191/codex-plugins@98e78ca` / adversarial three-tier fixtures × (unit + integration + E2E at the TUI seam) on Pi `0.84.2` / macOS / Linux / Node `>=22.19.0`; every row is a release gate (`v*` → CI full matrix green → `npm publish --provenance` `latest`/`next` channels, `0.y`/`1.0` maintenance windows).
 
-[Unreleased]: https://github.com/SamWang32191/pi-codex-marketplace/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/SamWang32191/pi-codex-marketplace/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/SamWang32191/pi-codex-marketplace/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/SamWang32191/pi-codex-marketplace/compare/v0.6.2...v0.7.0
+[0.6.2]: https://github.com/SamWang32191/pi-codex-marketplace/compare/v0.6.1...v0.6.2
+[0.6.1]: https://github.com/SamWang32191/pi-codex-marketplace/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/SamWang32191/pi-codex-marketplace/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/SamWang32191/pi-codex-marketplace/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/SamWang32191/pi-codex-marketplace/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/SamWang32191/pi-codex-marketplace/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/SamWang32191/pi-codex-marketplace/compare/v0.1.10...v0.2.0
