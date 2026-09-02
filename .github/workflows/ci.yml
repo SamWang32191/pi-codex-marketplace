@@ -16,7 +16,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        node: ["22.19.0", "22.x"]
+        node: ["22.19.0", "22.x", "24.x"]
         # Pi host is pinned to 0.84.2 per spec; devDeps uses ^0.84.2 range for expected compatibility
         # The TUI E2E seam runs against the installed pi-coding-agent at that version.
     steps:
