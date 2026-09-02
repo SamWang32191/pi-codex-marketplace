@@ -2,6 +2,11 @@
 
 All notable changes to `pi-codex-marketplace` are documented here. Format follows Keep a Changelog and SemVer (starting at `0.1.0`; Git tags `v*` mirror npm versions).
 
+## [1.0.1] - 2026-09-02
+
+### Fixed
+- **npm Bridge CLI 啟動（#143、#144）**：修正 npm-packed Bridge Package 位於 `node_modules` 時，Node 因不支援該路徑的原生 TypeScript type stripping 而拋出 `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`；Bridge CLI loader 現在會明確載入與轉換 TypeScript，維持 ADR 0007 的 no-build-step 設計及既有 stdout／stderr 契約。新增真實 npm pack 套件邊界 E2E，涵蓋 `--version` 與隔離 Bridge State 的 `update`，CI 矩陣擴至 Node 24 並保留最低 Node 22.19.0 gate。
+
 ## [1.0.0] - 2026-08-31
 
 ### Changed
