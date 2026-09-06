@@ -2,6 +2,12 @@
 
 All notable changes to `pi-codex-marketplace` are documented here. Format follows Keep a Changelog and SemVer (starting at `0.1.0`; Git tags `v*` mirror npm versions).
 
+## [1.0.4] - 2026-09-06
+
+### Fixed
+- **CLI `update` 終端殘留進度**：TTY 抓取／檢查／寫入進度改為單行動態覆寫，完成或失敗後清除；限制顯示寬度，避免窄終端換行留下殘影。非 TTY 或輸出重新導向時不印進度，只保留最終摘要與必要錯誤。
+- **CLI `update` 摘要精簡**：移除結果行的「重新抓取…」與多餘空行，每個 Marketplace 的結果緊湊列出。成功／失敗輸出通道、退出碼、skills 更新語意與 Pi TUI 行為不變；新增完整終端畫面與重新導向回歸測試。
+
 ## [1.0.3] - 2026-09-06
 
 ### Fixed
