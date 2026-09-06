@@ -210,6 +210,67 @@ describe("Bridge CLI adapter seam (#132, #133)", () => {
     }
   });
 
+  it("prints each update result only once across stdout and stderr", async () => {
+    const fixture = join(cwd, "duplicate-progress");
+    makeSyntheticMarketplace(fixture, "duplicate-progress", []);
+    const options = { cwd, agentDir, statePath, credentialHelperDetector: noneDetector,
+      gitExecutor: makeMockGitExecutor(fixture) };
+    await runCli(["add", "https://github.com/acme/duplicate-progress"], createMockIo().io, options);
+    const captured = createMockIo();
+    expect(await runCli(["update"], captured.io, options)).toBe(0);
+    expect(captured.stderr.join("")).not.toContain("無變化");
+    expect(captured.stdout.join("").match(/duplicate-progress  重新抓取… 無變化/g)).toHaveLength(1);
+    const output = [...captured.stderr, ...captured.stdout].join("");
+    expect(output.match(/duplicate-progress  重新抓取… 無變化/g)).toHaveLength(1);
+    expect(captured.stdout.join("")).toContain("duplicate-progress  重新抓取… 無變化");
+  });
+
+  it("update refreshes Git skill bodies, additions and removals without duplicate multi-source results", async () => {
+    const fixture = join(cwd, "skill-evolution");
+    makeSyntheticMarketplace(fixture, "skill-evolution", [
+      { name: "engineering", path: "./plugins/engineering", skills: ["kept", "removed"] },
+      { name: "uninstalled", path: "./plugins/uninstalled", skills: ["not-installed"] },
+    ]);
+    const options = { cwd, agentDir, statePath, credentialHelperDetector: noneDetector };
+    const oldGit = makeMockGitExecutor(fixture);
+    await runCli(["add", "https://github.com/acme/skill-evolution"], createMockIo().io, { ...options, gitExecutor: oldGit });
+    await runCli(["install", "engineering"], createMockIo().io, { ...options, gitExecutor: oldGit });
+    const oldPaths = discoverProjectedSkillPaths({ agentDir }).skillPaths;
+    expect(oldPaths).toHaveLength(2);
+    const skillRoot = join(fixture, "plugins/engineering/skills");
+    writeFileSync(join(skillRoot, "kept/SKILL.md"), "---\nname: kept\ndescription: Updated\n---\nUpdated body\n");
+    rmSync(join(skillRoot, "removed"), { recursive: true });
+    addSkillToSyntheticPlugin(join(fixture, "plugins/engineering"), "added");
+
+    const stable = join(cwd, "stable");
+    makeSyntheticMarketplace(stable, "stable", []);
+    const stableUrl = "https://github.com/acme/stable";
+    const stableGit = makeMockGitExecutor(stable);
+    await runCli(["add", stableUrl], createMockIo().io, { ...options, gitExecutor: stableGit });
+    const newGit = makeMockGitExecutor(fixture, "b".repeat(40));
+    const captured = createMockIo();
+    expect(await runCli(["update"], captured.io, {
+      ...options,
+      gitExecutor: (args, opts) => (args.includes(stableUrl) ? stableGit : newGit)(args, opts),
+    })).toBe(0);
+    const output = [...captured.stderr, ...captured.stdout].join("");
+    expect(output.match(/skill-evolution  重新抓取… engineering 有新版本/g)).toHaveLength(1);
+    expect(output.match(/stable  重新抓取… 無變化/g)).toHaveLength(1);
+    expect(output.match(/已寫入 Bridge State · 下次 pi session／\/reload 生效/g)).toHaveLength(1);
+    const state = readMinimalBridgeState({ agentDir }).state;
+    expect(state.installations).toHaveLength(1);
+    expect(state.installations[0].skills).toEqual(["added", "kept"]);
+    expect(state.installations[0].snapshot).toBe(state.registrations[0].snapshot);
+    const paths = discoverProjectedSkillPaths({ agentDir }).skillPaths;
+    expect(paths).toHaveLength(2);
+    expect(paths.every((path) => !oldPaths.includes(path))).toBe(true);
+    const bodies = paths.map((path) => readFileSync(join(path, "SKILL.md"), "utf-8")).join("\n");
+    expect(bodies).toContain("Updated body");
+    expect(bodies).toContain("name: added");
+    expect(bodies).not.toContain("name: removed");
+    expect(bodies).not.toContain("not-installed");
+  });
+
   it("normalizes a prefixed mixed-case update before emitting progress", async () => {
     const captured = createMockIo();
     const code = await runCli(["codex-marketplace", "UPDATE"], captured.io, {
@@ -239,11 +300,13 @@ describe("Bridge CLI adapter seam (#132, #133)", () => {
     writeFileSync(join(skillDir, "SKILL.md"), "---\nname: shared\ndescription: shared\n---\nBody\n");
     const captured = createMockIo();
     let collisionBeforeWrite = false;
+    const results: string[] = [];
     const code = await runCli(["update"], captured.io, {
       ...options,
-      onProgress(message) {
+      onProgress(message, kind) {
+        if (kind === "result") results.push(message);
         if (message === "寫入 Bridge State…") {
-          collisionBeforeWrite = captured.stderr.join("").includes("名稱衝突");
+          collisionBeforeWrite = results.join("").includes("名稱衝突");
           rmSync(statePath);
           mkdirSync(statePath);
         }
@@ -255,6 +318,7 @@ describe("Bridge CLI adapter seam (#132, #133)", () => {
     expect(finalSummary).toContain("名稱衝突");
     expect(finalSummary).toContain("write-failure  重新抓取…");
     expect(finalSummary).toContain("寫入 Bridge State 失敗");
+    expect(captured.stderr.join("").match(/名稱衝突/g)).toHaveLength(1);
     expect(captured.stdout).toEqual([]);
     expect(captured.stderr.join("")).not.toContain(RELOAD_NOTICE);
     expect(captured.stderr.join("")).not.toContain("已重新載入生效");
@@ -315,10 +379,11 @@ describe("Bridge CLI adapter seam (#132, #133)", () => {
     try {
       await secondStarted;
       const progress = captured.stderr.join("");
-      const alphaDone = progress.indexOf("mkt-alpha  重新抓取… 無變化");
+      const alphaDone = progress.indexOf("mkt-alpha  檢查來源…");
       const betaStarted = progress.indexOf("mkt-beta  重新抓取…");
       expect(alphaDone).toBeGreaterThan(-1);
       expect(betaStarted).toBeGreaterThan(alphaDone);
+      expect(progress).not.toContain("無變化");
       expect(captured.stdout).toEqual([]);
     } finally {
       release();

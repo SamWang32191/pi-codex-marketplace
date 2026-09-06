@@ -46,7 +46,7 @@ import { SourceCache } from '../cache/source-cache.js';
 
 export interface CommandOptions {
   /** Optional presentation-only update progress; final result remains authoritative. */
-  onProgress?: (message: string) => void;
+  onProgress?: (message: string, kind?: 'activity' | 'result') => void;
   statePath?: string;
   agentDir?: string;
   cwd?: string;
@@ -492,9 +492,9 @@ export async function runCommand(
   }
   const subcmd = rawArgs[0]?.toLowerCase();
 
-  const progress = (message: string): void => {
+  const progress = (message: string, kind: 'activity' | 'result' = 'activity'): void => {
     // An observer must never affect acquisition or durable state.
-    try { opts.onProgress?.(message); } catch {}
+    try { opts.onProgress?.(message, kind); } catch {}
   };
   if (subcmd === 'update') progress('開始更新 Marketplace…');
 
@@ -971,7 +971,7 @@ export async function runCommand(
         const updateLines: string[] = [];
         const report = (line: string): void => {
           updateLines.push(line);
-          progress(line);
+          progress(line, 'result');
         };
         let anyChanged = false;   // 有 plugin 實際升到最新 → reload＋結尾「已重新載入生效」
         let gitAdvanced = false; // git registration 已推進到新 fingerprint → 需持久化（即使無已安裝 plugin）
