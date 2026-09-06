@@ -2,6 +2,11 @@
 
 All notable changes to `pi-codex-marketplace` are documented here. Format follows Keep a Changelog and SemVer (starting at `0.1.0`; Git tags `v*` mirror npm versions).
 
+## [1.0.3] - 2026-09-06
+
+### Fixed
+- **CLI `update` 重複輸出（#150）**：逐 Marketplace 回報行不再同時出現在 `stderr` 進度與最終摘要（只保留於最終摘要）；`stderr` 僅保留活動性進度訊息。退出碼與最終摘要語意不變。
+
 ## [1.0.2] - 2026-09-06
 
 ### Added
