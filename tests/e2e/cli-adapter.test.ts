@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { execFile } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -172,6 +172,100 @@ describe("Bridge CLI adapter seam (#132, #133)", () => {
   let cwd: string;
   let agentDir: string;
   let statePath: string;
+
+  it.each([false, true])("keeps TTY active while waiting and stops after completion (failure=%s)", async (fail) => {
+    const fixture = join(cwd, "tty-marketplace");
+    makeSyntheticMarketplace(fixture, "tty-progress", []);
+    const executor = makeMockGitExecutor(fixture);
+    const options = { cwd, agentDir, statePath, credentialHelperDetector: noneDetector };
+    await runCli(["add", "https://github.com/acme/tty-progress"], createMockIo().io, { ...options, gitExecutor: executor });
+    const chunks: string[] = [];
+    const captured = createMockIo();
+    captured.io.stderr = { isTTY: true, write: (chunk: string) => chunks.push(chunk) };
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    vi.useFakeTimers();
+    const pending = runCli(["update"], captured.io, {
+      ...options,
+      gitExecutor: async (...args) => {
+        await gate;
+        return fail ? { exitCode: 1, stdout: "", stderr: "network unavailable" } : executor(...args);
+      },
+    });
+    try {
+      const before = chunks.length;
+      await vi.advanceTimersByTimeAsync(500);
+      expect(chunks.length).toBeGreaterThan(before);
+      release();
+      await pending;
+      const completed = chunks.length;
+      await vi.advanceTimersByTimeAsync(500);
+      expect(chunks).toHaveLength(completed);
+      expect(vi.getTimerCount()).toBe(0);
+      expect([...chunks, ...captured.stdout].join("")).toContain(fail ? "失敗" : "無變化");
+    } finally {
+      release();
+      await pending;
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports collisions before persistence and never claims success when state writing fails", async () => {
+    const fixture = join(cwd, "write-failure");
+    makeSyntheticMarketplace(fixture, "write-failure", [
+      { name: "first", path: "./plugins/first", skills: ["shared"] },
+      { name: "second", path: "./plugins/second", skills: ["unique"] },
+    ]);
+    const options = { cwd, agentDir, statePath, credentialHelperDetector: noneDetector };
+    await runCli(["add", fixture], createMockIo().io, options);
+    await runCli(["install", "first"], createMockIo().io, options);
+    await runCli(["install", "second"], createMockIo().io, options);
+    const skillDir = join(fixture, "plugins/second/skills/shared");
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(join(skillDir, "SKILL.md"), "---\nname: shared\ndescription: shared\n---\nBody\n");
+    const captured = createMockIo();
+    let collisionBeforeWrite = false;
+    const code = await runCli(["update"], captured.io, {
+      ...options,
+      onProgress(message) {
+        if (message === "寫入 Bridge State…") {
+          collisionBeforeWrite = captured.stderr.join("").includes("名稱衝突");
+          rmSync(statePath);
+          mkdirSync(statePath);
+        }
+      },
+    });
+    expect(collisionBeforeWrite).toBe(true);
+    expect(code).toBe(1);
+    expect(captured.stderr.join("")).toContain("寫入 Bridge State 失敗");
+    expect(captured.stdout).toEqual([]);
+    expect(captured.stderr.join("")).not.toContain(RELOAD_NOTICE);
+    expect(captured.stderr.join("")).not.toContain("已重新載入生效");
+  });
+
+  it("reports update progress before a Git acquisition completes", async () => {
+    const fixture = join(cwd, "progress-marketplace");
+    makeSyntheticMarketplace(fixture, "progress", []);
+    const executor = makeMockGitExecutor(fixture);
+    const options = { cwd, agentDir, statePath, credentialHelperDetector: noneDetector };
+    await runCli(["add", "https://github.com/acme/progress"], createMockIo().io, { ...options, gitExecutor: executor });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const captured = createMockIo();
+    const pending = runCli(["update"], captured.io, {
+      ...options,
+      gitExecutor: async (...args) => { await gate; return executor(...args); },
+    });
+    try {
+      expect(captured.stderr.join("")).toContain("開始更新");
+      expect(captured.stderr.join("")).toContain("progress");
+      expect(captured.stdout).toEqual([]);
+    } finally {
+      release();
+      await pending;
+    }
+    expect(captured.stdout.join("")).toContain("無變化");
+  });
 
   beforeEach(() => {
     cwd = mkdtempSync(join(tmpdir(), "cli-adapter-cwd-"));
@@ -1028,7 +1122,8 @@ describe("Installation 表面：install／update (#132, #135)", () => {
       const mockNoChange = createMockIo();
       const codeNoChange = await runCli(["update"], mockNoChange.io, { cwd, agentDir });
       expect(codeNoChange).toBe(0);
-      expect(mockNoChange.stderr).toHaveLength(0);
+      expect(mockNoChange.stderr.join("")).toContain("開始更新");
+      expect(mockNoChange.stderr.join("")).not.toMatch(/[\x1b\r]/);
       const outNoChange = mockNoChange.stdout.join("");
       expect(outNoChange).toContain("mkt-alpha  重新抓取… 無變化");
       expect(outNoChange).toContain("mkt-beta  重新抓取… 無變化");
@@ -1041,7 +1136,8 @@ describe("Installation 表面：install／update (#132, #135)", () => {
       const mockChanged = createMockIo();
       const codeChanged = await runCli(["update"], mockChanged.io, { cwd, agentDir });
       expect(codeChanged).toBe(0);
-      expect(mockChanged.stderr).toHaveLength(0);
+      expect(mockChanged.stderr.join("")).toContain("寫入 Bridge State");
+      expect(mockChanged.stderr.join("")).not.toMatch(/[\x1b\r]/);
       const outChanged = mockChanged.stdout.join("");
       expect(outChanged).toContain("mkt-alpha  重新抓取… 無變化");
       expect(outChanged).toContain("mkt-beta  重新抓取… plugin-b 有新版本");

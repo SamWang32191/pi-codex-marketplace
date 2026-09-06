@@ -45,6 +45,8 @@ import { buildGitSnapshot } from '../registration/snapshot.js';
 import { SourceCache } from '../cache/source-cache.js';
 
 export interface CommandOptions {
+  /** Optional presentation-only update progress; final result remains authoritative. */
+  onProgress?: (message: string) => void;
   statePath?: string;
   agentDir?: string;
   cwd?: string;
@@ -481,6 +483,13 @@ export async function runCommand(
   opts: CommandOptions = {},
 ): Promise<CommandResult> {
   const rawArgs = typeof argv === 'string' ? argv.trim().split(/\s+/).filter(Boolean) : [...argv];
+
+  const progress = (message: string): void => {
+    // An observer must never affect acquisition or durable state.
+    try { opts.onProgress?.(message); } catch {}
+  };
+  const verb = rawArgs[0] === '/codex-marketplace' || rawArgs[0] === 'codex-marketplace' ? rawArgs[1] : rawArgs[0];
+  if (verb === 'update') progress('開始更新 Marketplace…');
 
   // Credentialed Acquisition (#109，#117)：逐次核准的 credential helper allowlist。
   // env 顯式設定 → 完全覆蓋；未設定／空白 → 自動偵測固定白名單（gh／keychain／store），
@@ -959,11 +968,16 @@ export async function runCommand(
         // 整包 deep backup：任一 marketplace 失敗不影響其他；最後一次寫入，寫失敗即回滾全部。
         const stateBackup = JSON.parse(JSON.stringify(state)) as MinimalBridgeState;
         const updateLines: string[] = [];
+        const report = (line: string): void => {
+          updateLines.push(line);
+          progress(line);
+        };
         let anyChanged = false;   // 有 plugin 實際升到最新 → reload＋結尾「已重新載入生效」
         let gitAdvanced = false; // git registration 已推進到新 fingerprint → 需持久化（即使無已安裝 plugin）
 
         for (const reg of state.registrations) {
           const display = reg.marketplaceName || reg.alias || reg.id;
+          progress(`${display}  ${reg.sourceKind === 'git' ? '重新抓取' : '檢查本機來源'}…`);
           const format = (reg.format ?? 'codex') as 'codex' | 'claude';
           const insts = state.installations.filter((i) => i.registrationId === reg.id);
           const upgraded: string[] = [];
@@ -972,12 +986,12 @@ export async function runCommand(
           if (reg.sourceKind === 'git') {
             // ---- git 重抓（當下最新）：ls-remote → clone → checkout → snapshot fingerprint ----
             if (!reg.snapshot || !/^[0-9a-f]{64}$/.test(reg.snapshot)) {
-              updateLines.push(`⚠ marketplace [${display}] git cache 指紋缺失，無法重抓（請先重新 add）`);
+              report(`⚠ marketplace [${display}] git cache 指紋缺失，無法重抓（請先重新 add）`);
               continue;
             }
             const locRes = normalizeGitLocator(reg.source);
             if (!locRes.ok) {
-              updateLines.push(`⚠ marketplace [${display}] Git 網址不合法：${locRes.findings[0]?.outcome ?? '未知錯誤'}`);
+              report(`⚠ marketplace [${display}] Git 網址不合法：${locRes.findings[0]?.outcome ?? '未知錯誤'}`);
               continue;
             }
             let acquireResult;
@@ -989,15 +1003,15 @@ export async function runCommand(
               });
             } catch (e) {
               const msg = e instanceof Error ? e.message : String(e);
-              updateLines.push(`錯誤：git 重抓失敗 — ${msg}`);
+              report(`錯誤：git 重抓失敗 — ${msg}`);
               continue;
             }
             if (!acquireResult.ok) {
               const outcome = acquireResult.findings[0]?.outcome ?? acquireResult.stderr ?? 'git 重抓失敗';
-              updateLines.push(`錯誤：git 重抓失敗 — ${outcome}`);
+              report(`錯誤：git 重抓失敗 — ${outcome}`);
               if (acquireResult.findings.length > 1) {
                 const extra = acquireResult.findings.slice(1, 3).map((f) => f.outcome).join('；');
-                if (extra) updateLines.push(`詳細：${extra}`);
+                if (extra) report(`詳細：${extra}`);
               }
               if (acquireResult.acquiredPath && acquireResult.createdTemp) {
                 try { cleanupAcquisition(acquireResult.acquiredPath); } catch {}
@@ -1014,6 +1028,7 @@ export async function runCommand(
               }
             };
 
+            progress(`${display}  檢查來源…`);
             const sourceKey = gitSourceKey(locRes.locator!);
             const snapRes = buildGitSnapshot(acquiredPath, sourceKey, {
               canonicalLocator: reg.source,
@@ -1022,7 +1037,7 @@ export async function runCommand(
             });
             if (!snapRes.ok || !snapRes.snapshot) {
               cleanupAcquired();
-              updateLines.push(`⚠ marketplace [${display}] snapshot 建立失敗 — ${snapRes.findings[0]?.outcome ?? '未知錯誤'}`);
+              report(`⚠ marketplace [${display}] snapshot 建立失敗 — ${snapRes.findings[0]?.outcome ?? '未知錯誤'}`);
               continue;
             }
             const fingerprint = snapRes.snapshot.fingerprint;
@@ -1030,7 +1045,7 @@ export async function runCommand(
             if (fingerprint === reg.snapshot) {
               // 當下最新與上次相同 → 無變化
               cleanupAcquired();
-              updateLines.push(`${display}  重新抓取… 無變化`);
+              report(`${display}  重新抓取… 無變化`);
               continue;
             }
 
@@ -1047,7 +1062,7 @@ export async function runCommand(
             } catch (e) {
               cleanupAcquired();
               const msg = e instanceof Error ? e.message : String(e);
-              updateLines.push(`錯誤：cache 寫入失敗（fingerprint ${fingerprint.slice(0, 12)}…）：${msg}`);
+              report(`錯誤：cache 寫入失敗（fingerprint ${fingerprint.slice(0, 12)}…）：${msg}`);
               continue;
             }
             cleanupAcquired();
@@ -1069,35 +1084,35 @@ export async function runCommand(
                 inst.snapshot = fingerprint;
                 upgraded.push(outcome.manifestName);
                 for (const c of outcome.colliding) {
-                  updateLines.push(`⚠ skill "${c}" 與既有同名，未投影（名稱衝突）`);
+                  report(`⚠ skill "${c}" 與既有同名，未投影（名稱衝突）`);
                 }
               }
             } else {
               for (const inst of insts) failures.push(`${inst.manifestName} 更新失敗：cache 材料無法解析`);
             }
 
-            for (const f of failures) updateLines.push(`⚠ marketplace [${display}] ${f}`);
+            for (const f of failures) report(`⚠ marketplace [${display}] ${f}`);
             if (upgraded.length > 0) {
-              updateLines.push(`${display}  重新抓取… ${upgraded.join(', ')} 有新版本`);
+              report(`${display}  重新抓取… ${upgraded.join(', ')} 有新版本`);
               anyChanged = true;
             } else if (insts.length === 0) {
               // upstream 移動但沒有已安裝 plugin：registration 已指向最新，下次 install 即用最新
-              updateLines.push(`${display}  重新抓取… 有新版本`);
+              report(`${display}  重新抓取… 有新版本`);
             }
           } else {
             // ---- 本機重讀（live 路徑）----
             if (!reg.source || !existsSync(reg.source)) {
-              updateLines.push(`⚠ marketplace [${display}] 本機路徑不存在（${reg.source ?? '未記錄'}）`);
+              report(`⚠ marketplace [${display}] 本機路徑不存在（${reg.source ?? '未記錄'}）`);
               continue;
             }
             // 先 probe catalog：不可讀時不能聲稱「無變化」，必須明示（不靜默略過）
             const probe = readMarketplaceCatalog(reg.source, format);
             if (probe.error) {
-              updateLines.push(`⚠ marketplace [${display}] ${probe.error}`);
+              report(`⚠ marketplace [${display}] ${probe.error}`);
               continue;
             }
             if (insts.length === 0) {
-              updateLines.push(`${display}  重新抓取… 無變化`);
+              report(`${display}  重新抓取… 無變化`);
               continue;
             }
             let changed = false;
@@ -1113,21 +1128,22 @@ export async function runCommand(
               changed = changed || outcome.changed;
               upgraded.push(outcome.manifestName);
               for (const c of outcome.colliding) {
-                updateLines.push(`⚠ skill "${c}" 與既有同名，未投影（名稱衝突）`);
+                report(`⚠ skill "${c}" 與既有同名，未投影（名稱衝突）`);
               }
             }
-            for (const f of failures) updateLines.push(`⚠ marketplace [${display}] ${f}`);
+            for (const f of failures) report(`⚠ marketplace [${display}] ${f}`);
             if (upgraded.length === 0) continue; // 全部失敗，⚠ 已明示
             if (changed) {
-              updateLines.push(`${display}  重新抓取… ${upgraded.join(', ')} 有新版本`);
+              report(`${display}  重新抓取… ${upgraded.join(', ')} 有新版本`);
               anyChanged = true;
             } else {
-              updateLines.push(`${display}  重新抓取… 無變化`);
+              report(`${display}  重新抓取… 無變化`);
             }
           }
         }
 
         if (gitAdvanced || anyChanged) {
+          progress('寫入 Bridge State…');
           try {
             writeMinimalBridgeState(state, opts);
           } catch (e) {
