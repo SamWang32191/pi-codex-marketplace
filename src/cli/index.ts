@@ -77,7 +77,12 @@ export async function runCli(
     try {
       result = await runCommand(argv, {
         ...opts,
-        onProgress(message) {
+        onProgress(message, kind) {
+          // Result lines belong to the authoritative final summary, not both streams.
+          if (kind === 'result') {
+            opts.onProgress?.(message, kind);
+            return;
+          }
           clearActivity();
           writeStream(io.stderr, message);
           if (terminal) {
@@ -89,7 +94,7 @@ export async function runCli(
             }, 100);
             timer.unref();
           }
-          opts.onProgress?.(message);
+          opts.onProgress?.(message, kind);
         },
       });
     } finally {
