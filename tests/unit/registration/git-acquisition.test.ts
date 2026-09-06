@@ -116,6 +116,18 @@ describe('認證失敗分類（GIT-34）— ls-remote 路徑', () => {
     expect(res.findings[0].outcome).toMatch(/does not exist/i);
     expect(res.findings[0].outcome).toContain(URL);
   });
+
+  it('未分類 ls-remote 失敗只回報退出碼，不回顯原始 stderr', async () => {
+    const rawStderr = 'fatal: token=TOP_SECRET\x1b[31m';
+    const res = await resolveGitRevision(locatorOf(URL), { executor: makeFailExecutor(rawStderr) });
+
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.findings[0].code).toBe(CODE.GIT_ACQUISITION_FAILED);
+    expect(res.findings[0].outcome).toBe('failed to resolve HEAD via ls-remote (exit 128)');
+    expect(res.findings[0].outcome).not.toContain('TOP_SECRET');
+    expect(res.findings[0].outcome).not.toMatch(/\x1b/);
+  });
 });
 
 describe('認證失敗分類（GIT-34）— clone 路徑（與 ls-remote 一致）', () => {
@@ -152,6 +164,17 @@ describe('認證失敗分類（GIT-34）— clone 路徑（與 ls-remote 一致�
     expect(res.findings[0].code).toBe(CODE.GIT_REPO_NOT_FOUND);
     expect(res.findings[0].outcome).toMatch(/does not exist/i);
     expect(res.findings[0].outcome).toContain(URL);
+  });
+
+  it('未分類 clone 失敗只回報退出碼，不回顯原始 stderr', async () => {
+    const rawStderr = 'fatal: token=TOP_SECRET\x1b[31m';
+    const res = await acquireGitSource({ locator: locatorOf(URL), executor: makeCloneFailExecutor(rawStderr) });
+
+    expect(res.ok).toBe(false);
+    expect(res.findings[0].code).toBe(CODE.GIT_ACQUISITION_FAILED);
+    expect(res.findings[0].outcome).toBe('git clone failed (exit 128)');
+    expect(res.findings[0].outcome).not.toContain('TOP_SECRET');
+    expect(res.findings[0].outcome).not.toMatch(/\x1b/);
   });
 
   it('clone 401 失敗 → 暫時目錄無殘留', async () => {

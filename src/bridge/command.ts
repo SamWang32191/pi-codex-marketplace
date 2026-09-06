@@ -484,12 +484,19 @@ export async function runCommand(
 ): Promise<CommandResult> {
   const rawArgs = typeof argv === 'string' ? argv.trim().split(/\s+/).filter(Boolean) : [...argv];
 
+  // Strip the optional command token before normalizing the subcommand. Progress
+  // must follow the same parsing path as dispatch, including prefixed and mixed-case
+  // invocations.
+  if (rawArgs.length > 0 && (rawArgs[0] === '/codex-marketplace' || rawArgs[0] === 'codex-marketplace')) {
+    rawArgs.shift();
+  }
+  const subcmd = rawArgs[0]?.toLowerCase();
+
   const progress = (message: string): void => {
     // An observer must never affect acquisition or durable state.
     try { opts.onProgress?.(message); } catch {}
   };
-  const verb = rawArgs[0] === '/codex-marketplace' || rawArgs[0] === 'codex-marketplace' ? rawArgs[1] : rawArgs[0];
-  if (verb === 'update') progress('開始更新 Marketplace…');
+  if (subcmd === 'update') progress('開始更新 Marketplace…');
 
   // Credentialed Acquisition (#109，#117)：逐次核准的 credential helper allowlist。
   // env 顯式設定 → 完全覆蓋；未設定／空白 → 自動偵測固定白名單（gh／keychain／store），
@@ -500,10 +507,6 @@ export async function runCommand(
   const acquireTrust: { allowedCredentialHelpers: string[]; helperMode: 'detected' | 'approved' } | undefined =
     resolved.helpers.length > 0 ? { allowedCredentialHelpers: resolved.helpers, helperMode: resolved.mode as 'detected' | 'approved' } : undefined;
 
-  // Strip leading command token if passed
-  if (rawArgs.length > 0 && (rawArgs[0] === '/codex-marketplace' || rawArgs[0] === 'codex-marketplace')) {
-    rawArgs.shift();
-  }
 
   let state: MinimalBridgeState;
   let wasReset = false;
@@ -530,7 +533,6 @@ export async function runCommand(
     // Overview (no arguments)
     messages.push(...formatOverview(state));
   } else {
-    const subcmd = rawArgs[0].toLowerCase();
     const subargs = rawArgs.slice(1);
 
     switch (subcmd) {
@@ -581,14 +583,13 @@ export async function runCommand(
                 executor: opts.gitExecutor,
                 trust: acquireTrust,
               });
-            } catch (e) {
-              const msg = e instanceof Error ? e.message : String(e);
-              messages.push(`錯誤：git 取得失敗 — ${msg}`);
+            } catch {
+              messages.push('錯誤：git 取得失敗');
               break;
             }
             if (!acquireResult.ok) {
-              const outcome = acquireResult.findings[0]?.outcome ?? acquireResult.stderr ?? 'git 取得失敗';
-              messages.push(`錯誤：git 取得失敗 — ${outcome}`);
+              const outcome = acquireResult.findings[0]?.outcome;
+              messages.push(outcome ? `錯誤：git 取得失敗 — ${outcome}` : '錯誤：git 取得失敗');
               if (acquireResult.findings.length > 1) {
                 const extra = acquireResult.findings.slice(1, 3).map((f) => f.outcome).join('；');
                 if (extra) messages.push(`詳細：${extra}`);
@@ -1001,14 +1002,13 @@ export async function runCommand(
                 executor: opts.gitExecutor,
                 trust: acquireTrust,
               });
-            } catch (e) {
-              const msg = e instanceof Error ? e.message : String(e);
-              report(`錯誤：git 重抓失敗 — ${msg}`);
+            } catch {
+              report('錯誤：git 重抓失敗');
               continue;
             }
             if (!acquireResult.ok) {
-              const outcome = acquireResult.findings[0]?.outcome ?? acquireResult.stderr ?? 'git 重抓失敗';
-              report(`錯誤：git 重抓失敗 — ${outcome}`);
+              const outcome = acquireResult.findings[0]?.outcome;
+              report(outcome ? `錯誤：git 重抓失敗 — ${outcome}` : '錯誤：git 重抓失敗');
               if (acquireResult.findings.length > 1) {
                 const extra = acquireResult.findings.slice(1, 3).map((f) => f.outcome).join('；');
                 if (extra) report(`詳細：${extra}`);
@@ -1151,7 +1151,8 @@ export async function runCommand(
             state.registrations = stateBackup.registrations;
             state.installations = stateBackup.installations;
             const msg = e instanceof Error ? e.message : String(e);
-            messages.push(`錯誤：寫入 Bridge State 失敗：${msg}`);
+            // The final result remains a complete summary even though persistence failed.
+            messages.push(...updateLines, `錯誤：寫入 Bridge State 失敗：${msg}`);
             break;
           }
           if (anyChanged) reload = true;

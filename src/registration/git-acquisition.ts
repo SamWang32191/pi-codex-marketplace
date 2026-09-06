@@ -186,25 +186,25 @@ function classifyFailure(stderr: string, mode: CredentialHelperMode): FailureKin
   return null;
 }
 
-function failureFinding(kind: FailureKind, locator: CanonicalGitLocator, stderr: string): ValidationFinding {
+function failureFinding(kind: FailureKind, locator: CanonicalGitLocator): ValidationFinding {
   switch (kind.kind) {
     case 'host-key':
       return trustFinding(
         kind.isChanged ? CODE.GIT_TRUST_HOST_KEY_CHANGED : CODE.GIT_TRUST_HOST_KEY_UNKNOWN,
         RULE.GIT_TRUST_HOST_KEY,
-        `Acquisition Trust Base violation: SSH host key ${kind.isChanged ? 'changed' : 'unknown'} for ${locator.host} — ${stderr.trim()} (only pre-established known-host keys are trusted)`,
+        `Acquisition Trust Base violation: SSH host key ${kind.isChanged ? 'changed' : 'unknown'} for ${locator.host} (only pre-established known-host keys are trusted)`,
       );
     case 'redirect':
       return trustFinding(
         CODE.GIT_TRUST_REDIRECT,
         RULE.GIT_TRUST_REDIRECT,
-        `Acquisition Trust Base violation: redirect that would change canonical locator (followRedirects disabled) — ${stderr.trim()}`,
+        'Acquisition Trust Base violation: redirect that would change canonical locator (followRedirects disabled)',
       );
     case 'not-found':
       return trustFinding(
         CODE.GIT_REPO_NOT_FOUND,
         RULE.GIT_TRUST_AUTH_REQUIRED,
-        `Acquisition Trust Base violation: repository not found — '${locator.canonicalUrl}' does not exist (check the URL or owner/repo name) — ${stderr.trim()}`,
+        `Acquisition Trust Base violation: repository not found — '${locator.canonicalUrl}' does not exist (check the URL or owner/repo name)`,
       );
     case 'invalid-helper': {
       // GIT-35：核准的 helper 名稱無效（git 找不到 `git-credential-<name>` 執行檔）。
@@ -213,7 +213,7 @@ function failureFinding(kind: FailureKind, locator: CanonicalGitLocator, stderr:
       return trustFinding(
         CODE.GIT_TRUST_CREDENTIAL_HELPER_INVALID,
         RULE.GIT_TRUST_CREDENTIAL_HELPER_INVALID,
-        `Acquisition Trust Base violation: '${kind.name}' is not a valid git credential helper — use a native helper name (osxkeychain / store) or a shell form like '!gh auth git-credential' — ${stderr.trim()}`,
+        "Acquisition Trust Base violation: a configured credential helper is not valid — use a native helper name (osxkeychain / store) or a shell form like '!gh auth git-credential'",
       );
     }
     case 'auth': {
@@ -230,7 +230,7 @@ function failureFinding(kind: FailureKind, locator: CanonicalGitLocator, stderr:
       return trustFinding(
         CODE.GIT_TRUST_AUTH_REQUIRED,
         RULE.GIT_TRUST_AUTH_REQUIRED,
-        `Acquisition Trust Base violation: ${why} — ${stderr.trim()}`,
+        `Acquisition Trust Base violation: ${why}`,
       );
     }
     case 'helper': {
@@ -243,7 +243,7 @@ function failureFinding(kind: FailureKind, locator: CanonicalGitLocator, stderr:
       return trustFinding(
         CODE.GIT_TRUST_CREDENTIAL_HELPER,
         RULE.GIT_TRUST_CREDENTIAL_HELPER,
-        `Acquisition Trust Base: ${why} — ${stderr.trim()}`,
+        `Acquisition Trust Base: ${why}`,
       );
     }
   }
@@ -263,13 +263,13 @@ async function resolveHead(
     if (kind) {
       return {
         ok: false,
-        findings: [failureFinding(kind, locator, res.stderr)],
+        findings: [failureFinding(kind, locator)],
         stderr: res.stderr,
       };
     }
     return {
       ok: false,
-      findings: [acquireFinding(`failed to resolve HEAD via ls-remote: ${res.stderr.trim() || `exit ${res.exitCode}`}`)],
+      findings: [acquireFinding(`failed to resolve HEAD via ls-remote (exit ${res.exitCode})`)],
       stderr: res.stderr,
     };
   }
@@ -341,8 +341,8 @@ export async function acquireGitSource(opts: AcquireOptions): Promise<AcquireRes
     const stderr = cloneRes.stderr || '';
     const kind = classifyFailure(stderr, mode);
     const finding = kind
-      ? failureFinding(kind, locator, stderr)
-      : acquireFinding(`git clone failed: ${stderr.trim() || `exit ${cloneRes.exitCode}`}`);
+      ? failureFinding(kind, locator)
+      : acquireFinding(`git clone failed (exit ${cloneRes.exitCode})`);
     if (createdTemp) try { rmSync(dest, { recursive: true, force: true }); } catch {}
     return { ok: false, findings: [finding], stderr };
   }
@@ -389,7 +389,7 @@ export async function acquireGitSource(opts: AcquireOptions): Promise<AcquireRes
       if (createdTemp) try { rmSync(dest, { recursive: true, force: true }); } catch {}
       return {
         ok: false,
-        findings: [acquireFinding(`resolved revision ${sha} not fetchable: ${fetchRes.stderr.trim()}`)],
+        findings: [acquireFinding(`resolved revision ${sha} not fetchable (git fetch exit ${fetchRes.exitCode})`)],
         stderr: fetchRes.stderr,
       };
     }
@@ -402,7 +402,7 @@ export async function acquireGitSource(opts: AcquireOptions): Promise<AcquireRes
       if (createdTemp) try { rmSync(dest, { recursive: true, force: true }); } catch {}
       return {
         ok: false,
-        findings: [acquireFinding(`failed to checkout resolved revision ${sha}: ${checkoutRes.stderr.trim() || checkout2.stderr.trim()}`)],
+        findings: [acquireFinding(`failed to checkout resolved revision ${sha} (git checkout exit ${checkout2.exitCode})`)],
         stderr: checkoutRes.stderr,
       };
     }

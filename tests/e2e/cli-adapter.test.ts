@@ -210,6 +210,20 @@ describe("Bridge CLI adapter seam (#132, #133)", () => {
     }
   });
 
+  it("normalizes a prefixed mixed-case update before emitting progress", async () => {
+    const captured = createMockIo();
+    const code = await runCli(["codex-marketplace", "UPDATE"], captured.io, {
+      cwd,
+      agentDir,
+      statePath,
+      credentialHelperDetector: noneDetector,
+    });
+
+    expect(code).toBe(0);
+    expect(captured.stderr.join("")).toBe("開始更新 Marketplace…\n");
+    expect(captured.stdout.join("")).toContain("尚無已註冊的 marketplace。");
+  });
+
   it("reports collisions before persistence and never claims success when state writing fails", async () => {
     const fixture = join(cwd, "write-failure");
     makeSyntheticMarketplace(fixture, "write-failure", [
@@ -237,7 +251,10 @@ describe("Bridge CLI adapter seam (#132, #133)", () => {
     });
     expect(collisionBeforeWrite).toBe(true);
     expect(code).toBe(1);
-    expect(captured.stderr.join("")).toContain("寫入 Bridge State 失敗");
+    const finalSummary = captured.stderr.at(-1) ?? "";
+    expect(finalSummary).toContain("名稱衝突");
+    expect(finalSummary).toContain("write-failure  重新抓取…");
+    expect(finalSummary).toContain("寫入 Bridge State 失敗");
     expect(captured.stdout).toEqual([]);
     expect(captured.stderr.join("")).not.toContain(RELOAD_NOTICE);
     expect(captured.stderr.join("")).not.toContain("已重新載入生效");
@@ -265,6 +282,72 @@ describe("Bridge CLI adapter seam (#132, #133)", () => {
       await pending;
     }
     expect(captured.stdout.join("")).toContain("無變化");
+  });
+
+  it("reports ordered multi-source progress before the second Git acquisition completes", async () => {
+    const alphaRoot = join(cwd, "progress-alpha");
+    const betaRoot = join(cwd, "progress-beta");
+    const alphaUrl = "https://github.com/acme/progress-alpha";
+    const betaUrl = "https://github.com/acme/progress-beta";
+    makeSyntheticMarketplace(alphaRoot, "mkt-alpha", []);
+    makeSyntheticMarketplace(betaRoot, "mkt-beta", []);
+    const options = { cwd, agentDir, statePath, credentialHelperDetector: noneDetector };
+    const alphaExecutor = makeMockGitExecutor(alphaRoot);
+    const betaExecutor = makeMockGitExecutor(betaRoot);
+    await runCli(["add", alphaUrl], createMockIo().io, { ...options, gitExecutor: alphaExecutor });
+    await runCli(["add", betaUrl], createMockIo().io, { ...options, gitExecutor: betaExecutor });
+
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let markSecondStarted!: () => void;
+    const secondStarted = new Promise<void>((resolve) => { markSecondStarted = resolve; });
+    const updateExecutor: GitExecutor = async (args, executorOptions) => {
+      const isBeta = args.includes(betaUrl);
+      if (isBeta && args.includes("ls-remote")) {
+        markSecondStarted();
+        await gate;
+      }
+      return (isBeta ? betaExecutor : alphaExecutor)(args, executorOptions);
+    };
+    const captured = createMockIo();
+    const pending = runCli(["update"], captured.io, { ...options, gitExecutor: updateExecutor });
+
+    try {
+      await secondStarted;
+      const progress = captured.stderr.join("");
+      const alphaDone = progress.indexOf("mkt-alpha  重新抓取… 無變化");
+      const betaStarted = progress.indexOf("mkt-beta  重新抓取…");
+      expect(alphaDone).toBeGreaterThan(-1);
+      expect(betaStarted).toBeGreaterThan(alphaDone);
+      expect(captured.stdout).toEqual([]);
+    } finally {
+      release();
+      await pending;
+    }
+
+    expect(captured.stdout.join("")).toContain("mkt-alpha  重新抓取… 無變化");
+    expect(captured.stdout.join("")).toContain("mkt-beta  重新抓取… 無變化");
+  });
+
+  it("keeps raw Git stderr out of update progress and the final result", async () => {
+    const fixture = join(cwd, "redacted-git-stderr");
+    const sourceUrl = "https://github.com/acme/redacted-git-stderr";
+    makeSyntheticMarketplace(fixture, "redacted", []);
+    const options = { cwd, agentDir, statePath, credentialHelperDetector: noneDetector };
+    await runCli(["add", sourceUrl], createMockIo().io, { ...options, gitExecutor: makeMockGitExecutor(fixture) });
+
+    const rawStderr = "fatal: token=TOP_SECRET\x1b[31m";
+    const captured = createMockIo();
+    const code = await runCli(["update"], captured.io, {
+      ...options,
+      gitExecutor: async () => ({ exitCode: 128, stdout: "", stderr: rawStderr }),
+    });
+
+    const rendered = [...captured.stderr, ...captured.stdout].join("");
+    expect(code).toBe(1);
+    expect(rendered).toContain("failed to resolve HEAD via ls-remote (exit 128)");
+    expect(rendered).not.toContain("TOP_SECRET");
+    expect(rendered).not.toMatch(/\x1b/);
   });
 
   beforeEach(() => {

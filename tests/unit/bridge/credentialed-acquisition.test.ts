@@ -315,9 +315,9 @@ describe('Credentialed Acquisition add 接線（#109）', () => {
     const res = await runCommand(['add', 'https://github.com/acme/private-mkt'], { agentDir, gitExecutor: executor });
 
     expect(res.output).toContain('錯誤：git 取得失敗');
-    expect(res.output).toMatch(/not a valid git credential helper/i);
-    expect(res.output).toContain("'gh'");
+    expect(res.output).toMatch(/configured credential helper is not valid/i);
     expect(res.output).toContain('!gh auth git-credential');
+    expect(res.output).not.toContain('credential-gh is not a git command');
     expect(res.output).not.toMatch(/check your login/i);
     expect(readMinimalBridgeState({ agentDir }).state.registrations).toHaveLength(0);
   });
