@@ -44,6 +44,14 @@ CLI 遵循嚴格的標準命令列契約，確保 CI/CD 與腳本整合的確定
 - **標準錯誤（stderr）**：所有錯誤情況（未知子命令、缺少或非法參數、重複註冊、目標不存在或歧義、Git 取得失敗等）寫入 `stderr`，退出代碼為非零（`1`）。
 - **絕對免提示（Never prompt）**：全流程不發起任何終端互動提示（no interactive prompts），遇到歧義或錯誤立即明確報錯並退出，背景執行安全無虞。
 
+## `update` 即時進度
+
+Bridge CLI 啟動更新後會立即向 `stderr` 顯示開始訊息，接著回報目前 Marketplace、抓取／檢查／寫入階段，以及各來源結果與警告。互動終端在非同步等待時顯示活動指示；重新導向或非 TTY 環境只輸出階段性文字，不含動畫控制碼。進度不是百分比，也不是持久化成功證明。
+
+最終摘要與退出碼維持原有語意；`stderr` 有進度不表示執行失敗，腳本應判斷退出碼。寫入失敗不會顯示成功生效提醒。可用 `2>progress.log` 分離進度與最終 stdout 結果。
+
+此功能只適用 CLI `update`，不改變 Pi TUI；`npx` 下載套件、尚未啟動 Bridge CLI 的等待不在此進度範圍內。
+
 ## 狀態生效時機（Same-State Caveat）
 
 - **單一 Global Scope 一致性**：CLI 與 Extension 共用相同的 `getAgentDir()` 與 Bridge State 儲存位址（`~/.pi/agent/codex-marketplace/state.json`），完全支援 `PI_CODING_AGENT_DIR` / `PI_AGENT_DIR` 環境變數覆寫。

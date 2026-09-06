@@ -13,7 +13,7 @@ export { getPackageVersion };
 
 export interface CliIO {
   stdout?: { write: (chunk: string) => unknown } | ((chunk: string) => unknown);
-  stderr?: { write: (chunk: string) => unknown } | ((chunk: string) => unknown);
+  stderr?: { write: (chunk: string) => unknown; isTTY?: boolean } | ((chunk: string) => unknown);
   exit?: (code: number) => unknown;
 }
 
@@ -63,7 +63,38 @@ export async function runCli(
       return exitWith(0);
     }
 
-    const result = await runCommand(argv, opts);
+    const terminal = typeof io.stderr === 'object' && io.stderr.isTTY ? io.stderr : undefined;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    let frame = 0;
+    const clearActivity = (): void => {
+      if (timer !== undefined) {
+        clearInterval(timer);
+        timer = undefined;
+        try { terminal?.write('\r\x1b[2K'); } catch { /* Progress is best-effort. */ }
+      }
+    };
+    let result: CommandResult;
+    try {
+      result = await runCommand(argv, {
+        ...opts,
+        onProgress(message) {
+          clearActivity();
+          writeStream(io.stderr, message);
+          if (terminal) {
+            timer = setInterval(() => {
+              try { terminal.write(`\r${['|', '/', '-', '\\'][frame++ % 4]} 處理中…`); } catch {
+                clearInterval(timer);
+                timer = undefined;
+              }
+            }, 100);
+            timer.unref();
+          }
+          opts.onProgress?.(message);
+        },
+      });
+    } finally {
+      clearActivity();
+    }
     const output = formatCliOutput(result);
 
     if (result.ok) {
