@@ -34,6 +34,23 @@ function createMockIo(): { io: CliIO; stdout: string[]; stderr: string[]; exitCo
   return { io, stdout, stderr, exitCodes };
 }
 
+// Minimal terminal model for the CLI's CR / erase-line / newline protocol.
+function terminalScreen(chunks: string[]): string {
+  const lines = [""];
+  let column = 0;
+  for (const token of chunks.join("").split(/(\x1b\[2K|\r|\n)/)) {
+    if (token === "\x1b[2K") lines[lines.length - 1] = "";
+    else if (token === "\r") column = 0;
+    else if (token === "\n") { lines.push(""); column = 0; }
+    else {
+      const line = lines[lines.length - 1];
+      lines[lines.length - 1] = line.slice(0, column) + token + line.slice(column + token.length);
+      column += token.length;
+    }
+  }
+  return lines.join("\n");
+}
+
 function execCli(
   binPath: string,
   args: string[],
@@ -173,6 +190,37 @@ describe("Bridge CLI adapter seam (#132, #133)", () => {
   let agentDir: string;
   let statePath: string;
 
+  it.each([
+    { isTTY: false, redirected: false, columns: 80 },
+    { isTTY: true, redirected: false, columns: 80 },
+    { isTTY: true, redirected: false, columns: 12 },
+    { isTTY: true, redirected: true, columns: 80 },
+  ])("leaves only a compact final screen ($isTTY / redirected=$redirected / columns=$columns)", async ({ isTTY, redirected, columns }) => {
+    const options = { cwd, agentDir, statePath, credentialHelperDetector: noneDetector };
+    for (const name of ["softleader-agent-skills", "samwang", "mattpocock"]) {
+      const fixture = join(cwd, name);
+      makeSyntheticMarketplace(fixture, name, []);
+      await runCli(["add", fixture], createMockIo().io, options);
+    }
+    const captured = createMockIo();
+    const chunks: string[] = [];
+    captured.io.stderr = { isTTY, columns, write: (chunk) => { captured.stderr.push(chunk); chunks.push(chunk); } };
+    captured.io.stdout = { isTTY: !redirected, write: (chunk) => { captured.stdout.push(chunk); chunks.push(chunk); } };
+    expect(await runCli(["update"], captured.io, options)).toBe(0);
+    const expected = "softleader-agent-skills  無變化\nsamwang  無變化\nmattpocock  無變化\n";
+    expect(terminalScreen(chunks)).toBe(expected);
+    expect(captured.stdout.join("")).toBe(expected);
+    if (!isTTY || redirected) expect(captured.stderr).toEqual([]);
+    else {
+      for (const chunk of captured.stderr) {
+        const line = chunk.replace(/^\r\x1b\[2K/, "");
+        expect(line).not.toMatch(/[\r\n\x1b]/);
+        const cells = [...line].reduce((width, char) => width + (char.codePointAt(0)! < 128 ? 1 : 2), 0);
+        expect(cells).toBeLessThan(columns);
+      }
+    }
+  });
+
   it.each([false, true])("keeps TTY active while waiting and stops after completion (failure=%s)", async (fail) => {
     const fixture = join(cwd, "tty-marketplace");
     makeSyntheticMarketplace(fixture, "tty-progress", []);
@@ -182,6 +230,7 @@ describe("Bridge CLI adapter seam (#132, #133)", () => {
     const chunks: string[] = [];
     const captured = createMockIo();
     captured.io.stderr = { isTTY: true, write: (chunk: string) => chunks.push(chunk) };
+    captured.io.stdout = { isTTY: true, write: (chunk) => captured.stdout.push(chunk) };
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     vi.useFakeTimers();
@@ -196,13 +245,17 @@ describe("Bridge CLI adapter seam (#132, #133)", () => {
       const before = chunks.length;
       await vi.advanceTimersByTimeAsync(500);
       expect(chunks.length).toBeGreaterThan(before);
+      expect(terminalScreen(chunks)).toMatch(/^[|/\\\\-] tty-progress  重新抓取…$/);
       release();
       await pending;
       const completed = chunks.length;
       await vi.advanceTimersByTimeAsync(500);
       expect(chunks).toHaveLength(completed);
       expect(vi.getTimerCount()).toBe(0);
-      expect([...chunks, ...captured.stdout].join("")).toContain(fail ? "失敗" : "無變化");
+      const screen = terminalScreen([...chunks, ...captured.stdout]);
+      expect(screen).toBe(fail
+        ? "錯誤：git 重抓失敗 — failed to resolve HEAD via ls-remote (exit 1)\n"
+        : "tty-progress  無變化\n");
     } finally {
       release();
       await pending;
@@ -219,10 +272,7 @@ describe("Bridge CLI adapter seam (#132, #133)", () => {
     const captured = createMockIo();
     expect(await runCli(["update"], captured.io, options)).toBe(0);
     expect(captured.stderr.join("")).not.toContain("無變化");
-    expect(captured.stdout.join("").match(/duplicate-progress  重新抓取… 無變化/g)).toHaveLength(1);
-    const output = [...captured.stderr, ...captured.stdout].join("");
-    expect(output.match(/duplicate-progress  重新抓取… 無變化/g)).toHaveLength(1);
-    expect(captured.stdout.join("")).toContain("duplicate-progress  重新抓取… 無變化");
+    expect(captured.stdout.join("")).toBe("duplicate-progress  無變化\n");
   });
 
   it("update refreshes Git skill bodies, additions and removals without duplicate multi-source results", async () => {
@@ -254,8 +304,7 @@ describe("Bridge CLI adapter seam (#132, #133)", () => {
       gitExecutor: (args, opts) => (args.includes(stableUrl) ? stableGit : newGit)(args, opts),
     })).toBe(0);
     const output = [...captured.stderr, ...captured.stdout].join("");
-    expect(output.match(/skill-evolution  重新抓取… engineering 有新版本/g)).toHaveLength(1);
-    expect(output.match(/stable  重新抓取… 無變化/g)).toHaveLength(1);
+    expect(output).toBe(`skill-evolution  engineering 有新版本\nstable  無變化\n${RELOAD_NOTICE}\n`);
     expect(output.match(/已寫入 Bridge State · 下次 pi session／\/reload 生效/g)).toHaveLength(1);
     const state = readMinimalBridgeState({ agentDir }).state;
     expect(state.installations).toHaveLength(1);
@@ -281,7 +330,7 @@ describe("Bridge CLI adapter seam (#132, #133)", () => {
     });
 
     expect(code).toBe(0);
-    expect(captured.stderr.join("")).toBe("開始更新 Marketplace…\n");
+    expect(captured.stderr).toEqual([]);
     expect(captured.stdout.join("")).toContain("尚無已註冊的 marketplace。");
   });
 
@@ -316,7 +365,8 @@ describe("Bridge CLI adapter seam (#132, #133)", () => {
     expect(code).toBe(1);
     const finalSummary = captured.stderr.at(-1) ?? "";
     expect(finalSummary).toContain("名稱衝突");
-    expect(finalSummary).toContain("write-failure  重新抓取…");
+    expect(finalSummary).toContain("write-failure  ");
+    expect(finalSummary).not.toContain("重新抓取");
     expect(finalSummary).toContain("寫入 Bridge State 失敗");
     expect(captured.stderr.join("").match(/名稱衝突/g)).toHaveLength(1);
     expect(captured.stdout).toEqual([]);
@@ -333,6 +383,8 @@ describe("Bridge CLI adapter seam (#132, #133)", () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const captured = createMockIo();
+    captured.io.stderr = { isTTY: true, write: (chunk) => captured.stderr.push(chunk) };
+    captured.io.stdout = { isTTY: true, write: (chunk) => captured.stdout.push(chunk) };
     const pending = runCli(["update"], captured.io, {
       ...options,
       gitExecutor: async (...args) => { await gate; return executor(...args); },
@@ -374,6 +426,8 @@ describe("Bridge CLI adapter seam (#132, #133)", () => {
       return (isBeta ? betaExecutor : alphaExecutor)(args, executorOptions);
     };
     const captured = createMockIo();
+    captured.io.stderr = { isTTY: true, write: (chunk) => captured.stderr.push(chunk) };
+    captured.io.stdout = { isTTY: true, write: (chunk) => captured.stdout.push(chunk) };
     const pending = runCli(["update"], captured.io, { ...options, gitExecutor: updateExecutor });
 
     try {
@@ -390,8 +444,8 @@ describe("Bridge CLI adapter seam (#132, #133)", () => {
       await pending;
     }
 
-    expect(captured.stdout.join("")).toContain("mkt-alpha  重新抓取… 無變化");
-    expect(captured.stdout.join("")).toContain("mkt-beta  重新抓取… 無變化");
+    expect(terminalScreen(captured.stderr)).toBe("");
+    expect(captured.stdout.join("")).toBe("mkt-alpha  無變化\nmkt-beta  無變化\n");
   });
 
   it("keeps raw Git stderr out of update progress and the final result", async () => {
@@ -1270,11 +1324,10 @@ describe("Installation 表面：install／update (#132, #135)", () => {
       const mockNoChange = createMockIo();
       const codeNoChange = await runCli(["update"], mockNoChange.io, { cwd, agentDir });
       expect(codeNoChange).toBe(0);
-      expect(mockNoChange.stderr.join("")).toContain("開始更新");
+      expect(mockNoChange.stderr).toEqual([]);
       expect(mockNoChange.stderr.join("")).not.toMatch(/[\x1b\r]/);
       const outNoChange = mockNoChange.stdout.join("");
-      expect(outNoChange).toContain("mkt-alpha  重新抓取… 無變化");
-      expect(outNoChange).toContain("mkt-beta  重新抓取… 無變化");
+      expect(outNoChange).toBe("mkt-alpha  無變化\nmkt-beta  無變化\n");
       expect(outNoChange).not.toContain(RELOAD_NOTICE);
 
       // 2. Modify mkt-beta material on disk
@@ -1284,11 +1337,10 @@ describe("Installation 表面：install／update (#132, #135)", () => {
       const mockChanged = createMockIo();
       const codeChanged = await runCli(["update"], mockChanged.io, { cwd, agentDir });
       expect(codeChanged).toBe(0);
-      expect(mockChanged.stderr.join("")).toContain("寫入 Bridge State");
+      expect(mockChanged.stderr).toEqual([]);
       expect(mockChanged.stderr.join("")).not.toMatch(/[\x1b\r]/);
       const outChanged = mockChanged.stdout.join("");
-      expect(outChanged).toContain("mkt-alpha  重新抓取… 無變化");
-      expect(outChanged).toContain("mkt-beta  重新抓取… plugin-b 有新版本");
+      expect(outChanged).toContain("mkt-alpha  無變化\nmkt-beta  plugin-b 有新版本");
       expect(outChanged).toContain(RELOAD_NOTICE);
       expect(outChanged).not.toContain("已重新載入生效");
 
@@ -1323,9 +1375,9 @@ describe("Installation 表面：install／update (#132, #135)", () => {
       const codeUpd = await runCli(["update"], mockUpd.io, { cwd, agentDir });
       expect(codeUpd).toBe(0);
       const out = mockUpd.stdout.join("");
-      expect(out).toContain("mkt-one  重新抓取… 無變化");
+      expect(out).toContain("mkt-one  無變化");
       expect(out).toMatch(/⚠ marketplace \[mkt-two\]/);
-      expect(out).toContain("mkt-three  重新抓取… 無變化");
+      expect(out).toContain("mkt-three  無變化");
     } finally {
       rmSync(mktA, { recursive: true, force: true });
       rmSync(mktB, { recursive: true, force: true });
@@ -1374,7 +1426,7 @@ describe("Installation 表面：install／update (#132, #135)", () => {
         PI_CODING_AGENT_DIR: agentDir,
         PI_AGENT_DIR: agentDir,
       });
-      expect(upd1Out).toContain("demo-suite  重新抓取… 無變化");
+      expect(upd1Out).toBe("demo-suite  無變化\n");
       expect(upd1Out).not.toContain(RELOAD_NOTICE);
 
       // Step 5: add a new skill to calc-plugin
@@ -1386,7 +1438,7 @@ describe("Installation 表面：install／update (#132, #135)", () => {
         PI_CODING_AGENT_DIR: agentDir,
         PI_AGENT_DIR: agentDir,
       });
-      expect(upd2Out).toContain("demo-suite  重新抓取… calc-plugin, format-plugin 有新版本");
+      expect(upd2Out).toContain("demo-suite  calc-plugin, format-plugin 有新版本");
       expect(upd2Out).toContain(RELOAD_NOTICE);
 
       // Step 7: repeated install on format-plugin after adding xml-skill (重裝＝更新)

@@ -12,8 +12,8 @@ import { runCommand, getPackageVersion, type CommandOptions, type CommandResult 
 export { getPackageVersion };
 
 export interface CliIO {
-  stdout?: { write: (chunk: string) => unknown } | ((chunk: string) => unknown);
-  stderr?: { write: (chunk: string) => unknown; isTTY?: boolean } | ((chunk: string) => unknown);
+  stdout?: { write: (chunk: string) => unknown; isTTY?: boolean } | ((chunk: string) => unknown);
+  stderr?: { write: (chunk: string) => unknown; isTTY?: boolean; columns?: number } | ((chunk: string) => unknown);
   exit?: (code: number) => unknown;
 }
 
@@ -63,13 +63,19 @@ export async function runCli(
       return exitWith(0);
     }
 
-    const terminal = typeof io.stderr === 'object' && io.stderr.isTTY ? io.stderr : undefined;
+    const interactive = typeof io.stdout === 'object' && io.stdout.isTTY;
+    const terminal = interactive && typeof io.stderr === 'object' && io.stderr.isTTY ? io.stderr : undefined;
     let timer: ReturnType<typeof setInterval> | undefined;
     let frame = 0;
+    let activityVisible = false;
+    let updating = false;
     const clearActivity = (): void => {
       if (timer !== undefined) {
         clearInterval(timer);
         timer = undefined;
+      }
+      if (activityVisible) {
+        activityVisible = false;
         try { terminal?.write('\r\x1b[2K'); } catch { /* Progress is best-effort. */ }
       }
     };
@@ -78,21 +84,31 @@ export async function runCli(
       result = await runCommand(argv, {
         ...opts,
         onProgress(message, kind) {
-          // Result lines belong to the authoritative final summary, not both streams.
-          if (kind === 'result') {
-            opts.onProgress?.(message, kind);
-            return;
-          }
-          clearActivity();
-          writeStream(io.stderr, message);
-          if (terminal) {
-            timer = setInterval(() => {
-              try { terminal.write(`\r${['|', '/', '-', '\\'][frame++ % 4]} 處理中…`); } catch {
-                clearInterval(timer);
-                timer = undefined;
+          updating = true; // Only update emits progress; other command formatting stays unchanged.
+          if (kind !== 'result' && terminal) {
+            clearActivity();
+            const render = (): void => {
+              // Reserve the last column to prevent wrapping into permanent history.
+              const width = Math.max(0, (terminal.columns ?? 80) - 1);
+              const text = `${['|', '/', '-', '\\'][frame++ % 4]} ${message}`;
+              let line = '';
+              let used = 0;
+              for (const char of text.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ')) {
+                const cells = char.codePointAt(0)! < 128 ? 1 : 2;
+                if (used + cells > width) break;
+                line += char;
+                used += cells;
               }
-            }, 100);
-            timer.unref();
+              try {
+                activityVisible = true;
+                terminal.write(`\r\x1b[2K${line}`);
+              } catch { clearActivity(); }
+            };
+            render();
+            if (activityVisible) {
+              timer = setInterval(render, 100);
+              timer.unref();
+            }
           }
           opts.onProgress?.(message, kind);
         },
@@ -100,7 +116,11 @@ export async function runCli(
     } finally {
       clearActivity();
     }
-    const output = formatCliOutput(result);
+    const formatted = formatCliOutput(result);
+    const output = updating
+      ? formatted.split('\n').filter((line) => line.length > 0)
+        .map((line) => line.replace(/^(.+?  )重新抓取… /, '$1')).join('\n')
+      : formatted;
 
     if (result.ok) {
       if (output) {

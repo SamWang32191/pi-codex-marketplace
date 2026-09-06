@@ -72,6 +72,6 @@ describe("npm-packed Bridge CLI package boundary", () => {
 
     expect(result.exitCode, result.stderr).toBe(0);
     expect(result.stdout).toContain("尚無已註冊的 marketplace。");
-    expect(result.stderr).toBe("開始更新 Marketplace…\n");
+    expect(result.stderr).toBe("");
   });
 });
