@@ -2,6 +2,11 @@
 
 All notable changes to `pi-codex-marketplace` are documented here. Format follows Keep a Changelog and SemVer (starting at `0.1.0`; Git tags `v*` mirror npm versions).
 
+## [1.0.2] - 2026-09-06
+
+### Added
+- **CLI `update` 即時進度（#148、#149）**：`update` 啟動後即向 `stderr` 顯示開始訊息與各 Marketplace 抓取／檢查／寫入階段進度；TTY 顯示活動指示，非 TTY／重新導向僅輸出階段文字（無動畫控制碼）。最終摘要與退出碼語意不變（以退出碼判成功，`stderr` 有進度不代表失敗）；寫入失敗不再顯示成功生效提醒；Git stderr 經遮蔽不外洩。此功能僅適用 CLI `update`，Pi TUI 不變。
+
 ## [1.0.1] - 2026-09-02
 
 ### Fixed
