@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -71,7 +71,24 @@ describe("npm-packed Bridge CLI package boundary", () => {
     const sentinelVersion = "9.9.9";
     const consumer = mkdtempSync(join(tmpdir(), "cli-peer-consumer-"));
     consumerSandbox = consumer;
-    writeFileSync(join(consumer, "package.json"), JSON.stringify({ name: "consumer", version: "1.0.0", private: true }));
+
+    // Vendor every runtime dependency of the packed package locally, so the install needs neither
+    // the registry nor whatever the parent project's npm cache happens to hold: `npm ci` resolves
+    // the packed package's dependencies from the lockfile's tarball URLs and never caches their
+    // packuments, so a plain `--offline` install of the tarball would fail with ENOTCACHED.
+    const packedManifest = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8"));
+    const runtimeDependencies: string[] = Object.keys(packedManifest.dependencies ?? {});
+    expect(runtimeDependencies.length).toBeGreaterThan(0);
+    const overrides: Record<string, string> = {};
+    for (const name of runtimeDependencies) {
+      cpSync(join(process.cwd(), "node_modules", name), join(consumer, "vendor", name), { recursive: true });
+      overrides[name] = `file:./vendor/${name}`;
+    }
+    mkdirSync(join(consumer, ".npm-cache"), { recursive: true });
+    writeFileSync(
+      join(consumer, "package.json"),
+      JSON.stringify({ name: "consumer", version: "1.0.0", private: true, overrides }),
+    );
 
     for (const name of ["pi-coding-agent", "pi-tui", "pi-ai"]) {
       const hostDir = join(consumer, "node_modules", "@earendil-works", name);
@@ -83,11 +100,19 @@ describe("npm-packed Bridge CLI package boundary", () => {
       writeFileSync(join(hostDir, "index.js"), "export const stub = true;\n");
     }
 
-    const installed = await run("npm", ["install", tarballPath, "--offline", "--no-audit", "--no-fund"], { cwd: consumer, env: cleanNpmEnv() });
+    // A cache of its own, so a warm parent cache cannot mask a dependency that only the registry
+    // (or that cache) could satisfy.
+    const installed = await run("npm", ["install", tarballPath, "--offline", "--no-audit", "--no-fund"], {
+      cwd: consumer,
+      env: { ...cleanNpmEnv(), npm_config_cache: join(consumer, ".npm-cache") },
+    });
 
     expect(installed.exitCode, installed.stderr).toBe(0);
     const installedManifest = JSON.parse(readFileSync(join(consumer, "node_modules", "pi-codex-marketplace", "package.json"), "utf8"));
     expect(installedManifest.name).toBe("pi-codex-marketplace");
+    for (const name of runtimeDependencies) {
+      expect(existsSync(join(consumer, "node_modules", name)), `${name} was not installed`).toBe(true);
+    }
 
     const hostManifest = JSON.parse(readFileSync(join(consumer, "node_modules", "@earendil-works", "pi-coding-agent", "package.json"), "utf8"));
     expect(hostManifest.version).toBe(sentinelVersion);
