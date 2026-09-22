@@ -16,7 +16,7 @@ description: Release pi-codex-marketplace (發版) to npm with provenance and Gi
 ```bash
 git status # 必須乾淨，無未提交變更
 npm run typecheck
-npm test # 40 files / 322 tests，需全綠
+npm test # 需全綠
 ```
 
 **完成條件：** `typecheck` 與 `npm test` 皆通過，且 `git status` 無 `M/??`。
