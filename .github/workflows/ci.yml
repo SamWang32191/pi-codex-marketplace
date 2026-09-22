@@ -17,8 +17,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
         node: ["22.19.0", "22.x", "24.x"]
-        # Pi host is pinned to 0.84.2 per spec; devDeps uses ^0.84.2 range for expected compatibility
+        # The verify matrix runs the lockfile's validated Pi host (devDependencies).
         # The TUI E2E seam runs against the installed pi-coding-agent at that version.
+        # The 0.84.2 compatibility floor is covered by the compat job below.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -30,6 +31,35 @@ jobs:
       - run: npm test
       - name: acceptance matrix fixture checks (synthetic / pinned @98e78ca / adversarial)
         run: npm run test:acceptance
+
+  compat:
+    name: compat (Pi 0.84.2 floor / node 22.19.0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.19.0"
+          cache: npm
+      - run: npm ci
+      - name: downgrade to the Pi 0.84.2 compatibility floor (lockfile untouched)
+        run: npm install --no-save @earendil-works/pi-coding-agent@0.84.2 @earendil-works/pi-tui@0.84.2 @earendil-works/pi-ai@0.84.2
+      - name: assert the compatibility floor is the host under test
+        run: |
+          node - <<'NODE'
+          const { readFileSync } = require('node:fs');
+          const expected = '0.84.2';
+          for (const name of ['pi-coding-agent', 'pi-tui', 'pi-ai']) {
+            const { version } = JSON.parse(readFileSync(`node_modules/@earendil-works/${name}/package.json`, 'utf8'));
+            if (version !== expected) {
+              console.error(`@earendil-works/${name} resolved ${version}, expected ${expected}`);
+              process.exit(1);
+            }
+            console.log(`@earendil-works/${name} ${version}`);
+          }
+          NODE
+      - run: npm run typecheck
+      - run: npm test
 
   provenance-smoke:
     name: provenance smoke (no publish)
