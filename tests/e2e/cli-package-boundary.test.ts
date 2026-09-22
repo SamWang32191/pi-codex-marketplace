@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { execFile } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, isAbsolute, resolve } from "node:path";
 
 interface ProcessResult {
   exitCode: number;
@@ -76,15 +76,24 @@ describe("npm-packed Bridge CLI package boundary", () => {
     // the registry nor whatever the parent project's npm cache happens to hold: `npm ci` resolves
     // the packed package's dependencies from the lockfile's tarball URLs and never caches their
     // packuments, so a plain `--offline` install of the tarball would fail with ENOTCACHED.
+    // Vendored as tarballs: a `file:` target that is a package directory makes npm resolve that
+    // directory's own devDependencies (`@babel/core`, eslint, ...) and fail offline.
     const packedManifest = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8"));
     const runtimeDependencies: string[] = Object.keys(packedManifest.dependencies ?? {});
     expect(runtimeDependencies.length).toBeGreaterThan(0);
+    const vendorDir = join(consumer, "vendor");
+    mkdirSync(vendorDir, { recursive: true });
     const overrides: Record<string, string> = {};
     for (const name of runtimeDependencies) {
-      cpSync(join(process.cwd(), "node_modules", name), join(consumer, "vendor", name), { recursive: true });
-      // Absolute, not `file:./vendor/...`: npm 10 resolves a relative override target against
-      // node_modules/ and materializes a broken link to <consumer>/node_modules/<pkg>/vendor/...
-      overrides[name] = `file:${join(consumer, "vendor", name)}`;
+      const vendored = await run(
+        "npm",
+        ["pack", "--ignore-scripts", "--pack-destination", vendorDir, join(process.cwd(), "node_modules", name)],
+        { env: cleanNpmEnv() },
+      );
+      expect(vendored.exitCode, vendored.stderr).toBe(0);
+      const vendoredName = vendored.stdout.trim().split(/\r?\n/).at(-1);
+      expect(vendoredName).toBeTruthy();
+      overrides[name] = `file:${isAbsolute(vendoredName!) ? vendoredName! : join(vendorDir, vendoredName!)}`;
     }
     mkdirSync(join(consumer, ".npm-cache"), { recursive: true });
     writeFileSync(
