@@ -24,10 +24,10 @@ See `src/bridge/state.ts`（Minimal Bridge State）、`src/bridge-state/atomic.t
 |-----------|-----------|-------|
 | OS | **macOS**, **Linux** | Windows not supported (path containment, symlink, `flock` semantics are POSIX-only) |
 | Node | **>=22.19.0** | `engines.node` enforced |
-| Pi host | **0.84.2** | `peerDependencies` exact `0.84.2`; expected compatible range `^0.84.2` (devDeps). `pi-ai`/`pi-tui` peers `*` per Pi extension docs. |
+| Pi host | **0.87.0** validated, **0.84.2** compatibility floor | `peerDependencies` `"*"` for every Pi-bundled core package per Pi packages docs. Validated host pinned by devDeps `^0.87.0`; the 0.84.2 floor runs in the CI `compat` job. |
 | Semantics | `pi install` / `pi -e` / `pi install -l` / `pi update` / `pi remove` / `pi list` / `pi config` ＋ `npx pi-codex-marketplace` / `bin/pi-codex-marketplace.js` CLI | Single `pi` extension package + headless CLI bin; `files` ships `bin/`, `extensions/`, `src/`, `README.md`, `LICENSE` only |
 
-Peer declaration (dual): **精確 `0.84.2`** in `peerDependencies` (exact host that this version was validated against) + **預期 `^0.84.2`** in `devDependencies` (range expected to remain compatible). `pi-ai` and `pi-tui` remain `*` because they are bundled by Pi.
+Peer declaration: **`"*"`** for every Pi-bundled core package (`pi-ai`, `pi-coding-agent`, `pi-tui`) — Pi bundles them for extensions and skills, so the package declares a wildcard range instead of pinning a host version. The **validated host** is `^0.87.0` in `devDependencies` (what the lockfile and the verify matrix run); the **0.84.2 compatibility floor** is exercised by the CI `compat` job, which downgrades the three packages and asserts the resolved versions before running the suite.
 
 ## Domain vocabulary
 

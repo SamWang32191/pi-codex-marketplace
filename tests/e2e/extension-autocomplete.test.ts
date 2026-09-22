@@ -205,7 +205,7 @@ describe('/codex-marketplace autocomplete thin Pi adapter (#121)', () => {
     expect(wrapper.shouldTriggerFileCompletion?.(['import x from "./a'], 0, 18)).toBe(true);
   });
 
-  it('applies an intercepted subcommand through Pi 0.84.2 real combined provider, cursor after the trailing space', async () => {
+  it('applies an intercepted subcommand through the real Pi CombinedAutocompleteProvider, cursor after the trailing space', async () => {
     // Real host provider: CombinedAutocompleteProvider is what interactive mode wraps.
     const captured = captureExtension();
     const command = captured.commands.get('codex-marketplace')!;
@@ -391,7 +391,7 @@ describe('state-aware install autocomplete thin Pi adapter (#122)', () => {
     expect(result).toEqual({ items: [{ value: 'x', label: 'x' }], prefix: 'x' });
   });
 
-  it('applies an install candidate through Pi 0.84.2 real combined provider, cursor at the inserted argument end', async () => {
+  it('applies an install candidate through the real Pi CombinedAutocompleteProvider, cursor at the inserted argument end', async () => {
     const fixture = makeInstallFixture();
     try {
       const captured = captureExtension();
@@ -549,7 +549,7 @@ describe('Installation lifecycle autocomplete thin Pi adapter (#123)', () => {
     expect(result).toEqual({ items: [{ value: 'x', label: 'x' }], prefix: 'x' });
   });
 
-  it('applies a lifecycle candidate through Pi 0.84.2 real combined provider, cursor at the inserted argument end', async () => {
+  it('applies a lifecycle candidate through the real Pi CombinedAutocompleteProvider, cursor at the inserted argument end', async () => {
     const fixture = makeLifecycleFixture();
     try {
       const captured = captureExtension();
@@ -763,7 +763,7 @@ describe('Marketplace Registration autocomplete thin Pi adapter (#124)', () => {
     expect(result).toEqual({ items: [{ value: 'x', label: 'x' }], prefix: 'x' });
   });
 
-  it('applies a Registration candidate through Pi 0.84.2 real combined provider, cursor at the inserted argument end', async () => {
+  it('applies a Registration candidate through the real Pi CombinedAutocompleteProvider, cursor at the inserted argument end', async () => {
     const fixture = makeRegistrationFixture();
     try {
       const captured = captureExtension();

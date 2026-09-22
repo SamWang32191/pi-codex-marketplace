@@ -2,6 +2,16 @@
 
 All notable changes to `pi-codex-marketplace` are documented here. Format follows Keep a Changelog and SemVer (starting at `0.1.0`; Git tags `v*` mirror npm versions).
 
+## [1.0.5] - 2026-09-22
+
+### Changed
+- **Pi host peer 契約（#151、#152）**：`peerDependencies["@earendil-works/pi-coding-agent"]` 由精確 `0.84.2` 改為 `*`，符合 Pi 官方 `packages.md` 對核心套件（Pi 已內建打包）的宣告規範。在已安裝其他 Pi 版本的環境（例如 `0.87.0`）以 `npm install`／`npx` 安裝時，不再因 peer 衝突失敗，也不會無聲降級使用者既有的 host。
+- **驗證版本與 CI 矩陣（#151、#152）**：`devDependencies` 與 `package-lock.json` 的 `pi-coding-agent`／`pi-tui` 升至 `^0.87.0`，本機與 CI verify 矩陣改以 0.87.0 為預設驗證 host；`0.84.2` 相容下限改由 CI 新增的 `compat` job 顯式降級、斷言解析版本後執行 typecheck 與測試。指令語意與 Bridge State（`schemaVersion` 1）皆不變。
+- **版本宣稱對齊（#151、#153）**：README、`docs/installation.md`、`docs/architecture.md`、`docs/usage.md` 與 extension 原始碼註解不再宣稱「需要 Pi 0.84.2」，改陳述驗證版本（0.87.0）、`"*"` peer 依據與 0.84.2 相容下限；測試名稱改以 Pi 內建 `CombinedAutocompleteProvider` 描述，不綁定版本。
+
+### Added
+- **套件邊界回歸 guard（#152）**：真實 `npm pack` 的 E2E 新增兩項檢查——tarball 內 `peerDependencies` 必須為 `*`；在離線環境以版本不同於鎖定版本的 stub Pi host 安裝 tarball 必須 exit 0 且不改動既有 host。
+
 ## [1.0.4] - 2026-09-06
 
 ### Fixed

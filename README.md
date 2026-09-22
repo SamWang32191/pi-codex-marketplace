@@ -1,6 +1,6 @@
 # pi-codex-marketplace
 
-Bridge Package for Codex and Claude Marketplace compatibility in Pi (`Pi 0.84.2`）。
+Bridge Package for Codex and Claude Marketplace compatibility in Pi（驗證於 `0.87.0`；相容下限 `0.84.2`，由 CI 把關）。
 
 > **One-line:** `pi install npm:pi-codex-marketplace` → `/codex-marketplace add <本機資料夾|GitHub 網址>`（或 Shell 下 `npx pi-codex-marketplace add ...`）註冊 marketplace → `install <編號>` 裝到當下最新並在 Pi 可用。
 
@@ -19,7 +19,7 @@ npx pi-codex-marketplace add <本機資料夾|GitHub 網址>  # Shell 下
 /codex-marketplace install <編號|名稱>
 ```
 
-Requirements: **Pi 0.84.2** · **Node >=22.19.0** · **macOS / Linux**（Windows not supported）。完整安裝方式見 [docs/installation.md](./docs/installation.md)。
+Requirements: **Pi `0.87.0`（相容下限 `0.84.2`）** · **Node >=22.19.0** · **macOS / Linux**（Windows not supported）。`peerDependencies` 依 Pi 官方規範宣告 `*`，不鎖定 host 版本。完整安裝方式見 [docs/installation.md](./docs/installation.md)，支援矩陣見 [docs/architecture.md](./docs/architecture.md#support-matrix)。
 
 ## 子命令速查
 
