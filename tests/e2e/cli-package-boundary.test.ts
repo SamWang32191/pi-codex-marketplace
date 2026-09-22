@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { execFile } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -82,7 +82,9 @@ describe("npm-packed Bridge CLI package boundary", () => {
     const overrides: Record<string, string> = {};
     for (const name of runtimeDependencies) {
       cpSync(join(process.cwd(), "node_modules", name), join(consumer, "vendor", name), { recursive: true });
-      overrides[name] = `file:./vendor/${name}`;
+      // Absolute, not `file:./vendor/...`: npm 10 resolves a relative override target against
+      // node_modules/ and materializes a broken link to <consumer>/node_modules/<pkg>/vendor/...
+      overrides[name] = `file:${join(consumer, "vendor", name)}`;
     }
     mkdirSync(join(consumer, ".npm-cache"), { recursive: true });
     writeFileSync(
@@ -108,10 +110,15 @@ describe("npm-packed Bridge CLI package boundary", () => {
     });
 
     expect(installed.exitCode, installed.stderr).toBe(0);
-    const installedManifest = JSON.parse(readFileSync(join(consumer, "node_modules", "pi-codex-marketplace", "package.json"), "utf8"));
+    const installedPackageDir = join(consumer, "node_modules", "pi-codex-marketplace");
+    const installedManifest = JSON.parse(readFileSync(join(installedPackageDir, "package.json"), "utf8"));
     expect(installedManifest.name).toBe("pi-codex-marketplace");
+    // Resolved from the installed package, not from a fixed node_modules slot: npm 10 and npm 11
+    // hoist a vendored dependency differently, and the contract is that it is resolvable at all.
     for (const name of runtimeDependencies) {
-      expect(existsSync(join(consumer, "node_modules", name)), `${name} was not installed`).toBe(true);
+      const probe = `process.stdout.write(require.resolve(${JSON.stringify(name)}, { paths: [${JSON.stringify(installedPackageDir)}] }))`;
+      const resolved = await run(process.execPath, ["-e", probe], { cwd: consumer, env: cleanNpmEnv() });
+      expect(resolved.exitCode, `${name} is not resolvable from the installed package: ${resolved.stderr}`).toBe(0);
     }
 
     const hostManifest = JSON.parse(readFileSync(join(consumer, "node_modules", "@earendil-works", "pi-coding-agent", "package.json"), "utf8"));
