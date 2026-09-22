@@ -1,13 +1,13 @@
 /**
  * Narrow Bridge autocomplete provider — thin Pi adapter (TUI session only) (#119, #121–#124).
  *
- * Pi 0.84.2's built-in combined provider completes the slash-command name and inserts a
+ * Pi's built-in combined provider completes the slash-command name and inserts a
  * trailing space without exposing empty-prefix argument completion (root subcommands) when
  * the editor holds exactly `/codex-marketplace`. This wrapper intercepts that exact editor
  * content and presents the nine root candidates. It also owns the second-level argument
  * contexts (`install` #122, the Installation lifecycle `enable` / `disable` / `remove` #123,
  * and the Marketplace Registration `list` / `forget` #124) on forced (Tab) requests, which
- * Pi 0.84.2 routes to file completion instead of slash-command argument completion (its
+ * Pi routes to file completion instead of slash-command argument completion (its
  * argument path only runs when `force` is false) — the wrapper returns the state-aware
  * candidates there. `add` stays free-form (#124): its forced Tab keeps Pi's native
  * filesystem completion, and a typed Git locator or path is never constrained by Bridge

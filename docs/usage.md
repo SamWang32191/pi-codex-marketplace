@@ -31,7 +31,7 @@ Nine subcommands, no arguments = 總覽：
 
 **第一層——九個根層子命令。** 輸入完整的 `/codex-marketplace` 後按 Tab，候選清單顯示全部九個子命令（`add`／`list`／`install`／`update`／`disable`／`enable`／`remove`／`forget`／`help`）與各自說明，支援不分大小寫的模糊搜尋。選取需要參數的子命令（`add`／`list`／`install`／`disable`／`enable`／`remove`／`forget`）會自動補上一個尾隨空格，可直接繼續輸入；`update` 與 `help` 不加。
 
-**第二層——再按一次 Tab 開啟狀態感知候選。** 需要參數的子命令套用後，**再按一次 Tab** 依當下 Bridge State 只列出當下可執行的選項（空集合不給假候選）；**不承諾自動重開 selector**（Pi 0.84.2 在套用候選後不會自動再開一層補完選單，鍵盤流程固定是「輸入 command → Tab 選子命令 → 需要參數時再按一次 Tab」）：
+**第二層——再按一次 Tab 開啟狀態感知候選。** 需要參數的子命令套用後，**再按一次 Tab** 依當下 Bridge State 只列出當下可執行的選項（空集合不給假候選）；**不承諾自動重開 selector**（Pi 在套用候選後不會自動再開一層補完選單，鍵盤流程固定是「輸入 command → Tab 選子命令 → 需要參數時再按一次 Tab」）：
 
 | 子命令 | 候選範圍 | 歧義處理 |
 |--------|----------|----------|

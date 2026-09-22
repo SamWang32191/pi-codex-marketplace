@@ -1,6 +1,6 @@
 /**
  * Bridge Extension — Pi runtime entry for pi-codex-marketplace
- * Single extension "pi" package, Pi 0.84.2 compatible.
+ * Single extension "pi" package, validated against the Pi host pinned in devDependencies.
  *
  * Provides:
  * - /codex-marketplace command: Thin Pi adapter delegating to pure runCommand

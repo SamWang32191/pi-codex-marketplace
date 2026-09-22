@@ -41,7 +41,7 @@ pi-codex-marketplace [subcommand]
 
 | 維度 | 需求 | 說明 |
 |------|------|------|
-| Pi host | **0.84.2** | `peerDependencies` 精確 `0.84.2`（本版本驗證目標）；預期相容範圍 `^0.84.2`（devDeps） |
+| Pi host | **0.87.0**（相容下限 **0.84.2**） | `peerDependencies` 宣告 `*`（Pi 已內建打包核心套件，依官方 packages.md 規範）；驗證版本為 devDeps `^0.87.0`；`0.84.2` 下限由 CI `compat` job 顯式降級後驗證 |
 | Node | **>=22.19.0** | `engines.node` 強制 |
 | OS | **macOS / Linux** | Windows not supported（path containment、symlink、`flock` 語意皆 POSIX-only） |
 
