@@ -25,15 +25,15 @@ npm test # 需全綠
 
 - `package.json: version` 為唯一權威，必須與即將推送的 `v*` tag 去掉 `v` 後完全一致（`publish.yml` 會嚴格比對）。
 - 含 `-` 的版本（`0.1.1-beta.0`）→ `npm dist-tag next`；不含則 `latest`。
-- 若 `src/bridge-state/schema.ts` 的 `CURRENT_SCHEMA_VERSION` 有變，必須同步在 `src/bridge-state/migrate.ts` 新增 WAL forward 遷移。
+- `schemaVersion` 是固定契約：`src/bridge/state.ts` 的 `MINIMAL_SCHEMA_VERSION` 恆為 `1`、永不遷移，未知版本一律 fail-reset（不部分讀取），因此發版不需改動 schema 程式碼、也沒有遷移檔可加。破壞性變更以 major bump 表達（見 `CHANGELOG.md` 的 `1.0.0` 條目）。
 
-**完成條件：** `package.json`、`CHANGELOG.md`、`schemaVersion` 三者已對齊下一個 SemVer。
+**完成條件：** `package.json`、`CHANGELOG.md` 已對齊下一個 SemVer，且 `schemaVersion` 維持 `1`。
 
 ### 3. 更新文件與提交
 
 ```bash
 # 編輯 package.json (version) 與 CHANGELOG.md ([x.y.z] - YYYY-MM-DD)
-git add package.json CHANGELOG.md src/bridge-state/migrate.ts # 若有
+git add package.json CHANGELOG.md
 git commit -m "chore: bump vX.Y.Z"
 git push origin main
 ```
@@ -78,4 +78,4 @@ gh release view vX.Y.Z --json tagName,url
 ### 來源
 
 - 唯一規範：`docs/development.md#versioning--release-flow`、`CHANGELOG.md`、`package.json: version/engines/pi`、`.github/workflows/ci.yml`、`.github/workflows/publish.yml`
-- `schemaVersion` 綁定規則見 `src/bridge-state/migrate.ts` 與 `src/bridge-state/schema.ts`
+- `schemaVersion` 綁定規則見 `src/bridge/state.ts`（`MINIMAL_SCHEMA_VERSION` 固定 `1`、永不遷移）與 `CHANGELOG.md` 的 `1.0.0` 條目；`docs/architecture.md`「Bridge State storage」為同一契約的對外說明。
