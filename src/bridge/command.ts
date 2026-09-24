@@ -80,7 +80,7 @@ export function getPackageVersion(): string {
 }
 
 const USAGE_LINE = '用法：/codex-marketplace <add|list|install|update|disable|enable|remove|forget|skills|help>';
-const SKILLS_USAGE_LINE = '用法：/codex-marketplace skills <名稱> [exclude|include <skill>]';
+const SKILLS_USAGE_LINE = '用法：/codex-marketplace skills <名稱> [exclude <skill>|include <skill>|only <skill...>|reset]';
 
 // Exported so the Bridge completion seam can be verified against the same description
 // vocabulary it mirrors (#121) — alignment is pinned by tests, not by manual syncing.
@@ -96,7 +96,7 @@ export const HELP_TEXT = [
   '  enable <名稱>        啟用 plugin（恢復投影）',
   '  remove <名稱>        移除 plugin',
   '  forget <名稱>        移除 marketplace（含其全部安裝）',
-  '  skills <名稱>        查看／逐項排除或恢復 plugin 的 skills',
+  '  skills <名稱>        查看／調整 plugin 的 skills 排除清單',
   '  help                 這份說明清單',
 ].join('\n');
 
@@ -320,6 +320,44 @@ function tryRereadSkills(
     // best-effort: 目錄掃描失敗則沿用舊 skills
     return undefined;
   }
+}
+
+/**
+ * The source confirmation every exclusion change that adds a name needs: the names discovered
+ * from the currently confirmable source (live local root / pinned Git Source Cache material).
+ * Undefined means the source cannot be read, so the change must be refused.
+ */
+function rereadConfirmableSkills(
+  state: MinimalBridgeState,
+  installation: MinimalInstallation,
+  opts: CommandOptions,
+): string[] | undefined {
+  const registration = state.registrations.find((r) => r.id === installation.registrationId);
+  return registration ? tryRereadSkills(registration, installation, opts) : undefined;
+}
+
+/** The one wording for a source that cannot confirm its skills. */
+function unconfirmedSourceMessage(displayName: string): string {
+  return `錯誤：無法確認 plugin "${displayName}" 的來源 skills（來源不可讀或 plugin 目錄不存在），未變更`;
+}
+
+/**
+ * Persist a Skill Exclusion change atomically: a failed Bridge State write rolls the record
+ * back, so no partial exclusion survives.
+ */
+function commitSkillExclusions(
+  state: MinimalBridgeState,
+  index: number,
+  installation: MinimalInstallation,
+  next: string[],
+  opts: CommandOptions,
+): { ok: true } | { ok: false; message: string } {
+  const backup = { ...installation };
+  installation.skillExclusions = next;
+  const writeErr = tryWriteState(state, opts);
+  if (!writeErr) return { ok: true };
+  state.installations[index] = backup as MinimalInstallation;
+  return { ok: false, message: `錯誤：寫入 Bridge State 失敗：${writeErr}` };
 }
 
 /**
@@ -1375,6 +1413,14 @@ export async function runCommand(
             break;
           }
 
+          // `exclude`／`include` stay per-item: silently ignoring extra names would leave a
+          // partial adjustment the user never saw acknowledged. Batch keeping goes through `only`.
+          if ((action === 'exclude' || action === 'include') && subargs.length > 3) {
+            messages.push(`錯誤：${action} 一次只能指定一個 skill`);
+            messages.push(SKILLS_USAGE_LINE);
+            break;
+          }
+
           if (action === 'exclude') {
             const skill = subargs[2];
             if (!skill) {
@@ -1386,12 +1432,9 @@ export async function runCommand(
               messages.push(`skill "${skill}" 已是排除狀態`);
               break;
             }
-            // Adding an exclusion needs the currently confirmable source: the same reread the
-            // lifecycle commands use (live local root / pinned Git Source Cache material).
-            const registration = state.registrations.find((r) => r.id === inst.registrationId);
-            const confirmable = registration ? tryRereadSkills(registration, inst, opts) : undefined;
+            const confirmable = rereadConfirmableSkills(state, inst, opts);
             if (!confirmable) {
-              messages.push(`錯誤：無法確認 plugin "${displayName}" 的來源 skills（來源不可讀或 plugin 目錄不存在），未變更`);
+              messages.push(unconfirmedSourceMessage(displayName));
               break;
             }
             if (!confirmable.includes(skill)) {
@@ -1399,12 +1442,9 @@ export async function runCommand(
               break;
             }
             const next = [...current, skill].sort((a, b) => a.localeCompare(b));
-            const backup = { ...inst };
-            inst.skillExclusions = next;
-            const writeErr = tryWriteState(state, opts);
-            if (writeErr) {
-              state.installations[resolved.index] = backup as MinimalInstallation;
-              messages.push(`錯誤：寫入 Bridge State 失敗：${writeErr}`);
+            const written = commitSkillExclusions(state, resolved.index, inst, next, opts);
+            if (!written.ok) {
+              messages.push(written.message);
               break;
             }
             reload = true;
@@ -1425,16 +1465,80 @@ export async function runCommand(
             }
             // Restoring needs no source read: an exclusion recorded for a name the upstream
             // later dropped or renamed stays reversible.
-            const backup = { ...inst };
-            inst.skillExclusions = current.filter((name) => name !== skill);
-            const writeErr = tryWriteState(state, opts);
-            if (writeErr) {
-              state.installations[resolved.index] = backup as MinimalInstallation;
-              messages.push(`錯誤：寫入 Bridge State 失敗：${writeErr}`);
+            const written = commitSkillExclusions(state, resolved.index, inst, current.filter((name) => name !== skill), opts);
+            if (!written.ok) {
+              messages.push(written.message);
               break;
             }
             reload = true;
             messages.push(`已恢復 "${displayName}" 的 skill "${skill}" · 已重新載入生效`);
+            break;
+          }
+
+          if (action === 'only') {
+            const kept = [...new Set(subargs.slice(2))];
+            // Excluding every current skill is never what a missing name may mean: a bare
+            // `only` is a usage error, so the all-excluded list must be spelled out.
+            if (kept.length === 0) {
+              messages.push('錯誤：only 需要至少一個 skill 名稱；未提供名稱時不會排除全部');
+              messages.push(SKILLS_USAGE_LINE);
+              break;
+            }
+            // Keeping a set is a source-dependent exclusion change: the current source must
+            // confirm every retained name and supply the names this adjustment excludes.
+            const confirmable = rereadConfirmableSkills(state, inst, opts);
+            if (!confirmable) {
+              messages.push(unconfirmedSourceMessage(displayName));
+              break;
+            }
+            const unknown = kept.filter((name) => !confirmable.includes(name));
+            if (unknown.length > 0) {
+              messages.push(`錯誤：plugin "${displayName}" 目前沒有 skill ${unknown.map((name) => `"${name}"`).join('、')}（只能保留目前存在的 skill）`);
+              break;
+            }
+            const current = skillExclusionsOf(inst);
+            const keptSet = new Set(kept);
+            const discovered = new Set(confirmable);
+            // Current skills outside the kept set are excluded; an excluded name the source no
+            // longer offers is preserved verbatim (a future skill of that name stays excluded),
+            // and a name the source gains later is not in the set and therefore stays allowed.
+            const next = [...new Set([
+              ...confirmable.filter((name) => !keptSet.has(name)),
+              ...current.filter((name) => !discovered.has(name)),
+            ])].sort((a, b) => a.localeCompare(b));
+            if (next.length === current.length && next.every((name) => current.includes(name))) {
+              messages.push(`"${displayName}" 已是只保留：${kept.map((name) => `"${name}"`).join('、')}，未變更`);
+              break;
+            }
+            const written = commitSkillExclusions(state, resolved.index, inst, next, opts);
+            if (!written.ok) {
+              messages.push(written.message);
+              break;
+            }
+            reload = true;
+            messages.push(`已只保留 "${displayName}" 的 skills：${kept.map((name) => `"${name}"`).join('、')}（目前共排除 ${next.length} 個）· 已重新載入生效`);
+            break;
+          }
+
+          if (action === 'reset') {
+            if (subargs.length > 2) {
+              messages.push(SKILLS_USAGE_LINE);
+              break;
+            }
+            const current = skillExclusionsOf(inst);
+            // Clearing depends on nothing but the record itself: the source may be gone and the
+            // Plugin may be disabled, and neither the enable state nor anything else changes.
+            if (current.length === 0) {
+              messages.push(`"${displayName}" 沒有已排除的 skill，未變更`);
+              break;
+            }
+            const written = commitSkillExclusions(state, resolved.index, inst, [], opts);
+            if (!written.ok) {
+              messages.push(written.message);
+              break;
+            }
+            reload = true;
+            messages.push(`已重設 "${displayName}" 的 skill 排除清單（清除 ${current.length} 個）· 已重新載入生效`);
             break;
           }
 
