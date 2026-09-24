@@ -21,13 +21,21 @@ import {
   type MinimalInstallation,
 } from './state.js';
 import { localSourceKey } from '../registration/source-key.js';
+import { installationDisplayName, matchesInstallation } from './installation-identity.js';
+import {
+  SOURCE_UNCONFIRMED_REASON,
+  collectSkillNames,
+  rereadConfirmableSkills,
+  tryRereadSkills,
+  unconfirmedSourceMessage,
+} from './skill-discovery.js';
 import {
   detectMarketplaceFormat,
   CODEX_MARKETPLACE_CATALOG_RELPATH,
   CLAUDE_MARKETPLACE_CATALOG_RELPATH,
 } from '../registration/format.js';
 import { resolveContained } from '../registration/contained.js';
-import { findEntryByManifestName } from '../registration/catalog.js';
+import { KEBAB_NAME_RE, findEntryByManifestName } from '../registration/catalog.js';
 import {
   queryMarketplacePlugins,
   readMarketplaceCatalog,
@@ -96,11 +104,16 @@ export const HELP_TEXT = [
   '  enable <名稱>        啟用 plugin（恢復投影）',
   '  remove <名稱>        移除 plugin',
   '  forget <名稱>        移除 marketplace（含其全部安裝）',
-  '  skills <名稱>        查看／調整 plugin 的 skills 排除清單',
+  '  skills <名稱>        查看 skills 與排除狀態（不改變設定）',
+  '    exclude <skill>      排除單一 skill（逐項；不再投影給 Pi）',
+  '    include <skill>      恢復已排除的 skill（逐項）',
+  '    only <skill...>      只保留目前指定的 skills（一次完成）',
+  '    reset                清除全部排除（含來源已消失的名稱）',
   '  help                 這份說明清單',
+  '',
+  'Skill 排除清單：未列出的 skills 預設允許；要排除全部須逐一 exclude（only 未給名稱不會排除全部）。',
+  '變更後 Pi 內即時要求 reload；Headless CLI 於下次 session／/reload 生效。',
 ].join('\n');
-
-const KEBAB_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
 // ---- Git marketplace helpers (#92) ----
 
@@ -122,7 +135,26 @@ function padRight(str: string, length: number): string {
   return str.length >= length ? str : str + ' '.repeat(length - str.length);
 }
 
-function formatOverview(state: MinimalBridgeState): string[] {
+/** `已排除 N` — the one exclusion-count phrase both status surfaces render. */
+function exclusionCountPhrase(count: number): string {
+  return `已排除 ${count}`;
+}
+
+/** The Installed-section skill summary: current count + exclusion count, or the diagnostic. */
+function overviewSkillsSummary(state: MinimalBridgeState, installation: MinimalInstallation, opts: CommandOptions): string {
+  const excludedCount = skillExclusionsOf(installation).length;
+  const current = rereadConfirmableSkills(state, installation, opts);
+  if (current) {
+    return excludedCount > 0
+      ? `${current.length} skills（${exclusionCountPhrase(excludedCount)}）`
+      : `${current.length} skills`;
+  }
+  return excludedCount > 0
+    ? `skills 未確認（${exclusionCountPhrase(excludedCount)}；${SOURCE_UNCONFIRMED_REASON}）`
+    : `skills 未確認（${SOURCE_UNCONFIRMED_REASON}）`;
+}
+
+function formatOverview(state: MinimalBridgeState, opts: CommandOptions = {}): string[] {
   const sections: string[] = [];
 
   // 1. Marketplaces Section
@@ -152,8 +184,7 @@ function formatOverview(state: MinimalBridgeState): string[] {
       const name = padRight(` ${inst.manifestName || inst.pluginId}`, 8);
       const mkt = `[${regMap.get(inst.registrationId) ?? inst.registrationId}]`;
       const mktPadded = padRight(mkt, 18);
-      const skillCount = inst.skills ? inst.skills.length : 0;
-      const skillsStr = `${skillCount} skills`;
+      const skillsStr = overviewSkillsSummary(state, inst, opts);
       const isEnabled = isInstallationEnabled(inst as any);
       const stateStr = isEnabled ? '啟用' : '停用';
       installedLines.push(`${name}${mktPadded}${skillsStr} · ${stateStr}`);
@@ -228,10 +259,6 @@ function setInstallationEnabled(inst: MinimalBridgeState['installations'][number
   (inst as any).installationState = enabled ? 'enabled' : 'disabled';
 }
 
-function matchesInstallation(inst: MinimalBridgeState['installations'][number], name: string): boolean {
-  return inst.manifestName === name || inst.pluginId === name || inst.id === name;
-}
-
 function matchesRegistration(reg: MinimalBridgeState['registrations'][number], name: string): boolean {
   return reg.marketplaceName === name || reg.alias === name || reg.id === name;
 }
@@ -250,10 +277,6 @@ function findRegistrationsByName(state: MinimalBridgeState, name: string): Minim
 
 function findRegistrationIndex(state: MinimalBridgeState, name: string): number {
   return state.registrations.findIndex((r) => matchesRegistration(r, name));
-}
-
-function installationDisplayName(installation: MinimalInstallation): string {
-  return installation.manifestName || installation.pluginId || installation.id;
 }
 
 /**
@@ -276,69 +299,101 @@ function resolveInstalledPlugin(
 }
 
 /**
- * The `skills` listing: recorded skills plus every excluded name (an excluded name the current
- * source no longer offers stays visible so it can be restored), each with its exclusion state.
+ * The `skills` listing: the current source skills plus every recorded name and every excluded
+ * name (an excluded name the current source no longer offers stays visible so it can be
+ * restored), each with the one status that explains whether it reaches Pi.
+ *
+ * The status is decided in this order — exclusion always wins, because it is the reason the
+ * skill is withheld even when the name also vanished or would conflict:
+ *   已排除 ≻ 來源已消失 ≻ Plugin 已停用 ≻ Bridge 已知同名衝突 ≻ 可貢獻
+ *
+ * When the source cannot be read, no count and no per-name status is claimed: the listing
+ * reports the diagnostic, the still-readable exclusions, and the recorded names as 已記錄.
  */
-function formatSkillLines(installation: MinimalInstallation): string {
-  const excluded = skillExclusionsOf(installation);
-  const excludedSet = new Set(excluded);
-  const names = [...new Set([...(installation.skills ?? []), ...excluded])].sort((a, b) => a.localeCompare(b));
-  const displayName = installationDisplayName(installation);
-  const header = excluded.length > 0
-    ? `Plugin "${displayName}"（${names.length} skills · 已排除 ${excluded.length}）`
-    : `Plugin "${displayName}"（${names.length} skills）`;
-  return [header, ...names.map((skill) => (excludedSet.has(skill) ? `  ${skill}（已排除）` : `  ${skill}`))].join('\n');
-}
+const SKILL_STATUS_LABELS = {
+  excluded: '已排除',
+  vanished: '來源已消失',
+  disabled: 'Plugin 已停用',
+  colliding: 'Bridge 已知同名衝突',
+  contributable: '可貢獻',
+} as const;
+
+type SkillStatus = keyof typeof SKILL_STATUS_LABELS;
+
+/** What the one `可貢獻` status means, stated without claiming Pi has loaded anything. */
+const CONTRIBUTABLE_LEGEND = '  可貢獻：未被排除且無 Bridge 已知同名衝突，交由 Pi 資源發現投影';
 
 /**
- * Best-effort reread for enable: mirrors install Step1-3 (Marketplace Root -> readCatalog -> entry -> resolveContained -> collectSkillNames).
- * Returns undefined on any missing cache/catalog/entry/path — caller falls back to stored skills.
- * Pure-logic branches (find/entry.path/resolveContained outcome) do not throw; only I/O (readMarketplaceCatalog/collectSkillNames) is try/catch guarded.
+ * An Installation's names as they currently reach Runtime Skill Exposure: its source's skills
+ * minus its own exclusions. An unreadable source contributes nothing, exactly as exposure
+ * skips it.
  */
-function tryRereadSkills(
-  reg: MinimalBridgeState['registrations'][number],
-  inst: MinimalBridgeState['installations'][number],
-  opts: CommandOptions,
-): string[] | undefined {
-  const marketplaceRoot = resolveMarketplaceRoot(reg, opts);
-  if (!marketplaceRoot) return undefined;
-  let read: MarketplaceCatalogReadResult | undefined;
-  try {
-    read = readMarketplaceCatalog(marketplaceRoot, reg.format ?? 'codex');
-  } catch {
-    // best-effort: catalog 讀取/解析失敗（cache 缺失或損毀）則沿用舊 skills
-    return undefined;
-  }
-  if (read.error || !read.catalog) return undefined;
-  const entry = findEntryByManifestName(read.catalog, inst.manifestName);
-  if (!entry?.path) return undefined;
-  const contained = resolveContained(marketplaceRoot, entry.path, 'directory');
-  if (contained.outcome.kind !== 'ok') return undefined;
-  try {
-    return collectSkillNames(contained.outcome.canonicalPath, (reg.format ?? 'codex') as 'codex' | 'claude');
-  } catch {
-    // best-effort: 目錄掃描失敗則沿用舊 skills
-    return undefined;
-  }
-}
-
-/**
- * The source confirmation every exclusion change that adds a name needs: the names discovered
- * from the currently confirmable source (live local root / pinned Git Source Cache material).
- * Undefined means the source cannot be read, so the change must be refused.
- */
-function rereadConfirmableSkills(
+function liveNonExcludedSkillNames(
   state: MinimalBridgeState,
   installation: MinimalInstallation,
   opts: CommandOptions,
-): string[] | undefined {
-  const registration = state.registrations.find((r) => r.id === installation.registrationId);
-  return registration ? tryRereadSkills(registration, installation, opts) : undefined;
+): string[] {
+  const names = rereadConfirmableSkills(state, installation, opts);
+  return names ? nonExcludedSkillNames(skillExclusionsOf(installation), names) : [];
 }
 
-/** The one wording for a source that cannot confirm its skills. */
-function unconfirmedSourceMessage(displayName: string): string {
-  return `錯誤：無法確認 plugin "${displayName}" 的來源 skills（來源不可讀或 plugin 目錄不存在），未變更`;
+/**
+ * The names other enabled Installations currently claim. Collision status must follow the same
+ * material Runtime Skill Exposure resolves over (live local root / pinned cache), not the
+ * records the install/update path happened to refresh last.
+ */
+function competingSkillNames(
+  state: MinimalBridgeState,
+  installation: MinimalInstallation,
+  opts: CommandOptions,
+): Set<string> {
+  const competing = new Set<string>();
+  for (const other of state.installations) {
+    if (other.id === installation.id || !isInstallationEnabled(other as any)) continue;
+    for (const name of liveNonExcludedSkillNames(state, other, opts)) competing.add(name);
+  }
+  return competing;
+}
+
+function formatSkillLines(
+  state: MinimalBridgeState,
+  installation: MinimalInstallation,
+  opts: CommandOptions,
+): string {
+  const excluded = skillExclusionsOf(installation);
+  const excludedSet = new Set(excluded);
+  const excludedSuffix = excluded.length > 0 ? ` · ${exclusionCountPhrase(excluded.length)}` : '';
+  const displayName = installationDisplayName(installation);
+  const current = rereadConfirmableSkills(state, installation, opts);
+
+  if (!current) {
+    const names = [...new Set([...(installation.skills ?? []), ...excluded])].sort((a, b) => a.localeCompare(b));
+    return [
+      `Plugin "${displayName}"（來源不可確認${excludedSuffix}）`,
+      `  ⚠ 無法確認目前 skills（${SOURCE_UNCONFIRMED_REASON}）；僅列出已記錄的排除與名稱`,
+      ...names.map((name) => `  ${name}（${excludedSet.has(name) ? SKILL_STATUS_LABELS.excluded : '已記錄'}）`),
+    ].join('\n');
+  }
+
+  const discovered = new Set(current);
+  const names = [...new Set([...(installation.skills ?? []), ...excluded, ...current])]
+    .sort((a, b) => a.localeCompare(b));
+  const enabled = isInstallationEnabled(installation as any);
+  const colliding = competingSkillNames(state, installation, opts);
+  const statusOf = (name: string): SkillStatus => {
+    if (excludedSet.has(name)) return 'excluded';
+    if (!discovered.has(name)) return 'vanished';
+    if (!enabled) return 'disabled';
+    if (colliding.has(name)) return 'colliding';
+    return 'contributable';
+  };
+  const statuses = names.map(statusOf);
+  const lines = [
+    `Plugin "${displayName}"（目前 ${current.length} skills${excludedSuffix}）`,
+    ...names.map((name, i) => `  ${name}（${SKILL_STATUS_LABELS[statuses[i]!]}）`),
+  ];
+  if (statuses.includes('contributable')) lines.push(CONTRIBUTABLE_LEGEND);
+  return lines.join('\n');
 }
 
 /**
@@ -474,78 +529,6 @@ function tryWriteState(state: MinimalBridgeState, opts: CommandOptions): string 
   }
 }
 
-// ---- Skill discovery helpers ----
-
-function descriptorSkillName(skillDir: string, descriptorPath: string): string | undefined {
-  try {
-    const text = readFileSync(descriptorPath, 'utf-8');
-    const { frontmatter } = parseFrontmatter<Record<string, unknown>>(text);
-    const description = frontmatter?.description;
-    if (typeof description !== 'string' || description.trim().length === 0) return undefined;
-    const declared = frontmatter?.name;
-    const name = typeof declared === 'string' && declared.trim().length > 0 ? declared.trim() : basename(skillDir);
-    if (!KEBAB_RE.test(name)) return undefined;
-    return name;
-  } catch {
-    return undefined;
-  }
-}
-
-function collectSkillNames(pluginDir: string, format: 'codex' | 'claude' = 'codex'): string[] {
-  if (format === 'claude') {
-    // For claude, manifest declares skills array; fallback to directory scan if needed
-    const manifestPath = join(pluginDir, '.claude-plugin', 'plugin.json');
-    if (existsSync(manifestPath)) {
-      try {
-        const raw = readFileSync(manifestPath, 'utf-8');
-        const manifest = JSON.parse(raw) as Record<string, unknown>;
-        if (Array.isArray(manifest.skills)) {
-          const names: string[] = [];
-          for (const decl of manifest.skills) {
-            if (typeof decl !== 'string') continue;
-            const resolved = resolveContained(pluginDir, decl, 'directory');
-            if (resolved.outcome.kind !== 'ok') continue;
-            const skillDir = resolved.outcome.canonicalPath;
-            const descriptor = join(skillDir, 'SKILL.md');
-            if (!existsSync(descriptor)) continue;
-            const name = descriptorSkillName(skillDir, descriptor);
-            if (name) names.push(name);
-          }
-          // If manifest skills yielded something, return sorted
-          if (names.length > 0) return names.sort((a, b) => a.localeCompare(b));
-        }
-      } catch {
-        // fall through to directory scan
-      }
-    }
-    // fallback: scan skills dir like codex
-  }
-
-  const skillsDir = join(pluginDir, 'skills');
-  if (!existsSync(skillsDir)) return [];
-  try {
-    if (!statSync(skillsDir).isDirectory()) return [];
-  } catch {
-    return [];
-  }
-  let entries;
-  try {
-    entries = readdirSync(skillsDir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
-  } catch {
-    return [];
-  }
-  const found: string[] = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const skillDir = join(skillsDir, entry.name);
-    const descriptor = join(skillDir, 'SKILL.md');
-    if (!existsSync(descriptor)) continue;
-    const name = descriptorSkillName(skillDir, descriptor);
-    if (name) found.push(name);
-  }
-  return found.sort((a, b) => a.localeCompare(b));
-}
-
 function readManifestName(pluginDir: string): { name?: string; error?: string; path?: string } {
   const candidates = [
     join(pluginDir, '.codex-plugin', 'plugin.json'),
@@ -562,7 +545,7 @@ function readManifestName(pluginDir: string): { name?: string; error?: string; p
         return { error: `manifest ${cand} 缺少合法 name 欄位`, path: cand };
       }
       const trimmed = n.trim();
-      if (!KEBAB_RE.test(trimmed)) {
+      if (!KEBAB_NAME_RE.test(trimmed)) {
         return { error: `manifest name '${trimmed}' 非 lowercase kebab-case`, path: cand };
       }
       return { name: trimmed, path: cand };
@@ -627,7 +610,7 @@ export async function runCommand(
 
   if (rawArgs.length === 0) {
     // Overview (no arguments)
-    messages.push(...formatOverview(state));
+    messages.push(...formatOverview(state, opts));
   } else {
     const subargs = rawArgs.slice(1);
 
@@ -860,7 +843,7 @@ export async function runCommand(
             messages.push(`找不到 marketplace "${filter}"`);
             if (state.registrations.length > 0) {
               // Still show all for discoverability
-              messages.push(...formatOverview(state));
+              messages.push(...formatOverview(state, opts));
               const pluginLines = formatPluginListLines(state, undefined, opts);
               if (pluginLines.length > 0) messages.push(pluginLines.join('\n'));
             } else {
@@ -873,7 +856,7 @@ export async function runCommand(
               registrations: filteredRegs,
               installations: state.installations.filter((inst) => filteredRegs.some((r) => r.id === inst.registrationId)),
             };
-            messages.push(...formatOverview(filteredState));
+            messages.push(...formatOverview(filteredState, opts));
             const pluginLines = formatPluginListLines(state, filter, opts);
             if (pluginLines.length > 0) messages.push(pluginLines.join('\n'));
           }
@@ -882,7 +865,7 @@ export async function runCommand(
             messages.push('尚無可列出的 plugin 或 marketplace。');
             messages.push(USAGE_LINE);
           } else {
-            messages.push(...formatOverview(state));
+            messages.push(...formatOverview(state, opts));
             const pluginLines = formatPluginListLines(state, undefined, opts);
             if (pluginLines.length > 0) messages.push(pluginLines.join('\n'));
           }
@@ -1409,7 +1392,7 @@ export async function runCommand(
           const action = subargs[1]?.toLowerCase();
 
           if (action === undefined) {
-            messages.push(formatSkillLines(inst));
+            messages.push(formatSkillLines(state, inst, opts));
             break;
           }
 

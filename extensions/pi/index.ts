@@ -18,7 +18,7 @@ import { completeArguments } from '../../src/bridge/completion.js';
 import { createBridgeAutocompleteProvider } from './autocomplete.js';
 
 export default function (pi: ExtensionAPI) {
-  // Root-level autocomplete (#121) + second-level autocomplete (#122–#124): stack a narrow
+  // Root-level autocomplete (#121) + second-level autocomplete (#122–#124, #158): stack a narrow
   // provider for the exact `/codex-marketplace` editor text and the forced `install `,
   // Installation lifecycle (`enable ` / `disable ` / `remove `), and Marketplace Registration
   // (`list ` / `forget `) argument contexts (Pi otherwise completes just the command name
@@ -47,8 +47,9 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerCommand('codex-marketplace', {
     description: 'codex / claude marketplace 管理（add/list/install/update/disable/enable/remove/forget/skills/help）',
-    // Standard argument completion (#121–#124): typed subcommand and `install <query>` /
-    // lifecycle `<query>` / Registration (`list` / `forget`) `<query>` prefixes go through
+    // Standard argument completion (#121–#124, #158): typed subcommand and `install <query>` /
+    // lifecycle `<query>` / Registration (`list` / `forget`) `<query>` / Skill Exclusion
+    // (`skills <名稱> [操作]`) prefixes go through
     // Pi's normal autocomplete; unowned syntax (including `add`'s free-form argument) returns
     // null so Pi falls through to its own behavior.
     getArgumentCompletions: (argumentPrefix: string) => completeArguments(argumentPrefix),

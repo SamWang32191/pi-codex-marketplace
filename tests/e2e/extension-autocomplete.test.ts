@@ -253,7 +253,7 @@ describe('/codex-marketplace autocomplete thin Pi adapter (#121)', () => {
 
     // After applying "install " the editor holds "/codex-marketplace install "; a subsequent
     // Tab is a forced request. It must not re-intercept the line as the exact root command
-    // (that would chain-reopen the nine subcommands); it owns the second-level install
+    // (that would chain-reopen the ten subcommands); it owns the second-level install
     // context instead, reading the (empty, hermetic) state passively.
     const wrapper = createBridgeAutocompleteProvider(current, { statePath: join(tmpdir(), 'bridge-e2e-no-such-state.json') });
 
@@ -586,7 +586,7 @@ describe('Installation lifecycle autocomplete thin Pi adapter (#123)', () => {
 
       // After applying "disable " the editor holds "/codex-marketplace disable "; a subsequent
       // Tab is a forced request. It must not re-intercept the line as the exact root command
-      // (that would chain-reopen the nine subcommands); it owns the second-level lifecycle
+      // (that would chain-reopen the ten subcommands); it owns the second-level lifecycle
       // context instead.
       const result = await wrapper.getSuggestions(['/codex-marketplace disable '], 0, '/codex-marketplace disable '.length, {
         signal: new AbortController().signal,
@@ -821,6 +821,110 @@ describe('Marketplace Registration autocomplete thin Pi adapter (#124)', () => {
         'shared-market (reg-b)',
         'unique-market',
       ]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+});
+
+// ---- #158 fixture: one enabled Installation with a recorded skill and one exclusion ----
+function makeSkillExclusionFixture(): { root: string; statePath: string; cleanup(): void } {
+  const root = mkdtempSync(join(tmpdir(), 'bridge-e2e-skills158-'));
+  const statePath = join(root, 'state.json');
+  // Real local material: `exclude`/`only` candidates come from the confirmable source.
+  const mktA = join(root, 'mkt-a');
+  mkdirSync(join(mktA, '.agents', 'plugins'), { recursive: true });
+  writeFileSync(
+    join(mktA, '.agents', 'plugins', 'marketplace.json'),
+    JSON.stringify({
+      name: 'alpha-market',
+      plugins: [{ name: 'engineering', source: { source: 'local', path: './plugins/engineering' } }],
+    }),
+  );
+  for (const skill of ['changelog', 'scratch']) {
+    const skillDir = join(mktA, 'plugins', 'engineering', 'skills', skill);
+    mkdirSync(join(mktA, 'plugins', 'engineering', '.codex-plugin'), { recursive: true });
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(join(skillDir, 'SKILL.md'), `---\nname: ${skill}\ndescription: ${skill}\n---\n\nBody\n`);
+  }
+  writeFileSync(
+    join(mktA, 'plugins', 'engineering', '.codex-plugin', 'plugin.json'),
+    JSON.stringify({ name: 'engineering' }),
+  );
+  writeFileSync(
+    statePath,
+    JSON.stringify(
+      {
+        schemaVersion: 1,
+        registrations: [
+          { id: 'reg-a', marketplaceName: 'alpha-market', format: 'codex', sourceKind: 'local', source: mktA },
+        ],
+        installations: [
+          {
+            id: 'inst-eng',
+            pluginId: 'engineering',
+            enabled: true,
+            installationState: 'enabled',
+            registrationId: 'reg-a',
+            manifestName: 'engineering',
+            sourceKind: 'local',
+            source: join(root, 'mkt-a'),
+            skills: ['changelog', 'scratch'],
+            skillExclusions: ['scratch'],
+          },
+        ],
+      },
+      null,
+      2,
+    ),
+  );
+  return { root, statePath, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+}
+
+describe('Skill Exclusion autocomplete thin Pi adapter (#158)', () => {
+  it('intercepts a forced Tab inside `skills `, its operations, and the skill argument', async () => {
+    const fixture = makeSkillExclusionFixture();
+    try {
+      const current = fakeCurrentProvider();
+      const wrapper = createBridgeAutocompleteProvider(current, { statePath: fixture.statePath });
+
+      const installationLine = '/codex-marketplace skills ';
+      const installations = await wrapper.getSuggestions([installationLine], 0, installationLine.length, {
+        signal: new AbortController().signal,
+        force: true,
+      });
+      expect(current.calls).toEqual([]);
+      expect(installations!.prefix).toBe('skills ');
+      expect(installations!.items.map((item) => item.value)).toEqual(['skills engineering']);
+
+      const actionLine = '/codex-marketplace skills engineering ';
+      const actions = await wrapper.getSuggestions([actionLine], 0, actionLine.length, {
+        signal: new AbortController().signal,
+        force: true,
+      });
+      expect(actions!.prefix).toBe('skills engineering ');
+      expect(actions!.items.map((item) => item.value)).toEqual([
+        'skills engineering exclude',
+        'skills engineering include',
+        'skills engineering only',
+        'skills engineering reset',
+      ]);
+
+      const skillLine = '/codex-marketplace skills engineering exclude ';
+      const skills = await wrapper.getSuggestions([skillLine], 0, skillLine.length, {
+        signal: new AbortController().signal,
+        force: true,
+      });
+      expect(skills!.prefix).toBe('skills engineering exclude ');
+      expect(skills!.items.map((item) => item.value)).toEqual(['skills engineering exclude changelog']);
+
+      // A deep prefix beyond the owned grammar (`reset` takes no argument) stays with the host.
+      const resetLine = '/codex-marketplace skills engineering reset extra';
+      await wrapper.getSuggestions([resetLine], 0, resetLine.length, {
+        signal: new AbortController().signal,
+        force: true,
+      });
+      expect(current.calls).toEqual(['getSuggestions']);
     } finally {
       fixture.cleanup();
     }

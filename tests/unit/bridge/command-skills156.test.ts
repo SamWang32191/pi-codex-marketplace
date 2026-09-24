@@ -132,7 +132,8 @@ describe('Skill Exclusion — per-item view and adjustment (#156)', () => {
     expect(listed.output).toMatch(/changelog（已排除）/);
     // A name that disappeared upstream stays visible and restorable.
     expect(listed.output).toMatch(/vanished-skill（已排除）/);
-    expect(listed.output).toMatch(/^ {2}release-notes$/m);
+    expect(listed.output).toContain('release-notes（可貢獻）');
+    expect(listed.output).not.toContain('已載入');
   });
 
   it('excludes a currently discovered skill, records it, and requests a reload', async () => {
