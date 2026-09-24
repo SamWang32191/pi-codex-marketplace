@@ -21,9 +21,10 @@ npx pi-codex-marketplace disable <名稱>
 npx pi-codex-marketplace enable <名稱>
 npx pi-codex-marketplace remove <名稱>
 npx pi-codex-marketplace forget <名稱>
+npx pi-codex-marketplace skills <名稱> [exclude <skill>|include <skill>|only <skill...>|reset]
 ```
 
-## 九個子命令一覽
+## 十個子命令一覽
 
 | 子命令 | 行為 |
 |--------|------|
@@ -34,6 +35,7 @@ npx pi-codex-marketplace forget <名稱>
 | `disable <名稱>` / `enable <名稱>` | 停用／啟用 plugin。 |
 | `remove <名稱>` | 移除單支 plugin（不動 marketplace 與來源資料）。 |
 | `forget <名稱>` | 移除整個 marketplace 及其全部安裝。 |
+| `skills <名稱> [exclude \| include \| only \| reset]` | 查看 Plugin 的 skills 與排除狀態；逐項排除／恢復、一次性只保留、重設排除清單。無操作參數時為唯讀查詢。 |
 | `help` | 輸出子命令清單與用法。 |
 
 ## 輸出與退出代碼契約（Output & Exit Contract）
@@ -55,14 +57,15 @@ Bridge CLI 啟動更新後會立即向 `stderr` 顯示開始訊息，接著回�
 ## 狀態生效時機（Same-State Caveat）
 
 - **單一 Global Scope 一致性**：CLI 與 Extension 共用相同的 `getAgentDir()` 與 Bridge State 儲存位址（`~/.pi/agent/codex-marketplace/state.json`），完全支援 `PI_CODING_AGENT_DIR` / `PI_AGENT_DIR` 環境變數覆寫。
-- **無 In-process Reload 提示語轉換**：CLI 執行於 Pi 外部獨立 Node 行程，無 Pi runtime 內部的即時 reload 機制（`ctx.reload`）。狀態變更指令（`install`、`enable`、`update`）輸出將 TUI 的「已重新載入生效」替換為：
+- **無 In-process Reload 提示語轉換**：CLI 執行於 Pi 外部獨立 Node 行程，無 Pi runtime 內部的即時 reload 機制（`ctx.reload`）。狀態變更指令（`install`、`enable`、`update`，以及 `skills` 的 `exclude`／`include`／`only`／`reset`）輸出將 TUI 的「已重新載入生效」替換為：
   ```
   已寫入 Bridge State · 下次 pi session／/reload 生效
   ```
+  `skills <名稱>`（無操作參數）是唯讀查詢：不替換任何提示、不改寫 Bridge State。來源不可讀時仍列出診斷與既有排除，不會宣稱 `0 skills` 或已載入。
 - **投影時機**：CLI 寫入的變更已持久化至 Bridge State，將在下次啟動 Pi session 或於 Pi TUI 內執行 `/reload` 時，經由 Pi host 資源發現接縫（`resources_discover`）自動完成技能投影。
 
 ## 相關文件
 
-- [usage.md](./usage.md) — TUI 表面 `/codex-marketplace`（子命令語意與 CLI 完全一致）
+- [usage.md](./usage.md) — TUI 表面 `/codex-marketplace`（含 Skill 排除清單；子命令語意與 CLI 完全一致）
 - [installation.md](./installation.md) — Headless CLI 安裝方式（npx 免安裝或 `npm install -g`）
 - [private-repos.md](./private-repos.md) — `add`／`update` 的私有 repo 憑證取得（兩者共用同一核准來源）

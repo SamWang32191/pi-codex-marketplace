@@ -23,7 +23,7 @@ Requirements: **Pi `0.87.0`（相容下限 `0.84.2`）** · **Node >=22.19.0** �
 
 ## 子命令速查
 
-TUI `/codex-marketplace` 與 Headless CLI `pi-codex-marketplace` 共用同一組九個子命令（無參數＝總覽）：
+TUI `/codex-marketplace` 與 Headless CLI `pi-codex-marketplace` 共用同一組十個子命令（無參數＝總覽）：
 
 | 子命令 | 行為 |
 |--------|------|
@@ -34,6 +34,7 @@ TUI `/codex-marketplace` 與 Headless CLI `pi-codex-marketplace` 共用同一組
 | `disable <名稱>` / `enable <名稱>` | 停用／啟用 plugin |
 | `remove <名稱>` | 移除單支 plugin |
 | `forget <名稱>` | 移除整個 marketplace（含其全部安裝） |
+| `skills <名稱> [exclude \| include \| only \| reset]` | 查看 skills 與排除狀態；逐項排除／恢復、一次性只保留、重設 |
 | `help` | 子命令清單 |
 
 ## Documentation
@@ -43,7 +44,7 @@ TUI `/codex-marketplace` 與 Headless CLI `pi-codex-marketplace` 共用同一組
 | 文件 | 內容 |
 |------|------|
 | [docs/installation.md](./docs/installation.md) | 安裝／更新／移除：Pi Extension 各模式、Headless CLI、`-l` 語意、requirements |
-| [docs/usage.md](./docs/usage.md) | `/codex-marketplace` 使用手冊：九子命令細節、語意鐵則、Pi 原生 autocomplete |
+| [docs/usage.md](./docs/usage.md) | `/codex-marketplace` 使用手冊：十子命令細節、Skill 排除清單、語意鐵則、Pi 原生 autocomplete |
 | [docs/cli.md](./docs/cli.md) | Headless Bridge CLI：執行方式、輸出與退出代碼契約、狀態生效時機 |
 | [docs/private-repos.md](./docs/private-repos.md) | 私有 Git repo：Credentialed Acquisition（核准式取得）、SSH 定位器 |
 | [docs/architecture.md](./docs/architecture.md) | 架構：Bridge State storage、支援矩陣、領域詞彙、ADR |

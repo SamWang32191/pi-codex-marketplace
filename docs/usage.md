@@ -1,6 +1,6 @@
 # Usage — `/codex-marketplace`（純文字，無 TUI）
 
-Nine subcommands, no arguments = 總覽：
+Ten subcommands, no arguments = 總覽：
 
 ```
 /codex-marketplace
@@ -16,20 +16,45 @@ Nine subcommands, no arguments = 總覽：
 | `disable <名稱>` / `enable <名稱>` | 停用／啟用 plugin（enable 重新投影＋reload）。 |
 | `remove <名稱>` | 移除單支 plugin（不動 marketplace、不動來源資料）。 |
 | `forget <名稱>` | 移除整個 marketplace（含其全部安裝）。 |
+| `skills <名稱> [exclude \| include \| only \| reset]` | 查看 Plugin 的 skills 與排除狀態；逐項排除／恢復、一次性只保留目前的指定 skills、重設排除清單（詳見下節）。 |
 | `help` | 子命令清單。 |
+
+## Skill 排除清單（`skills`）
+
+每個 Installed Plugin 各自持有一份**排除清單**（key 為 Skill Descriptor 名稱）：未列入者預設交由 Pi 資源發現投影，列入者完全不由該 Plugin 投影。既有安裝若沒有這份紀錄，語意等同空清單，不會因本功能重置。
+
+```bash
+/codex-marketplace skills engineering                                       # 查看 skills 與排除狀態（不改變設定）
+/codex-marketplace skills engineering exclude kapok-liquibase               # 逐項排除
+/codex-marketplace skills engineering include kapok-liquibase               # 逐項恢復
+/codex-marketplace skills engineering only kapok-app-design jasmine-app-design  # 一次只保留這兩個
+/codex-marketplace skills engineering reset                                 # 清除全部排除
+```
+
+明細對每個名稱給出一種狀態：`已排除`、`來源已消失`、`Plugin 已停用`、`Bridge 已知同名衝突`、`可貢獻`。**`可貢獻` 只代表 Bridge 會把它交由 Pi 資源發現投影，不代表 host 已載入**。總覽以 `N skills（已排除 M）` 呈現目前 skills 與排除數量；來源不可讀時改顯示 `skills 未確認（…）` 診斷，不以 `0 skills` 或已載入說法代替。
+
+規則：
+
+- **排除全部只能明示**：`only` 未給名稱是用法錯誤；要排除全部請逐一 `exclude`。
+- **新增排除需要可確認的來源**：`exclude`／`only` 只接受目前來源中存在的名稱，未知名稱或來源不可讀一律拒絕且不留部分變更；`only` 只調整目前發現的 skills，已消失名稱的排除紀錄保留、未來新加入者預設允許。`include`／`reset` 只依賴紀錄本身，來源不可讀或 Plugin 已停用時仍可執行。
+- **重新安裝、更新、停用／啟用保留排除清單**；`remove`／`forget` 會一併刪除紀錄，重新安裝從空清單開始。
+- **排除先於同名衝突判斷**：被排除者不再佔用名稱，其他來源的同名 skill 可正常投影；全部排除也不會改變 Plugin 的啟用狀態。
+- 設計取捨（為何是排除清單而非允許清單）見 [ADR 0008](./adr/0008-skill-exclusion-list-not-allow-list.md)。
 
 ## 語意鐵則
 
 - 安裝語意不分「安裝／啟用」兩步；輸出不得宣稱 reload 後 skill 已在 host 內可見（host 無內省 API），只說「已重新載入生效」。
+- Skill 排除清單以 Skill Descriptor 名稱識別：改名視為新 skill，同名消失後重現仍維持排除；未列入者（含上游未來新增者）預設允許。
+- `skills` 明細與總覽只輸出狀態；「可貢獻」不等於 host 已載入。變更在 Pi 內主動要求 reload，Headless CLI 則於下次 session 或手動 `/reload` 生效。
 - catalog 內 git 型或不支援來源的 entry 一律 `unavailable` 並顯示原因；解析失敗顯示明確錯誤、不給裝。
 - 安裝成功後由指令層主動要求 reload；reload 失敗不影響已記錄狀態，下次 session start 或 `/reload` 仍生效。
 - `--no-skills` 啟動 Pi 不影響 Bridge 投影。
 
 ## Autocomplete（Pi 原生，TUI 限定）
 
-互動（TUI）模式下，`/codex-marketplace` 以 **Pi 原生 autocomplete** 提供兩層、狀態感知的候選。**純文字指令表面維持權威不變**：九個子命令、指令參數、輸出與語意完全不受 autocomplete 影響；RPC／JSON／print 模式根本不註冊 terminal-only provider。
+互動（TUI）模式下，`/codex-marketplace` 以 **Pi 原生 autocomplete** 提供兩層、狀態感知的候選。**純文字指令表面維持權威不變**：十個子命令、指令參數、輸出與語意完全不受 autocomplete 影響；RPC／JSON／print 模式根本不註冊 terminal-only provider。
 
-**第一層——九個根層子命令。** 輸入完整的 `/codex-marketplace` 後按 Tab，候選清單顯示全部九個子命令（`add`／`list`／`install`／`update`／`disable`／`enable`／`remove`／`forget`／`help`）與各自說明，支援不分大小寫的模糊搜尋。選取需要參數的子命令（`add`／`list`／`install`／`disable`／`enable`／`remove`／`forget`）會自動補上一個尾隨空格，可直接繼續輸入；`update` 與 `help` 不加。
+**第一層——十個根層子命令。** 輸入完整的 `/codex-marketplace` 後按 Tab，候選清單顯示全部十個子命令（`add`／`list`／`install`／`update`／`disable`／`enable`／`remove`／`forget`／`skills`／`help`）與各自說明，支援不分大小寫的模糊搜尋。選取需要參數的子命令（`add`／`list`／`install`／`disable`／`enable`／`remove`／`forget`／`skills`）會自動補上一個尾隨空格，可直接繼續輸入；`update` 與 `help` 不加。
 
 **第二層——再按一次 Tab 開啟狀態感知候選。** 需要參數的子命令套用後，**再按一次 Tab** 依當下 Bridge State 只列出當下可執行的選項（空集合不給假候選）；**不承諾自動重開 selector**（Pi 在套用候選後不會自動再開一層補完選單，鍵盤流程固定是「輸入 command → Tab 選子命令 → 需要參數時再按一次 Tab」）：
 
@@ -41,6 +66,7 @@ Nine subcommands, no arguments = 總覽：
 | `remove` | 全部已安裝 plugin（不分啟用／停用） | 同上 |
 | `list` | Marketplace Registrations | 名稱無法唯一解析＝依序改插唯一可解析的 alias、其次 Registration id |
 | `forget` | Marketplace Registrations | 同上 |
+| `skills` | 已安裝 plugin（不分啟用／停用）→ 四個操作（`exclude`／`include`／`only`／`reset`）→ 可操作的 skill 名稱 | 名稱無法唯一解析的 Installation 不給候選；`exclude` 只列目前來源確認且未排除者、`only` 列目前來源確認的全部名稱（含已排除者）、`include` 依紀錄列已排除者；來源不可確認時 `exclude`／`only` 不給候選 |
 | `add` | **不提供 Bridge 候選**：Tab 委派 Pi 原生路徑 completion，Git locator 維持自由輸入 | — |
 
 補完只提議當下可執行的動作，候選反映最新 Bridge State，且**被動讀取**——按 Tab 絕不會重置或重寫損壞的 state 文件。其餘輸入（其他 slash 指令、一般文字、檔案／路徑補完）一律原樣委派 Pi 既有 provider；安裝本套件不影響任何其他指令的 autocomplete。

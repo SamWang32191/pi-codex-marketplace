@@ -1,6 +1,6 @@
 # Headless Bridge CLI（純 Node 輕量 Shim＋單一 Global Scope＋Parity 輸出契約）
 
-> **Status: 已採納（#132, #133）**
+> **Status: 已採納（#132, #133）；Parity 契約仍生效** — 決策時點列舉九個子命令；#158 新增 Skill Exclusion 表面 `skills` 後為十個（本 ADR 的 Decisions 保留決策時點內容）。
 
 Bridge Package 原僅透過 Pi Extension（`/codex-marketplace` 指令與 `resources_discover`）提供管理與投影功能，必須在 Pi TUI 內或經由 Pi runtime 啟動。但在 CI/CD 流程、自動化腳本及純 Shell 環境下，開發者需要直接管理 Marketplace 註冊與外掛安裝。#132 與 #133 決定：在 Bridge Package 提供純 Node 輕量 CLI shim（`pi-codex-marketplace`），直接調度純粹的 `runCommand` 縫，操作同一份單一 Global Scope（`state.json`），提供無須啟動 Pi runtime、免互動、確定性輸出與退出代碼的 headless 管理表面。
 
