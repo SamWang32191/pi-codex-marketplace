@@ -2,6 +2,19 @@
 
 All notable changes to `pi-codex-marketplace` are documented here. Format follows Keep a Changelog and SemVer (starting at `0.1.0`; Git tags `v*` mirror npm versions).
 
+## [1.1.0] - 2026-09-24
+
+### Added
+- **Skill Exclusion：逐一排除已安裝 Plugin 的 Skills（#155、#156、#157、#158，ADR 0008）**：每個 Installed Plugin 擁有全機共用的排除清單，逐項調整要貢獻給 Pi 的 skills；未列入者（含上游未來新增或改名的 skill）預設允許，Bridge State 形狀與 `schemaVersion` 1 不變：
+  - **逐項排除與實際投影（#156、#159）**：`skills <名稱> exclude|include <skill>` 逐項排除／恢復；以 Skill Descriptor 名稱識別，改名視為新 skill、同名消失後重現仍維持排除。排除先於 Bridge 同名衝突判定生效——被排除者不再佔用名稱，其他來源的同名 skill 可正常投影；重裝／更新／停用／啟用保留排除，`remove`／`forget` 清除，全部排除時 Plugin 仍維持「已裝啟用」。新增排除以當下可確認的來源為準，未知名稱或來源不可讀一律拒絕且不留部分變更。
+  - **批次只保留與安全重設（#157、#160）**：`skills <名稱> only <skill...>` 一次只保留目前指定的 skills（已消失名稱的排除紀錄保留、未來新加入者預設允許）；未給名稱一律報錯，不會因漏填而排除全部。`skills <名稱> reset` 清除全部排除（含來源已消失的名稱），不讀來源、不改變啟用狀態；寫入失敗不留下部分變更。
+  - **狀態呈現與操作文件（#158、#161）**：`skills <名稱>` 明細對每個名稱給出唯一狀態（已排除／來源已消失／Plugin 已停用／Bridge 已知同名衝突／可貢獻）；總覽顯示 `N skills（已排除 M）`，來源不可讀時顯示 `skills 未確認（…）` 診斷與仍可讀的既有排除，不以 `0 skills` 或已載入說法代替；同名衝突改以當下投影材料判定（與 Runtime Skill Exposure 同源）。Pi 指令要求 reload，Headless CLI 提示「下次 pi session／/reload 生效」。
+- **`skills` autocomplete 三層（#158）**：`skills <query>` → 四個操作（`exclude`／`include`／`only`／`reset`）→ 可操作的 skill 名稱。`exclude`／`only` 只提議目前來源確認的名稱（與命令同一讀取），`include` 由紀錄還原（不需來源），來源不可確認時不給候選；候選描述載明 reload 語意與「`only` 未給名稱不會排除全部」。`help` 與 usage／cli 文件同步補上四個操作與生效時機。
+- **設計紀錄（#158）**：`CONTEXT.md` 新增 Skill Exclusion 與 Skill Presentation Status 詞彙；[ADR 0008](./docs/adr/0008-skill-exclusion-list-not-allow-list.md) 記錄「排除清單而非允許清單」的取捨與拒絕的替代方案。
+
+### Changed
+- **來源 skills 讀取與 Installation 身份共用縫（#158）**：來源 skills 讀取抽為 `src/bridge/skill-discovery.ts`、Installation 身份 predicate 與顯示名抽為 `src/bridge/installation-identity.ts`，由指令表面與 autocomplete 共用；autocomplete 的重複模糊過濾收斂為單一 `fuzzyFilter`。指令語意、輸出契約與投影行為不變。
+
 ## [1.0.5] - 2026-09-22
 
 ### Changed
