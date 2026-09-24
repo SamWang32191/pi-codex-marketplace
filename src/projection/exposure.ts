@@ -27,6 +27,7 @@ import {
   isInstallationEnabled,
   readMinimalBridgeStatePassive,
   createEmptyMinimalState,
+  skillExclusionsOf,
   type MarketplaceFormat,
   type MinimalBridgeState,
 } from '../bridge/state.js';
@@ -252,7 +253,12 @@ export function discoverProjectedSkillPaths(opts: RuntimeSkillExposureOptions = 
       skipped.push({ installationId: installation.id, reason: 'no-skills' });
       continue;
     }
+    // Skill Exclusions are applied here, before collision resolution: an excluded skill never
+    // becomes a candidate, so it neither reserves its name nor blocks another source's
+    // same-named skill. A fully excluded Plugin contributes nothing and stays installed.
+    const excluded = new Set(skillExclusionsOf(installation));
     for (const skill of skills) {
+      if (excluded.has(skill.name)) continue;
       candidates.push({
         layer: 'global',
         name: skill.name,

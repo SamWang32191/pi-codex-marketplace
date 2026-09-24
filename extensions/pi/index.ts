@@ -46,7 +46,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand('codex-marketplace', {
-    description: 'codex / claude marketplace 管理（add/list/install/update/disable/enable/remove/forget/help）',
+    description: 'codex / claude marketplace 管理（add/list/install/update/disable/enable/remove/forget/skills/help）',
     // Standard argument completion (#121–#124): typed subcommand and `install <query>` /
     // lifecycle `<query>` / Registration (`list` / `forget`) `<query>` prefixes go through
     // Pi's normal autocomplete; unowned syntax (including `add`'s free-form argument) returns

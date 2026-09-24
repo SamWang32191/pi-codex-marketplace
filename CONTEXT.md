@@ -150,7 +150,7 @@ The canonical identity of a Plugin skill, composed of its Plugin ID and Skill De
 _Avoid_: Globally unique skill name, SKILL.md path
 
 **Runtime Skill Collision**:
-A conflict in Pi's flat skill namespace when different Skill IDs, or a Plugin skill and a pre-existing Pi skill, claim the same exact Skill Descriptor name. It changes only skill availability, never Plugin classification: candidates resolve per name in `Pi → Global Scope` order, all same-layer Bridge colliders are unavailable, and only a surviving higher-layer skill reserves the name, so a lower-layer candidate survives when no higher-layer skill does.
+A conflict in Pi's flat skill namespace when non-excluded skills with different Skill IDs, or a non-excluded Plugin skill and a pre-existing Pi skill, claim the same exact Skill Descriptor name. It changes only skill availability, never Plugin classification: remaining candidates resolve per name in `Pi → Global Scope` order, all same-layer Bridge colliders are unavailable, and only a surviving higher-layer skill reserves the name, so a lower-layer candidate survives when no higher-layer skill does.
 _Avoid_: Skill ID collision, canonical-path duplicate
 
 **Projected Plugin**:
@@ -158,11 +158,15 @@ An Installed Plugin admitted by Effective State. It contributes zero or more Pro
 _Avoid_: Partially compatible Plugin, Pi package
 
 **Projected Skill**:
-A skill of a Projected Plugin that survives Runtime Skill Collision resolution and is exposed to Pi under its Skill Descriptor name while retaining its Skill ID and provenance. A colliding skill that does not survive is unavailable without changing its Plugin's Projected status.
+A skill of a Projected Plugin that is not excluded and survives Runtime Skill Collision resolution, exposed to Pi under its Skill Descriptor name while retaining its Skill ID and provenance. An excluded or colliding skill does not change its Plugin's Projected status.
 _Avoid_: Compatible Plugin, renamed skill
 
+**Skill Exclusion**:
+A durable choice on an Installed Plugin keyed by Skill Descriptor name, retained across reinstallation, temporary absence, and Plugin disablement; it withholds that skill from Runtime Skill Exposure without changing Installation State. A new exclusion requires a currently discovered skill; unexcluded skills, including newly named skills, remain eligible for exposure.
+_Avoid_: Installation State, Invocation Policy, global skill-name ban
+
 **Runtime Skill Exposure**:
-The read-time participation of Projected Skills in Pi through host resource discovery contributed by the Bridge Extension at session start or runtime reload. It derives entirely from the current Effective State and its collision survivors, performs passive existence inspection only, never mutates Bridge State, and is neither confirmation nor activation admission. Exposure never establishes Skill Availability. `install` / `enable` / `update` request a host reload as the only activation action; a failed reload does not affect the recorded state.
+The read-time participation of Projected Skills in Pi through host resource discovery contributed by the Bridge Extension at session start or runtime reload. It derives from the current Effective State, Skill Exclusions, and collision survivors, performs passive existence inspection only, never mutates Bridge State, and is neither confirmation nor activation admission. Exposure never establishes Skill Availability. `install` / `enable` / `update` and Skill Exclusion changes request a host reload as the only activation action; a failed reload does not affect the recorded state.
 _Avoid_: Installation, activation confirmation
 
 **Skill Availability**:
@@ -174,7 +178,7 @@ The canonical identity of an Installed Plugin within the Global scope, composed 
 _Avoid_: Manifest name alone, install attempt ID
 
 **Plugin Installation**:
-The `install` command creating an Installation in the Global scope. Installing always grabs the current latest material (重裝＝更新：reinstalling the same Plugin re-fetches the latest and overwrites, never an error) and enables it atomically: install and enable are one step, no separate confirmation flow.
+The `install` command creating an Installation in the Global scope. Installing always grabs the current latest material (重裝＝更新：reinstalling the same Plugin re-fetches the latest and overwrites source-derived material while retaining Skill Exclusions, never an error) and enables it atomically: install and enable are one step, no separate confirmation flow.
 _Avoid_: Pi package installation, Marketplace Registration, implicit activation
 
 **Installed Plugin**:
@@ -186,7 +190,7 @@ The durable `enabled` or `disabled` condition of an Installed Plugin. A disabled
 _Avoid_: Scope Override, Plugin classification, runtime status
 
 **Installation Removal**:
-The `remove` command deleting one Installation while retaining its Marketplace Registration.
+The `remove` command deleting one Installation and its Skill Exclusions while retaining its Marketplace Registration. Installing that Plugin again creates a fresh Installation without the former exclusions.
 _Avoid_: Disablement, Registration Removal, Scope Override
 
 **Validation Finding**:

@@ -20,6 +20,7 @@ import { readMinimalBridgeState, writeMinimalBridgeState, type MinimalBridgeStat
 import { SourceCache } from '../../../src/cache/source-cache.js';
 
 const GLOBAL_REG = '11111111-1111-4111-8111-111111111111';
+const OTHER_REG = '22222222-2222-4222-8222-222222222222';
 
 function makeEnv() {
   const root = mkdtempSync(join(tmpdir(), 'exposure-unit-'));
@@ -156,6 +157,73 @@ describe('Runtime Skill Exposure — contribution', () => {
     const result = discoverProjectedSkillPaths({ agentDir: env.agentDir });
     expect(result.skillPaths).toEqual([]);
     expect(result.exposed).toEqual([]);
+  });
+
+  it('withholds an excluded skill from Runtime Skill Exposure while the Plugin stays enabled', async () => {
+    const env = freshEnv();
+    makeMarketplace(env.marketplace, 'release-helper', 'release-helper', ['release-notes', 'changelog']);
+    await seedGitRegistrationAndCache(env);
+    const seeded = readMinimalBridgeState({ agentDir: env.agentDir }).state;
+    writeMinimalBridgeState({
+      ...seeded,
+      installations: [{ ...seeded.installations[0]!, skillExclusions: ['changelog'] }],
+    }, { agentDir: env.agentDir });
+
+    const result = discoverProjectedSkillPaths({ agentDir: env.agentDir });
+
+    expect(result.exposed.map((s) => s.name)).toEqual(['release-notes']);
+    expect(result.skillPaths).toHaveLength(1);
+    // Excluding every skill is not a state change: the Installation stays enabled and is not skipped.
+    expect(result.skipped).toEqual([]);
+    expect(readMinimalBridgeState({ agentDir: env.agentDir }).state.installations[0]!.enabled).toBe(true);
+  });
+
+  it('applies Skill Exclusion before Runtime Skill Collision so an unexcluded same-named skill survives', async () => {
+    const env = freshEnv();
+    const other = freshEnv();
+    makeMarketplace(env.marketplace, 'release-helper', 'release-helper', ['deploy', 'release-notes']);
+    makeMarketplace(other.marketplace, 'deploy-tools', 'deploy-tools', ['deploy']);
+    writeMinimalBridgeState({
+      schemaVersion: 1,
+      registrations: [
+        { id: GLOBAL_REG, alias: 'acme', marketplaceName: 'acme-marketplace', format: 'codex', sourceKind: 'local', source: env.marketplace },
+        { id: OTHER_REG, alias: 'beta', marketplaceName: 'beta-marketplace', format: 'codex', sourceKind: 'local', source: other.marketplace },
+      ],
+      installations: [
+        {
+          id: 'release-helper',
+          pluginId: 'release-helper',
+          enabled: true,
+          installationState: 'enabled',
+          registrationId: GLOBAL_REG,
+          manifestName: 'release-helper',
+          sourceKind: 'local',
+          source: env.marketplace,
+          skills: ['deploy', 'release-notes'],
+          skillExclusions: ['deploy'],
+        },
+        {
+          id: 'deploy-tools',
+          pluginId: 'deploy-tools',
+          enabled: true,
+          installationState: 'enabled',
+          registrationId: OTHER_REG,
+          manifestName: 'deploy-tools',
+          sourceKind: 'local',
+          source: other.marketplace,
+          skills: ['deploy'],
+        },
+      ],
+    }, { agentDir: env.agentDir });
+
+    const result = discoverProjectedSkillPaths({ agentDir: env.agentDir });
+
+    // Without the exclusion both `deploy` candidates collide and neither is contributed;
+    // the exclusion removes the acme candidate before collision, so beta's survives.
+    expect(result.exposed.map((s) => `${s.pluginId}/${s.name}`).sort()).toEqual([
+      'deploy-tools/deploy',
+      'release-helper/release-notes',
+    ]);
   });
 
   it('a pre-existing Pi-layer name reserves the name when supplied via piSkillNames', async () => {

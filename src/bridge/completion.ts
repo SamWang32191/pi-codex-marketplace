@@ -51,7 +51,7 @@ interface RootCommandCandidate {
   takesArgument: boolean;
 }
 
-/** The nine root subcommands, descriptions aligned with the command surface's HELP_TEXT vocabulary. */
+/** The ten root subcommands, descriptions aligned with the command surface's HELP_TEXT vocabulary. */
 const ROOT_CANDIDATES: RootCommandCandidate[] = [
   { label: 'add', description: '註冊 marketplace', takesArgument: true },
   { label: 'list', description: '列出 plugins', takesArgument: true },
@@ -61,6 +61,7 @@ const ROOT_CANDIDATES: RootCommandCandidate[] = [
   { label: 'enable', description: '啟用 plugin（恢復投影）', takesArgument: true },
   { label: 'remove', description: '移除 plugin', takesArgument: true },
   { label: 'forget', description: '移除 marketplace（含其全部安裝）', takesArgument: true },
+  { label: 'skills', description: '查看／逐項排除或恢復 plugin 的 skills', takesArgument: true },
   { label: 'help', description: '這份說明清單', takesArgument: false },
 ];
 
@@ -474,7 +475,7 @@ function completeLifecycleArguments(
  * - `install ` / `install <query>` → state-aware second-level install candidates (#122).
  * - `enable|disable|remove <query>` → Installation lifecycle candidates (#123).
  * - `list|forget <query>` → Registration candidates (#124); `add` is never owned.
- * - Empty prefix → all nine root candidates (Pi's exact-command interception surface).
+ * - Empty prefix → all ten root candidates (Pi's exact-command interception surface).
  * - A single token → case-insensitive fuzzy-filtered subcommands; `[]` when nothing matches.
  * - Any other whitespace-containing prefix (unowned second-level syntax) → `null`, so callers
  *   fall through to Pi's own completion unchanged.

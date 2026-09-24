@@ -15,8 +15,10 @@ import { parseFrontmatter } from '@earendil-works/pi-coding-agent';
 import {
   isInstallationEnabled,
   readMinimalBridgeState,
+  skillExclusionsOf,
   writeMinimalBridgeState,
   type MinimalBridgeState,
+  type MinimalInstallation,
 } from './state.js';
 import { localSourceKey } from '../registration/source-key.js';
 import {
@@ -50,6 +52,8 @@ export interface CommandOptions {
   statePath?: string;
   agentDir?: string;
   cwd?: string;
+  /** Bridge State write lock timeout; forwarded to the atomic state write. */
+  lockTimeoutMs?: number;
   /** Git executor seam for tests — mocks `git` invocations (ls-remote/clone/checkout). */
   gitExecutor?: GitExecutor;
   /** 自動偵測 seam for tests — mocks gh/keychain/store detection (#117). */
@@ -75,7 +79,8 @@ export function getPackageVersion(): string {
   }
 }
 
-const USAGE_LINE = '用法：/codex-marketplace <add|list|install|update|disable|enable|remove|forget|help>';
+const USAGE_LINE = '用法：/codex-marketplace <add|list|install|update|disable|enable|remove|forget|skills|help>';
+const SKILLS_USAGE_LINE = '用法：/codex-marketplace skills <名稱> [exclude|include <skill>]';
 
 // Exported so the Bridge completion seam can be verified against the same description
 // vocabulary it mirrors (#121) — alignment is pinned by tests, not by manual syncing.
@@ -91,6 +96,7 @@ export const HELP_TEXT = [
   '  enable <名稱>        啟用 plugin（恢復投影）',
   '  remove <名稱>        移除 plugin',
   '  forget <名稱>        移除 marketplace（含其全部安裝）',
+  '  skills <名稱>        查看／逐項排除或恢復 plugin 的 skills',
   '  help                 這份說明清單',
 ].join('\n');
 
@@ -246,6 +252,44 @@ function findRegistrationIndex(state: MinimalBridgeState, name: string): number 
   return state.registrations.findIndex((r) => matchesRegistration(r, name));
 }
 
+function installationDisplayName(installation: MinimalInstallation): string {
+  return installation.manifestName || installation.pluginId || installation.id;
+}
+
+/**
+ * Resolve exactly one Installed Plugin by the command surface's identity predicate
+ * (manifestName → pluginId → id), reporting the same missing and ambiguous errors the
+ * Installation lifecycle commands and the `skills` operations both use. A name matching more
+ * than one Installation is never silently picked.
+ */
+function resolveInstalledPlugin(
+  state: MinimalBridgeState,
+  name: string,
+): { kind: 'ok'; installation: MinimalInstallation; index: number } | { kind: 'error'; message: string } {
+  const matches = findInstallationsByName(state, name);
+  if (matches.length === 0) return { kind: 'error', message: `錯誤：找不到已安裝的 plugin "${name}"` };
+  if (matches.length > 1) {
+    const list = matches.map((m) => `${m.manifestName}[${m.registrationId}]`).join('、');
+    return { kind: 'error', message: `錯誤：名稱 "${name}" 對應多個已安裝 plugin（${list}），請改用更精確的識別` };
+  }
+  return { kind: 'ok', installation: matches[0]!, index: state.installations.indexOf(matches[0]!) };
+}
+
+/**
+ * The `skills` listing: recorded skills plus every excluded name (an excluded name the current
+ * source no longer offers stays visible so it can be restored), each with its exclusion state.
+ */
+function formatSkillLines(installation: MinimalInstallation): string {
+  const excluded = skillExclusionsOf(installation);
+  const excludedSet = new Set(excluded);
+  const names = [...new Set([...(installation.skills ?? []), ...excluded])].sort((a, b) => a.localeCompare(b));
+  const displayName = installationDisplayName(installation);
+  const header = excluded.length > 0
+    ? `Plugin "${displayName}"（${names.length} skills · 已排除 ${excluded.length}）`
+    : `Plugin "${displayName}"（${names.length} skills）`;
+  return [header, ...names.map((skill) => (excludedSet.has(skill) ? `  ${skill}（已排除）` : `  ${skill}`))].join('\n');
+}
+
 /**
  * Best-effort reread for enable: mirrors install Step1-3 (Marketplace Root -> readCatalog -> entry -> resolveContained -> collectSkillNames).
  * Returns undefined on any missing cache/catalog/entry/path — caller falls back to stored skills.
@@ -278,16 +322,30 @@ function tryRereadSkills(
   }
 }
 
+/**
+ * `skillNames` minus an Installation's Skill Exclusions — the names it offers to Runtime Skill
+ * Exposure before collision resolution. An excluded name therefore never reserves its own name
+ * and never blocks another source's same-named skill (#156). Callers that have not yet recorded
+ * the exclusions (a reinstall's retained list) pass them explicitly.
+ */
+function nonExcludedSkillNames(exclusions: string[], skillNames: string[]): string[] {
+  if (exclusions.length === 0) return skillNames;
+  const excluded = new Set(exclusions);
+  return skillNames.filter((name) => !excluded.has(name));
+}
+
 function detectCollidingSkills(
   skillList: string[],
   installations: MinimalBridgeState['installations'],
-  isExcluded?: (inst: MinimalBridgeState['installations'][number]) => boolean,
+  isTargetInstallation?: (inst: MinimalInstallation) => boolean,
 ): string[] {
   const existing = new Map<string, number>();
   for (const other of installations) {
-    if (isExcluded?.(other)) continue;
+    if (isTargetInstallation?.(other)) continue;
     if (!isInstallationEnabled(other)) continue;
-    for (const s of (other as any).skills ?? []) existing.set(s, (existing.get(s) ?? 0) + 1);
+    for (const s of nonExcludedSkillNames(skillExclusionsOf(other), other.skills ?? [])) {
+      existing.set(s, (existing.get(s) ?? 0) + 1);
+    }
   }
   return [...new Set(skillList.filter((s) => existing.has(s)))].sort((a, b) => a.localeCompare(b));
 }
@@ -364,7 +422,7 @@ function rereadInstalledPlugin(
   const oldSkills = [...(inst.skills ?? [])].sort((a, b) => a.localeCompare(b));
   const newSkills = [...skillNames].sort((a, b) => a.localeCompare(b));
   const changed = manifestRes.name !== inst.manifestName || JSON.stringify(oldSkills) !== JSON.stringify(newSkills);
-  const colliding = detectCollidingSkills(skillNames, installations, (other) => other.id === inst.id);
+  const colliding = detectCollidingSkills(nonExcludedSkillNames(skillExclusionsOf(inst), skillNames), installations, (other) => other.id === inst.id);
   return { ok: true, manifestName: manifestRes.name, skillNames, changed, colliding };
 }
 
@@ -880,28 +938,31 @@ export async function runCommand(
           const skillNames = collectSkillNames(pluginDir, format);
 
           // ---- Step 4: collision detection (同名衝突) ----
-          // 以 helper 收斂重複邏輯：僅純邏輯，排除同 plugin 的重裝自身
+          // 以 helper 收斂重複邏輯：僅純邏輯，排除同 plugin 的重裝自身；重裝時沿用既有
+          // Skill Exclusions，被自己排除的 skill 不參與衝突判定。
+          const existingIdx = state.installations.findIndex(
+            (i) => i.registrationId === targetReg.id && (i.manifestName === manifestName || i.pluginId === manifestName),
+          );
+          const isUpdate = existingIdx >= 0;
+          const retainedExclusions = isUpdate ? skillExclusionsOf(state.installations[existingIdx]!) : [];
+          const candidateSkillNames = nonExcludedSkillNames(retainedExclusions, skillNames);
           const colliding = detectCollidingSkills(
-            skillNames,
+            candidateSkillNames,
             state.installations,
             (other) =>
               other.registrationId === targetReg.id &&
               (other.manifestName === manifestName || other.pluginId === manifestName),
           );
           // 同 plugin 內重複 skill 亦視為衝突（全拒）
-          for (const s of skillNames) {
-            const dupInSelf = skillNames.filter((x) => x === s).length > 1;
+          for (const s of candidateSkillNames) {
+            const dupInSelf = candidateSkillNames.filter((x) => x === s).length > 1;
             if (dupInSelf && !colliding.includes(s)) colliding.push(s);
           }
           colliding.sort((a, b) => a.localeCompare(b));
           // For all-denied policy, if a new skill collides, existing holder also becomes denied, but we only list new's colliding.
 
           // ---- Step 5: write enabled installation record (重抓最新覆寫) ----
-          const existingIdx = state.installations.findIndex(
-            (i) => i.registrationId === targetReg.id && (i.manifestName === manifestName || i.pluginId === manifestName),
-          );
-          const isUpdate = existingIdx >= 0;
-          const installationId = isUpdate ? state.installations[existingIdx].id : manifestName; // use manifestName as stable id for simplicity, or UUID? Use manifestName to be stable across reinstalls
+          const installationId = isUpdate ? state.installations[existingIdx]!.id : manifestName; // use manifestName as stable id for simplicity, or UUID? Use manifestName to be stable across reinstalls
           // To keep stable id for e2e expectations, use manifestName as id if not update, else preserve.
           const newInstallation: MinimalBridgeState['installations'][number] = {
             id: installationId,
@@ -914,6 +975,9 @@ export async function runCommand(
             source: targetReg.source,
             snapshot: targetReg.sourceKind === 'git' ? (targetReg as unknown as { snapshot?: string }).snapshot : undefined,
             skills: skillNames,
+            // Reinstall = update: source-derived material is refreshed while Skill Exclusions
+            // are retained, so a reinstall never silently re-exposes what the user excluded.
+            skillExclusions: isUpdate ? retainedExclusions : undefined,
           };
 
           // Backup for rollback
@@ -1166,16 +1230,12 @@ export async function runCommand(
           messages.push('用法：/codex-marketplace disable <名稱>');
         } else {
           const name = subargs[0];
-          const matches = findInstallationsByName(state, name);
-          if (matches.length === 0) {
-            messages.push(`錯誤：找不到已安裝的 plugin "${name}"`);
-          } else if (matches.length > 1) {
-            const list = matches.map((m) => `${m.manifestName}[${m.registrationId}]`).join('、');
-            messages.push(`錯誤：名稱 "${name}" 對應多個已安裝 plugin（${list}），請改用更精確的識別`);
+          const resolved = resolveInstalledPlugin(state, name);
+          if (resolved.kind === 'error') {
+            messages.push(resolved.message);
           } else {
-            const target = matches[0];
-            const idx = state.installations.indexOf(target);
-            const inst = target;
+            const inst = resolved.installation;
+            const idx = resolved.index;
             if (!isInstallationEnabled(inst as any)) {
               messages.push(`"${name}" 已是停用狀態`);
             } else {
@@ -1198,16 +1258,12 @@ export async function runCommand(
           messages.push('用法：/codex-marketplace enable <名稱>');
         } else {
           const name = subargs[0];
-          const matches = findInstallationsByName(state, name);
-          if (matches.length === 0) {
-            messages.push(`錯誤：找不到已安裝的 plugin "${name}"`);
-          } else if (matches.length > 1) {
-            const list = matches.map((m) => `${m.manifestName}[${m.registrationId}]`).join('、');
-            messages.push(`錯誤：名稱 "${name}" 對應多個已安裝 plugin（${list}），請改用更精確的識別`);
+          const resolved = resolveInstalledPlugin(state, name);
+          if (resolved.kind === 'error') {
+            messages.push(resolved.message);
           } else {
-            const target = matches[0];
-            const idx = state.installations.indexOf(target);
-            const inst = target;
+            const inst = resolved.installation;
+            const idx = resolved.index;
             if (isInstallationEnabled(inst as any)) {
               messages.push(`"${name}" 已是啟用狀態`);
             } else {
@@ -1218,7 +1274,11 @@ export async function runCommand(
               setInstallationEnabled(inst as any, true);
               if (refreshedSkills) (inst as any).skills = refreshedSkills;
               const skillList = (refreshedSkills ?? inst.skills ?? []) as string[];
-              const colliding = detectCollidingSkills(skillList, state.installations, (other) => other.id === inst.id);
+              const colliding = detectCollidingSkills(
+                nonExcludedSkillNames(skillExclusionsOf(inst), skillList),
+                state.installations,
+                (other) => other.id === inst.id,
+              );
               const writeErr = tryWriteState(state, opts);
               if (!writeErr) {
                 reload = true;
@@ -1244,15 +1304,11 @@ export async function runCommand(
           messages.push('用法：/codex-marketplace remove <名稱>');
         } else {
           const name = subargs[0];
-          const matches = findInstallationsByName(state, name);
-          if (matches.length === 0) {
-            messages.push(`錯誤：找不到已安裝的 plugin "${name}"`);
-          } else if (matches.length > 1) {
-            const list = matches.map((m) => `${m.manifestName}[${m.registrationId}]`).join('、');
-            messages.push(`錯誤：名稱 "${name}" 對應多個已安裝 plugin（${list}），請改用更精確的識別`);
+          const resolved = resolveInstalledPlugin(state, name);
+          if (resolved.kind === 'error') {
+            messages.push(resolved.message);
           } else {
-            const target = matches[0];
-            const idx = state.installations.indexOf(target);
+            const idx = resolved.index;
             const backup = state.installations.slice();
             state.installations.splice(idx, 1);
             const writeErr = tryWriteState(state, opts);
@@ -1301,6 +1357,91 @@ export async function runCommand(
         }
         break;
       }
+      case 'skills': {
+        if (subargs.length === 0) {
+          messages.push(SKILLS_USAGE_LINE);
+        } else {
+          const resolved = resolveInstalledPlugin(state, subargs[0]);
+          if (resolved.kind === 'error') {
+            messages.push(resolved.message);
+            break;
+          }
+          const inst = resolved.installation;
+          const displayName = installationDisplayName(inst);
+          const action = subargs[1]?.toLowerCase();
+
+          if (action === undefined) {
+            messages.push(formatSkillLines(inst));
+            break;
+          }
+
+          if (action === 'exclude') {
+            const skill = subargs[2];
+            if (!skill) {
+              messages.push(SKILLS_USAGE_LINE);
+              break;
+            }
+            const current = skillExclusionsOf(inst);
+            if (current.includes(skill)) {
+              messages.push(`skill "${skill}" 已是排除狀態`);
+              break;
+            }
+            // Adding an exclusion needs the currently confirmable source: the same reread the
+            // lifecycle commands use (live local root / pinned Git Source Cache material).
+            const registration = state.registrations.find((r) => r.id === inst.registrationId);
+            const confirmable = registration ? tryRereadSkills(registration, inst, opts) : undefined;
+            if (!confirmable) {
+              messages.push(`錯誤：無法確認 plugin "${displayName}" 的來源 skills（來源不可讀或 plugin 目錄不存在），未變更`);
+              break;
+            }
+            if (!confirmable.includes(skill)) {
+              messages.push(`錯誤：plugin "${displayName}" 目前沒有 skill "${skill}"（只能排除目前存在的 skill）`);
+              break;
+            }
+            const next = [...current, skill].sort((a, b) => a.localeCompare(b));
+            const backup = { ...inst };
+            inst.skillExclusions = next;
+            const writeErr = tryWriteState(state, opts);
+            if (writeErr) {
+              state.installations[resolved.index] = backup as MinimalInstallation;
+              messages.push(`錯誤：寫入 Bridge State 失敗：${writeErr}`);
+              break;
+            }
+            reload = true;
+            messages.push(`已排除 "${displayName}" 的 skill "${skill}" · 已重新載入生效`);
+            break;
+          }
+
+          if (action === 'include') {
+            const skill = subargs[2];
+            if (!skill) {
+              messages.push(SKILLS_USAGE_LINE);
+              break;
+            }
+            const current = skillExclusionsOf(inst);
+            if (!current.includes(skill)) {
+              messages.push(`錯誤：skill "${skill}" 未被排除`);
+              break;
+            }
+            // Restoring needs no source read: an exclusion recorded for a name the upstream
+            // later dropped or renamed stays reversible.
+            const backup = { ...inst };
+            inst.skillExclusions = current.filter((name) => name !== skill);
+            const writeErr = tryWriteState(state, opts);
+            if (writeErr) {
+              state.installations[resolved.index] = backup as MinimalInstallation;
+              messages.push(`錯誤：寫入 Bridge State 失敗：${writeErr}`);
+              break;
+            }
+            reload = true;
+            messages.push(`已恢復 "${displayName}" 的 skill "${skill}" · 已重新載入生效`);
+            break;
+          }
+
+          messages.push(SKILLS_USAGE_LINE);
+        }
+        break;
+      }
       default: {
         messages.push(`未知子命令 "${rawArgs[0]}"`);
         messages.push(USAGE_LINE);
@@ -1319,6 +1460,7 @@ export async function runCommand(
       m.startsWith('用法：/codex-marketplace enable') ||
       m.startsWith('用法：/codex-marketplace remove') ||
       m.startsWith('用法：/codex-marketplace forget') ||
+      m.startsWith('用法：/codex-marketplace skills') ||
       m.startsWith('已註冊過相同來源') ||
       m.startsWith('找不到 marketplace'),
   );
