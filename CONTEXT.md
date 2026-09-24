@@ -173,6 +173,10 @@ _Avoid_: Installation, activation confirmation
 The evidence status of an Installed Plugin skill, for which the Bridge may report eligibility, known unavailability, or unverified availability while only independent host evidence may establish that it is Available. It does not alter Plugin classification or whole-state application.
 _Avoid_: Compatibility, projection success, inferred availability
 
+**Skill Presentation Status**:
+The single user-visible status the Bridge reports for one Installed Plugin skill: `已排除` (excluded), `來源已消失` (the current source no longer offers the name), `Plugin 已停用` (its Plugin is disabled), `Bridge 已知同名衝突` (a Bridge-known Runtime Skill Collision claims the name), `可貢獻` (contributable), or `已記錄` (recorded) when the source cannot be confirmed. It is derived presentation over Bridge State and Runtime Skill Exposure rather than new state: `可貢獻` means the skill is not excluded, its Plugin is enabled, and no Bridge-known collision claims the name, so Runtime Skill Exposure may contribute it — it never asserts that the host loaded the skill and never establishes Skill Availability. An unconfirmable source is reported as such, never as zero skills.
+_Avoid_: Host load status, Skill Availability
+
 **Installation ID**:
 The canonical identity of an Installed Plugin within the Global scope, composed of its Plugin ID. It remains stable across reinstallation, while a new Plugin ID requires a new Installation ID.
 _Avoid_: Manifest name alone, install attempt ID

@@ -4,9 +4,10 @@
  * Pi's built-in combined provider completes the slash-command name and inserts a
  * trailing space without exposing empty-prefix argument completion (root subcommands) when
  * the editor holds exactly `/codex-marketplace`. This wrapper intercepts that exact editor
- * content and presents the nine root candidates. It also owns the second-level argument
+ * content and presents the ten root candidates. It also owns the second-level argument
  * contexts (`install` #122, the Installation lifecycle `enable` / `disable` / `remove` #123,
- * and the Marketplace Registration `list` / `forget` #124) on forced (Tab) requests, which
+ * the Marketplace Registration `list` / `forget` #124, and the Skill Exclusion surface
+ * `skills` #158) on forced (Tab) requests, which
  * Pi routes to file completion instead of slash-command argument completion (its
  * argument path only runs when `force` is false) — the wrapper returns the state-aware
  * candidates there. `add` stays free-form (#124): its forced Tab keeps Pi's native
@@ -17,6 +18,11 @@
  * The wrapper is installed from a `session_start` handler via `ctx.ui.addAutocompleteProvider`,
  * which interactive (TUI) mode wires into the editor and RPC/JSON/print modes no-op, so a
  * terminal-only provider is never registered outside a TUI session.
+ *
+ * The `skills` context (#158) nests deeper than the other contexts: the same forced-Tab
+ * interception covers `skills <名稱> ` (operations) and `skills <名稱> exclude|include|only `
+ * (skill names) because they share the `/codex-marketplace skills ` prefix — see
+ * `completeArguments` for the grammar it owns at each depth.
  */
 
 import type { AutocompleteProvider } from '@earendil-works/pi-tui';
@@ -27,12 +33,13 @@ import { completeArguments, type CompletionReadOptions } from '../../src/bridge/
 export const EXACT_COMMAND = '/codex-marketplace';
 
 /**
- * The Bridge-owned second-level argument contexts on forced requests: `install` plus the
- * installation lifecycle actions plus the Marketplace Registration commands — each followed
- * by the trailing space root candidates insert. `add` is deliberately absent (#124): its
- * argument is an arbitrary path or Git locator that stays under Pi's native completion.
+ * The Bridge-owned second-level argument contexts on forced requests: `install`, the
+ * installation lifecycle actions, the Marketplace Registration commands, and the Skill
+ * Exclusion surface (`skills`) — each followed by the trailing space root candidates insert.
+ * `add` is deliberately absent (#124): its argument is an arbitrary path or Git locator that
+ * stays under Pi's native completion.
  */
-export const SECOND_LEVEL_ARGUMENT_RE = /^\/codex-marketplace (?:install|list|forget|enable|disable|remove) /;
+export const SECOND_LEVEL_ARGUMENT_RE = /^\/codex-marketplace (?:install|list|forget|enable|disable|remove|skills) /;
 
 /**
  * Wrap the host's current autocomplete provider. Suggestion generation intercepts only the

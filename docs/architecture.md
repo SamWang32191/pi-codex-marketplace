@@ -39,6 +39,7 @@ Canonical terms are defined in [`CONTEXT.md`](../CONTEXT.md) — use them verbat
 
 | ADR | 決策 |
 |-----|------|
+| [0008](./adr/0008-skill-exclusion-list-not-allow-list.md) | Skill Exclusion 採排除清單而非允許清單（逐項 skill 排除、批次 only／reset） |
 | [0007](./adr/0007-headless-bridge-cli.md) | Headless Bridge CLI（純 Node 輕量 Shim＋單一 Global Scope＋Parity 輸出契約） |
 | [0006](./adr/0006-credentialed-acquisition-approval.md) | 核准式 Credentialed Acquisition（固定白名單自動偵測＋環境變數覆寫） |
 | [0005](./adr/0005-entry-acquisition-trust-boundary.md) | Entry 級取得的信任邊界與定位器正規化 |

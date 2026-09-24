@@ -167,7 +167,9 @@ function skillCandidates(pluginDir: string, format: MarketplaceFormat = 'codex')
 
 function descriptorSkillName(skillDir: string, descriptorPath: string): string | undefined {
   try {
-    // Pi drops skills whose descriptor cannot be parsed or lacks a description; mirror that here.
+    // Pi drops skills whose descriptor cannot be parsed or lacks a description; mirror that
+    // here. Name validation stays with Pi (it rejects a name that is not a lowercase kebab-case
+    // identifier), so contributing such a path is inert rather than a projection claim.
     const text = readFileSync(descriptorPath, 'utf-8');
     const { frontmatter } = parseFrontmatter<Record<string, unknown>>(text);
     const description = frontmatter?.description;

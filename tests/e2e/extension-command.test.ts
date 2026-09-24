@@ -150,11 +150,12 @@ describe('/codex-marketplace thin Pi adapter seam (#88)', () => {
 
     const command = captureCodexMarketplaceCommand();
     let reloads = 0;
+    const notices: string[] = [];
     const ctx = {
       cwd,
       mode: 'tui',
       hasUI: true,
-      ui: { notify() {} },
+      ui: { notify(message: string) { notices.push(message); } },
       reload: async () => {
         reloads += 1;
       },
@@ -169,6 +170,14 @@ describe('/codex-marketplace thin Pi adapter seam (#88)', () => {
     expect(reloads).toBe(afterInstall);
 
     await command.handler('skills skill-plugin exclude drop-me', ctx);
+    expect(reloads).toBe(afterInstall + 1);
+
+    // The Pi surface reports the same status vocabulary as the Headless CLI.
+    notices.length = 0;
+    await command.handler('skills skill-plugin', ctx);
+    expect(notices[0]).toContain('drop-me（已排除）');
+    expect(notices[0]).toContain('keep-me（可貢獻）');
+    expect(notices[0]).not.toContain('已載入');
     expect(reloads).toBe(afterInstall + 1);
 
     await command.handler('skills skill-plugin include drop-me', ctx);

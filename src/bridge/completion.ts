@@ -15,9 +15,12 @@
  */
 
 import { queryMarketplacePlugins, type MarketplacePluginInstallationState } from './plugin-query.js';
+import { rereadConfirmableSkills } from './skill-discovery.js';
+import { installationDisplayName, matchesInstallation, resolveInstallation } from './installation-identity.js';
 import {
   isInstallationEnabled,
   readMinimalBridgeStatePassive,
+  skillExclusionsOf,
   type MinimalBridgeState,
   type MinimalInstallation,
 } from './state.js';
@@ -61,7 +64,7 @@ const ROOT_CANDIDATES: RootCommandCandidate[] = [
   { label: 'enable', description: '啟用 plugin（恢復投影）', takesArgument: true },
   { label: 'remove', description: '移除 plugin', takesArgument: true },
   { label: 'forget', description: '移除 marketplace（含其全部安裝）', takesArgument: true },
-  { label: 'skills', description: '查看／調整 plugin 的 skills 排除清單', takesArgument: true },
+  { label: 'skills', description: '查看 skills 與排除狀態（不改變設定）', takesArgument: true },
   { label: 'help', description: '這份說明清單', takesArgument: false },
 ];
 
@@ -95,6 +98,26 @@ function fuzzyScore(query: string, label: string): number | null {
   }
   if (queryIndex < q.length) return null;
   return firstMatch * FIRST_MATCH_WEIGHT + (lastMatch - firstMatch);
+}
+
+/**
+ * Case-insensitive fuzzy filter over composed candidates, ordered by score then label. The
+ * search text is read from the candidate (name plus provenance or status description) so a
+ * query can match either, and only matching candidates are converted to completion items.
+ */
+function fuzzyFilter<T>(
+  entries: T[],
+  query: string,
+  searchText: (entry: T) => string,
+  toItem: (entry: T) => CompletionItem,
+): CompletionItem[] {
+  const scored: { item: CompletionItem; score: number }[] = [];
+  for (const entry of entries) {
+    const score = fuzzyScore(query, searchText(entry));
+    if (score !== null) scored.push({ item: toItem(entry), score });
+  }
+  scored.sort((a, b) => a.score - b.score || a.item.label.localeCompare(b.item.label));
+  return scored.map((entry) => entry.item);
 }
 
 /**
@@ -232,15 +255,7 @@ function completeInstallArguments(query: string, options: CompletionReadOptions)
   if (query.length === 0) {
     return candidates.map(toInstallItem);
   }
-  const scored: { item: CompletionItem; score: number }[] = [];
-  for (const candidate of candidates) {
-    const score = fuzzyScore(query, candidate.searchText);
-    if (score !== null) {
-      scored.push({ item: toInstallItem(candidate), score });
-    }
-  }
-  scored.sort((a, b) => a.score - b.score || a.item.label.localeCompare(b.item.label));
-  return scored.map((entry) => entry.item);
+  return fuzzyFilter(candidates, query, (candidate) => candidate.searchText, toInstallItem);
 }
 
 interface LifecycleCandidate {
@@ -260,10 +275,6 @@ function lifecycleStatusLabel(enabled: boolean): string {
   return enabled ? '已裝啟用' : '已裝停用';
 }
 
-function installationName(inst: MinimalInstallation): string {
-  return inst.manifestName || inst.pluginId || inst.id;
-}
-
 /**
  * Whether a name-typed `enable|disable|remove <name>` invocation would resolve exactly this
  * Installation: the command matches `manifestName` OR `pluginId` OR `id` over every
@@ -272,11 +283,8 @@ function installationName(inst: MinimalInstallation): string {
  */
 function lifecycleNameUsable(state: MinimalBridgeState, name: string): boolean {
   if (name.length === 0 || /\s/.test(name)) return false;
-  let matches = 0;
-  for (const other of state.installations) {
-    if (other.manifestName === name || other.pluginId === name || other.id === name) matches += 1;
-  }
-  return matches === 1;
+  const matches = state.installations.filter((other) => matchesInstallation(other, name));
+  return matches.length === 1;
 }
 
 /**
@@ -293,7 +301,7 @@ function composeLifecycleCandidates(state: MinimalBridgeState): LifecycleCandida
   const regNames = new Map(state.registrations.map((reg) => [reg.id, reg.marketplaceName || reg.alias || reg.id]));
   const candidates: LifecycleCandidate[] = [];
   for (const inst of state.installations) {
-    const name = installationName(inst);
+    const name = installationDisplayName(inst);
     if (!lifecycleNameUsable(state, name)) continue;
     const marketplaceName = regNames.get(inst.registrationId) ?? inst.registrationId;
     const enabled = isInstallationEnabled(inst);
@@ -423,15 +431,8 @@ function completeRegistrationArguments(
   if (query.length === 0) {
     return candidates.map((candidate) => toRegistrationItem(action, candidate));
   }
-  const scored: { item: CompletionItem; score: number }[] = [];
-  for (const candidate of candidates) {
-    const score = fuzzyScore(query, candidate.searchText);
-    if (score !== null) {
-      scored.push({ item: toRegistrationItem(action, candidate), score });
-    }
-  }
-  scored.sort((a, b) => a.score - b.score || a.item.label.localeCompare(b.item.label));
-  return scored.map((entry) => entry.item);
+  return fuzzyFilter(candidates, query, (candidate) => candidate.searchText, (candidate) =>
+    toRegistrationItem(action, candidate));
 }
 
 /**
@@ -458,15 +459,123 @@ function completeLifecycleArguments(
   if (query.length === 0) {
     return candidates.map((candidate) => toLifecycleItem(action, candidate));
   }
-  const scored: { item: CompletionItem; score: number }[] = [];
-  for (const candidate of candidates) {
-    const score = fuzzyScore(query, candidate.searchText);
-    if (score !== null) {
-      scored.push({ item: toLifecycleItem(action, candidate), score });
-    }
+  return fuzzyFilter(candidates, query, (candidate) => candidate.searchText, (candidate) =>
+    toLifecycleItem(action, candidate));
+}
+
+/**
+ * The owned Skill Exclusion second-level syntax (#158): `skills` followed by whitespace and a
+ * single-token query. Like the lifecycle commands, `skills` without a trailing space stays at
+ * the root level so the trailing-space root candidate can be applied first.
+ */
+const SKILLS_SECOND_LEVEL_RE = /^skills\s+(\S*)$/;
+
+/** The owned `skills <名稱> <action>` third-level syntax (#158). */
+const SKILLS_ACTION_LEVEL_RE = /^skills\s+(\S+)\s+(\S*)$/;
+
+/**
+ * The owned `skills <名稱> exclude|include|only <skill>` skill-argument syntax (#158). `reset`
+ * takes no skill argument, so it never reaches this level and the prefix stays unowned for Pi.
+ */
+const SKILLS_SKILL_ARG_RE = /^skills\s+(\S+)\s+(exclude|include|only)\s+(\S*)$/;
+
+interface SkillActionCandidate {
+  label: 'exclude' | 'include' | 'only' | 'reset';
+  description: string;
+}
+
+/**
+ * The four Skill Exclusion operations, described with the semantics the command surface gives
+ * them: each state-changing operation discloses that the Pi host is asked to reload afterwards,
+ * and `only` discloses that a missing name cannot mean "exclude everything".
+ */
+const SKILL_ACTION_CANDIDATES: SkillActionCandidate[] = [
+  { label: 'exclude', description: '排除單一 skill（不再投影；變更後 Pi 自動 reload）' },
+  { label: 'include', description: '恢復已排除的 skill（逐項；變更後 Pi 自動 reload）' },
+  { label: 'only', description: '只保留目前指定的 skills（未給名稱不會排除全部；變更後 Pi 自動 reload）' },
+  { label: 'reset', description: '清除全部排除（含已消失名稱；變更後 Pi 自動 reload）' },
+];
+
+function toSkillActionItem(token: string, action: SkillActionCandidate): CompletionItem {
+  return {
+    value: `skills ${token} ${action.label}`,
+    label: action.label,
+    description: action.description,
+  };
+}
+
+function toSkillInstallationItem(candidate: LifecycleCandidate): CompletionItem {
+  return {
+    value: `skills ${candidate.name}`,
+    label: candidate.name,
+    description: `[${candidate.marketplaceName}] ${candidate.status}`,
+  };
+}
+
+/**
+ * Second-level `skills <query>` candidates (#158): every uniquely resolvable Installed Plugin,
+ * whatever its state — exclusions are adjustable while a Plugin is disabled, exactly as the
+ * command allows. Provenance and status match the Installation lifecycle vocabulary (#123).
+ */
+function completeSkillsInstallationArguments(query: string, options: CompletionReadOptions): CompletionItem[] {
+  const state = readMinimalBridgeStatePassive({ statePath: options.statePath, agentDir: options.agentDir });
+  const candidates = composeLifecycleCandidates(state);
+  if (query.length === 0) {
+    return candidates.map(toSkillInstallationItem);
   }
-  scored.sort((a, b) => a.score - b.score || a.item.label.localeCompare(b.item.label));
-  return scored.map((entry) => entry.item);
+  return fuzzyFilter(candidates, query, (candidate) => candidate.searchText, toSkillInstallationItem);
+}
+
+/**
+ * Third-level `skills <名稱> <query>` candidates: the four operations. The syntax is owned as
+ * soon as `skills <名稱>` names exactly one Installation; an unresolvable or ambiguous name
+ * yields no candidates (never a silently picked target).
+ */
+function completeSkillsActionArguments(
+  token: string,
+  query: string,
+  options: CompletionReadOptions,
+): CompletionItem[] {
+  const state = readMinimalBridgeStatePassive({ statePath: options.statePath, agentDir: options.agentDir });
+  if (!resolveInstallation(state, token)) return [];
+  if (query.length === 0) {
+    return SKILL_ACTION_CANDIDATES.map((action) => toSkillActionItem(token, action));
+  }
+  return fuzzyFilter(SKILL_ACTION_CANDIDATES, query, (action) => action.label, (action) =>
+    toSkillActionItem(token, action));
+}
+
+/**
+ * Fourth-level `skills <名稱> exclude|include|only <query>` candidates: only the names the
+ * command would actually accept. `exclude` and `only` read the currently confirmable source
+ * (the same read the command validates against), so a stale record cannot offer a name the
+ * command rejects and a newly added skill is offered immediately; an unreadable source offers
+ * no candidate for them. `include` restores from the record and needs no source read.
+ */
+function completeSkillsSkillArguments(
+  token: string,
+  action: 'exclude' | 'include' | 'only',
+  query: string,
+  options: CompletionReadOptions,
+): CompletionItem[] {
+  const state = readMinimalBridgeStatePassive({ statePath: options.statePath, agentDir: options.agentDir });
+  const installation = resolveInstallation(state, token);
+  if (!installation) return [];
+  const excluded = new Set(skillExclusionsOf(installation));
+  let names: string[];
+  if (action === 'include') {
+    names = [...excluded];
+  } else {
+    const confirmable = rereadConfirmableSkills(state, installation, options);
+    if (!confirmable) return [];
+    names = action === 'only' ? confirmable : confirmable.filter((name) => !excluded.has(name));
+  }
+  names.sort((a, b) => a.localeCompare(b));
+  const toItem = (name: string): CompletionItem => ({ value: `skills ${token} ${action} ${name}`, label: name });
+  if (query.length === 0) {
+    return names.map(toItem);
+  }
+  return fuzzyFilter(names, query, (name) => name, toItem);
 }
 
 /**
@@ -475,6 +584,8 @@ function completeLifecycleArguments(
  * - `install ` / `install <query>` → state-aware second-level install candidates (#122).
  * - `enable|disable|remove <query>` → Installation lifecycle candidates (#123).
  * - `list|forget <query>` → Registration candidates (#124); `add` is never owned.
+ * - `skills <query>` / `skills <名稱> <query>` / `skills <名稱> exclude|include|only <query>`
+ *   → Skill Exclusion candidates (#158).
  * - Empty prefix → all ten root candidates (Pi's exact-command interception surface).
  * - A single token → case-insensitive fuzzy-filtered subcommands; `[]` when nothing matches.
  * - Any other whitespace-containing prefix (unowned second-level syntax) → `null`, so callers
@@ -487,6 +598,18 @@ export function completeArguments(
   argumentPrefix: string,
   options: CompletionReadOptions = {},
 ): CompletionItem[] | null {
+  const skillsSkillMatch = SKILLS_SKILL_ARG_RE.exec(argumentPrefix);
+  if (skillsSkillMatch) {
+    return completeSkillsSkillArguments(skillsSkillMatch[1]!, skillsSkillMatch[2] as 'exclude' | 'include' | 'only', skillsSkillMatch[3]!, options);
+  }
+  const skillsActionMatch = SKILLS_ACTION_LEVEL_RE.exec(argumentPrefix);
+  if (skillsActionMatch) {
+    return completeSkillsActionArguments(skillsActionMatch[1]!, skillsActionMatch[2]!, options);
+  }
+  const skillsMatch = SKILLS_SECOND_LEVEL_RE.exec(argumentPrefix);
+  if (skillsMatch) {
+    return completeSkillsInstallationArguments(skillsMatch[1]!, options);
+  }
   const installMatch = INSTALL_SECOND_LEVEL_RE.exec(argumentPrefix);
   if (installMatch) {
     return completeInstallArguments(installMatch[1], options);
@@ -509,14 +632,5 @@ export function completeArguments(
   if (query.length === 0) {
     return ROOT_CANDIDATES.map(toItem);
   }
-
-  const scored: { item: CompletionItem; score: number }[] = [];
-  for (const candidate of ROOT_CANDIDATES) {
-    const score = fuzzyScore(query, candidate.label);
-    if (score !== null) {
-      scored.push({ item: toItem(candidate), score });
-    }
-  }
-  scored.sort((a, b) => a.score - b.score || a.item.label.localeCompare(b.item.label));
-  return scored.map((entry) => entry.item);
+  return fuzzyFilter(ROOT_CANDIDATES, query, (candidate) => candidate.label, toItem);
 }

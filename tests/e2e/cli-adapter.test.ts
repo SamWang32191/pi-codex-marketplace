@@ -1949,10 +1949,28 @@ describe("Skill Exclusion 表面：skills (#156)", () => {
       expect(proj.skillPaths.some((p) => p.includes("drop-me"))).toBe(false);
       expect(proj.skillPaths.some((p) => p.includes("keep-me"))).toBe(true);
 
-      // The listing marks the exclusion.
+      // The listing marks the exclusion and reports the remaining skill as contributable,
+      // without claiming Pi has loaded anything.
       const mockListMarked = createMockIo();
       await runCli(["skills", "skill-plugin"], mockListMarked.io, { cwd, agentDir });
-      expect(mockListMarked.stdout.join("")).toContain("drop-me（已排除）");
+      const markedOut = mockListMarked.stdout.join("");
+      expect(markedOut).toContain("drop-me（已排除）");
+      expect(markedOut).toContain("keep-me（可貢獻）");
+      expect(markedOut).not.toContain("已載入");
+
+      // The overview and help surfaces carry the same status vocabulary as the Pi surface.
+      const mockOverview = createMockIo();
+      await runCli([], mockOverview.io, { cwd, agentDir });
+      expect(mockOverview.stdout.join("")).toContain("2 skills（已排除 1）");
+
+      const mockHelp = createMockIo();
+      await runCli(["help"], mockHelp.io, { cwd, agentDir });
+      const helpOut = mockHelp.stdout.join("");
+      expect(helpOut).toContain("exclude <skill>");
+      expect(helpOut).toContain("include <skill>");
+      expect(helpOut).toContain("only <skill...>");
+      expect(helpOut).toContain("reset");
+      expect(helpOut).toContain("reload");
 
       // 3. Include: restores it.
       const mockInclude = createMockIo();

@@ -90,11 +90,14 @@ describe('runCommand dispatch seam (#88)', () => {
 
     expect(result.output).toContain('cmd');
     expect(result.output).toContain('[samwang-skills]');
-    expect(result.output).toContain('2 skills');
+    // The fabricated source above does not exist: the overview discloses the unconfirmed
+    // source instead of reporting a recorded count as if it were current (#158).
+    expect(result.output).toContain('skills 未確認');
+    expect(result.output).not.toMatch(/\d+ skills/);
     expect(result.output).toContain('啟用');
 
     expect(result.output).toContain('dev');
-    expect(result.output).toContain('1 skills');
+    expect(result.output).toContain('skills 未確認');
     expect(result.output).toContain('停用');
   });
 
