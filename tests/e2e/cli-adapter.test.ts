@@ -1982,3 +1982,83 @@ describe("Skill Exclusion 表面：skills (#156)", () => {
     }
   });
 });
+
+describe("Skill Exclusion 表面：batch keep-only and reset (#157)", () => {
+  let cwd: string;
+  let agentDir: string;
+
+  beforeEach(() => {
+    delete process.env[CREDENTIAL_HELPERS_ENV];
+    cwd = mkdtempSync(join(tmpdir(), "cli-skills157-cwd-"));
+    agentDir = mkdtempSync(join(tmpdir(), "cli-skills157-agent-"));
+    mkdirSync(join(agentDir, "codex-marketplace"), { recursive: true });
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    process.env.PI_AGENT_DIR = agentDir;
+  });
+
+  afterEach(() => {
+    delete process.env[CREDENTIAL_HELPERS_ENV];
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(agentDir, { recursive: true, force: true });
+    delete process.env.PI_CODING_AGENT_DIR;
+    delete process.env.PI_AGENT_DIR;
+  });
+
+  it("keeps only the named skills and resets the list under the CLI reload contract", async () => {
+    const mktRoot = mkdtempSync(join(tmpdir(), "cli-skills157-mkt-"));
+    makeSyntheticMarketplace(mktRoot, "skills-mkt", [
+      { name: "skill-plugin", path: "./plugins/skill-plugin", skills: ["keep-me", "drop-me", "scratch"] },
+    ]);
+
+    try {
+      await runCli(["add", mktRoot], createMockIo().io, { cwd, agentDir });
+      await runCli(["install", "skill-plugin"], createMockIo().io, { cwd, agentDir });
+
+      // 1. Keep-only: state-affecting → CLI reload contract, never a claim that Pi loaded it.
+      const mockOnly = createMockIo();
+      const codeOnly = await runCli(["skills", "skill-plugin", "only", "keep-me", "drop-me"], mockOnly.io, { cwd, agentDir });
+      expect(codeOnly).toBe(0);
+      expect(mockOnly.exitCodes).toEqual([0]);
+      expect(mockOnly.stderr).toHaveLength(0);
+      const onlyOut = mockOnly.stdout.join("");
+      expect(onlyOut).toContain('已只保留 "skill-plugin" 的 skills');
+      expect(onlyOut).toContain(RELOAD_NOTICE);
+      expect(onlyOut).not.toContain("已重新載入生效");
+      expect(readMinimalBridgeState({ agentDir }).state.installations[0].skillExclusions).toEqual(["scratch"]);
+
+      // 2. A bare keep-only is a usage error: exit 1, no name excluded by omission.
+      const mockBare = createMockIo();
+      const codeBare = await runCli(["skills", "skill-plugin", "only"], mockBare.io, { cwd, agentDir });
+      expect(codeBare).toBe(1);
+      expect(mockBare.exitCodes).toEqual([1]);
+      expect(mockBare.stdout).toHaveLength(0);
+      expect(mockBare.stderr.join("")).toContain("錯誤：");
+      expect(mockBare.stderr.join("")).not.toContain(RELOAD_NOTICE);
+      expect(readMinimalBridgeState({ agentDir }).state.installations[0].skillExclusions).toEqual(["scratch"]);
+
+      // 3. Reset: clears every recorded exclusion and reports the same CLI reload contract.
+      const mockReset = createMockIo();
+      const codeReset = await runCli(["skills", "skill-plugin", "reset"], mockReset.io, { cwd, agentDir });
+      expect(codeReset).toBe(0);
+      expect(mockReset.stderr).toHaveLength(0);
+      const resetOut = mockReset.stdout.join("");
+      expect(resetOut).toContain('已重設 "skill-plugin" 的 skill 排除清單');
+      expect(resetOut).toContain(RELOAD_NOTICE);
+      expect(resetOut).not.toContain("已重新載入生效");
+      expect(readMinimalBridgeState({ agentDir }).state.installations[0].skillExclusions).toEqual([]);
+      const proj = discoverProjectedSkillPaths({ agentDir });
+      for (const name of ["keep-me", "drop-me", "scratch"]) {
+        expect(proj.skillPaths.some((p) => p.includes(name))).toBe(true);
+      }
+
+      // 4. A second reset has nothing to clear: exit 0 without a reload contract.
+      const mockNoop = createMockIo();
+      const codeNoop = await runCli(["skills", "skill-plugin", "reset"], mockNoop.io, { cwd, agentDir });
+      expect(codeNoop).toBe(0);
+      expect(mockNoop.stdout.join("")).toContain("未變更");
+      expect(mockNoop.stdout.join("")).not.toContain(RELOAD_NOTICE);
+    } finally {
+      rmSync(mktRoot, { recursive: true, force: true });
+    }
+  });
+});

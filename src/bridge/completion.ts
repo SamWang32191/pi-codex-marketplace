@@ -61,7 +61,7 @@ const ROOT_CANDIDATES: RootCommandCandidate[] = [
   { label: 'enable', description: '啟用 plugin（恢復投影）', takesArgument: true },
   { label: 'remove', description: '移除 plugin', takesArgument: true },
   { label: 'forget', description: '移除 marketplace（含其全部安裝）', takesArgument: true },
-  { label: 'skills', description: '查看／逐項排除或恢復 plugin 的 skills', takesArgument: true },
+  { label: 'skills', description: '查看／調整 plugin 的 skills 排除清單', takesArgument: true },
   { label: 'help', description: '這份說明清單', takesArgument: false },
 ];
 

@@ -173,6 +173,19 @@ describe('/codex-marketplace thin Pi adapter seam (#88)', () => {
 
     await command.handler('skills skill-plugin include drop-me', ctx);
     expect(reloads).toBe(afterInstall + 2);
+
+    // #157: a batch keep-only is a state change; repeating it is not, and reset is again.
+    await command.handler('skills skill-plugin only keep-me', ctx);
+    expect(reloads).toBe(afterInstall + 3);
+
+    await command.handler('skills skill-plugin only keep-me', ctx);
+    expect(reloads).toBe(afterInstall + 3);
+
+    await command.handler('skills skill-plugin reset', ctx);
+    expect(reloads).toBe(afterInstall + 4);
+
+    await command.handler('skills skill-plugin', ctx);
+    expect(reloads).toBe(afterInstall + 4);
   });
 
   it('does not invoke ctx.reload when reload flag is false', async () => {
