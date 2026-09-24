@@ -25,7 +25,7 @@ describe('runCommand dispatch seam (#88)', () => {
     expect(result.reload).toBe(false);
     expect(result.output).toContain('Marketplaces');
     expect(result.output).toContain('Installed');
-    expect(result.output).toContain('用法：/codex-marketplace <add|list|install|update|disable|enable|remove|forget|help>');
+    expect(result.output).toContain('用法：/codex-marketplace <add|list|install|update|disable|enable|remove|forget|skills|help>');
 
     // Reasonably clear empty state message
     expect(result.output).toMatch(/尚未註冊|尚無註冊/);
@@ -98,7 +98,7 @@ describe('runCommand dispatch seam (#88)', () => {
     expect(result.output).toContain('停用');
   });
 
-  it('help subcommand lists all nine subcommands', async () => {
+  it('help subcommand lists all ten subcommands', async () => {
     const result = await runCommand(['help'], { statePath });
 
     expect(result.reload).toBe(false);
@@ -111,6 +111,7 @@ describe('runCommand dispatch seam (#88)', () => {
       'enable',
       'remove',
       'forget',
+      'skills',
       'help',
     ];
     for (const subcmd of subcommands) {
@@ -123,7 +124,7 @@ describe('runCommand dispatch seam (#88)', () => {
 
     expect(result.reload).toBe(false);
     expect(result.output).toContain('foobar');
-    expect(result.output).toContain('用法：/codex-marketplace <add|list|install|update|disable|enable|remove|forget|help>');
+    expect(result.output).toContain('用法：/codex-marketplace <add|list|install|update|disable|enable|remove|forget|skills|help>');
   });
 
   it('resets corrupted state file, outputs reset warning notice, and presents empty state', async () => {
@@ -135,7 +136,7 @@ describe('runCommand dispatch seam (#88)', () => {
     expect(result.output).toMatch(/損壞|重置/);
     expect(result.output).toContain('Marketplaces');
     expect(result.output).toContain('Installed');
-    expect(result.output).toContain('用法：/codex-marketplace <add|list|install|update|disable|enable|remove|forget|help>');
+    expect(result.output).toContain('用法：/codex-marketplace <add|list|install|update|disable|enable|remove|forget|skills|help>');
   });
 
   it('runs purely in Node environment with assertions on messages, lines, and reload flag', async () => {
@@ -155,6 +156,7 @@ describe('runCommand dispatch seam (#88)', () => {
       { name: 'enable', expected: /用法：.*enable/ },
       { name: 'remove', expected: /用法：.*remove/ },
       { name: 'forget', expected: /用法：.*forget/ },
+      { name: 'skills', expected: /用法：.*skills/ },
     ];
 
     for (const { name, expected } of subcommandsWithArgs) {

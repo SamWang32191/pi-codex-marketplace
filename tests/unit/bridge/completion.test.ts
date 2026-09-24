@@ -8,7 +8,7 @@ import { HELP_TEXT, runCommand } from '../../../src/bridge/command.js';
 import type { MinimalBridgeState } from '../../../src/bridge/state.js';
 import { getCacheDir, getCacheEntriesDir } from '../../../src/cache/paths.js';
 
-const ROOT_LABELS = ['add', 'list', 'install', 'update', 'disable', 'enable', 'remove', 'forget', 'help'];
+const ROOT_LABELS = ['add', 'list', 'install', 'update', 'disable', 'enable', 'remove', 'forget', 'skills', 'help'];
 
 /** Parse the command surface's canonical description per subcommand out of HELP_TEXT. */
 function helpDescriptions(): Map<string, string> {
@@ -86,7 +86,7 @@ function registrationsState(fixture: StateFixture, registrations: MinimalBridgeS
 }
 
 describe('Bridge completion seam (#121)', () => {
-  it('returns all nine root candidates with descriptions for an empty argument prefix', () => {
+  it('returns all ten root candidates with descriptions for an empty argument prefix', () => {
     const result = completeArguments('');
 
     expect(result).not.toBeNull();
@@ -112,7 +112,7 @@ describe('Bridge completion seam (#121)', () => {
     expect(result![0].value).toBe('add ');
 
     const all = completeArguments('');
-    const argTaking = all!.filter((item) => ['add', 'list', 'install', 'disable', 'enable', 'remove', 'forget'].includes(item.label));
+    const argTaking = all!.filter((item) => ['add', 'list', 'install', 'disable', 'enable', 'remove', 'forget', 'skills'].includes(item.label));
     for (const item of argTaking) {
       expect(item.value.endsWith(' ')).toBe(true);
       expect(item.value).toBe(item.label + ' ');

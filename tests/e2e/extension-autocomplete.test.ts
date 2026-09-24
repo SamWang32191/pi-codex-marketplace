@@ -9,7 +9,7 @@ import { CombinedAutocompleteProvider } from '@earendil-works/pi-tui';
 import registerBridgeExtension from '../../extensions/pi/index.js';
 import { createBridgeAutocompleteProvider } from '../../extensions/pi/autocomplete.js';
 
-const ROOT_LABELS = ['add', 'list', 'install', 'update', 'disable', 'enable', 'remove', 'forget', 'help'];
+const ROOT_LABELS = ['add', 'list', 'install', 'update', 'disable', 'enable', 'remove', 'forget', 'skills', 'help'];
 
 // ---- #122 fixture: two local marketplaces (one same-named sibling unavailable #91) ----
 // Full enumeration: 1=shared(alpha, local), 2=demo(alpha, local, installed+enabled) and
@@ -153,7 +153,7 @@ describe('/codex-marketplace autocomplete thin Pi adapter (#121)', () => {
     expect(typeof factory).toBe('function');
   });
 
-  it('intercepts the exact /codex-marketplace editor text with all nine subcommands and does not consult the current provider', async () => {
+  it('intercepts the exact /codex-marketplace editor text with all ten subcommands and does not consult the current provider', async () => {
     const captured = captureExtension();
     const current = fakeCurrentProvider();
     const wrapper = installFactory(captured)(current) as AutocompleteProvider;

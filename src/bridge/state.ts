@@ -40,6 +40,13 @@ export interface MinimalInstallation {
   source: string;
   snapshot?: string;
   skills?: string[];
+  /**
+   * Skill Exclusions — Skill Descriptor names withheld from Runtime Skill Exposure for this
+   * Installation (see CONTEXT.md: Skill Exclusion). Absent reads as an empty list, so
+   * Installations recorded before this field existed keep contributing every skill. Retained
+   * across reinstallation, update, and disablement; removed with the Installation.
+   */
+  skillExclusions?: string[];
 }
 
 export interface MinimalBridgeState {
@@ -82,6 +89,16 @@ export function createEmptyMinimalState(): MinimalBridgeState {
  */
 export function isInstallationEnabled(inst: MinimalInstallation): boolean {
   return inst.enabled !== false && inst.installationState !== 'disabled';
+}
+
+/**
+ * An Installation's Skill Exclusions. An unset or malformed list reads as empty — an existing
+ * Installation without the field is simply all-allow, never a reason to reset Bridge State.
+ */
+export function skillExclusionsOf(installation: MinimalInstallation): string[] {
+  const list = installation.skillExclusions;
+  if (!Array.isArray(list)) return [];
+  return [...new Set(list.filter((name): name is string => typeof name === 'string' && name.length > 0))];
 }
 
 export function isMinimalBridgeState(value: unknown): value is MinimalBridgeState {

@@ -8,7 +8,7 @@ Bridge State 是唯一權威，存於**單一 Global Scope 文件** `{getAgentDi
 {
   "schemaVersion": 1,   // 固定，永不遷移
   "registrations": [],  // immutable Registration ID = UUIDv4；sourceKind: "local" | "git"；git 帶 snapshot fingerprint（cache 位址）
-  "installations": []   // Installed Plugins（enabled/disabled），含 manifestName、skills 與 snapshot（git）
+  "installations": []   // Installed Plugins（enabled/disabled），含 manifestName、skills、skillExclusions（Skill Exclusion）與 snapshot（git）
 }
 ```
 

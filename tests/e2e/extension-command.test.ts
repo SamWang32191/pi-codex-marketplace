@@ -96,6 +96,7 @@ describe('/codex-marketplace thin Pi adapter seam (#88)', () => {
     expect(notifications[0].message).toContain('enable');
     expect(notifications[0].message).toContain('remove');
     expect(notifications[0].message).toContain('forget');
+    expect(notifications[0].message).toContain('skills');
     expect(notifications[0].message).toContain('help');
   });
 
@@ -122,6 +123,56 @@ describe('/codex-marketplace thin Pi adapter seam (#88)', () => {
     expect(notifications).toHaveLength(1);
     expect(notifications[0].message).toMatch(/損壞|重置/);
     expect(notifications[0].message).toContain('Marketplaces');
+  });
+
+  it('requests ctx.reload for a Skill Exclusion change and never for a read-only listing', async () => {
+    const mktRoot = join(cwd, 'skills-marketplace');
+    mkdirSync(join(mktRoot, '.agents', 'plugins'), { recursive: true });
+    writeFileSync(
+      join(mktRoot, '.agents', 'plugins', 'marketplace.json'),
+      JSON.stringify({
+        name: 'skills-mkt',
+        plugins: [{ name: 'skill-plugin', source: { source: 'local', path: './plugins/skill-plugin' } }],
+      }),
+    );
+    mkdirSync(join(mktRoot, 'plugins', 'skill-plugin', '.codex-plugin'), { recursive: true });
+    writeFileSync(
+      join(mktRoot, 'plugins', 'skill-plugin', '.codex-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'skill-plugin' }),
+    );
+    for (const skill of ['drop-me', 'keep-me']) {
+      mkdirSync(join(mktRoot, 'plugins', 'skill-plugin', 'skills', skill), { recursive: true });
+      writeFileSync(
+        join(mktRoot, 'plugins', 'skill-plugin', 'skills', skill, 'SKILL.md'),
+        `---\nname: ${skill}\ndescription: ${skill}\n---\n\nBody\n`,
+      );
+    }
+
+    const command = captureCodexMarketplaceCommand();
+    let reloads = 0;
+    const ctx = {
+      cwd,
+      mode: 'tui',
+      hasUI: true,
+      ui: { notify() {} },
+      reload: async () => {
+        reloads += 1;
+      },
+    };
+
+    await command.handler(`add ${mktRoot}`, ctx);
+    await command.handler('install skill-plugin', ctx);
+    const afterInstall = reloads;
+    expect(afterInstall).toBeGreaterThan(0);
+
+    await command.handler('skills skill-plugin', ctx);
+    expect(reloads).toBe(afterInstall);
+
+    await command.handler('skills skill-plugin exclude drop-me', ctx);
+    expect(reloads).toBe(afterInstall + 1);
+
+    await command.handler('skills skill-plugin include drop-me', ctx);
+    expect(reloads).toBe(afterInstall + 2);
   });
 
   it('does not invoke ctx.reload when reload flag is false', async () => {

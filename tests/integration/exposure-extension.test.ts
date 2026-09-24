@@ -60,7 +60,7 @@ function makeEnv() {
   return env;
 }
 
-async function seedEnabledGlobalInstallation(agentDir: string): Promise<void> {
+async function seedEnabledGlobalInstallation(agentDir: string, skillExclusions?: string[]): Promise<void> {
   writeMinimalBridgeState({
     schemaVersion: 1,
     registrations: [
@@ -86,9 +86,19 @@ async function seedEnabledGlobalInstallation(agentDir: string): Promise<void> {
         source: 'https://github.com/acme/marketplace.git',
         snapshot: `bound-${FINGERPRINT.slice(0, 8)}`,
         skills: ['release-notes'],
+        ...(skillExclusions ? { skillExclusions } : {}),
       },
     ],
   }, { agentDir });
+}
+
+/** Add one more skill to the fixture Plugin's source tree. */
+function addSkill(env: ReturnType<typeof makeEnv>, skillName: string): void {
+  mkdirSync(join(env.marketplace, 'plugins', 'release-helper', 'skills', skillName), { recursive: true });
+  writeFileSync(
+    join(env.marketplace, 'plugins', 'release-helper', 'skills', skillName, 'SKILL.md'),
+    `---\nname: ${skillName}\ndescription: ${skillName} skill\n---\n\n${skillName} body.\n`,
+  );
 }
 
 let envs: ReturnType<typeof makeEnv>[] = [];
@@ -125,6 +135,29 @@ describe('Bridge Extension resources_discover seam (#54)', () => {
     expect(startup.skillPaths).toEqual(reload.skillPaths);
     expect(startup.skillPaths![0]!).toContain(join('plugins', 'release-helper', 'skills', 'release-notes'));
     expect(existsSync(join(startup.skillPaths![0]!, 'SKILL.md'))).toBe(true);
+  });
+
+  it('withholds excluded skills from resources_discover on both startup and reload', async () => {
+    const env = makeEnv();
+    envs.push(env);
+    addSkill(env, 'changelog');
+    await new SourceCache({ agentDir: env.agentDir }).storeTree(env.marketplace, FINGERPRINT);
+    await seedEnabledGlobalInstallation(env.agentDir, ['changelog']);
+    process.env.PI_CODING_AGENT_DIR = env.agentDir;
+    process.env.PI_AGENT_DIR = env.agentDir;
+
+    const handlers = captureHandlers();
+    const handler = handlers.get('resources_discover')!;
+    const ctx = { cwd: env.root, isProjectTrusted: () => true };
+    const startup = await handler!({ type: 'resources_discover', cwd: env.root, reason: 'startup' }, ctx);
+    const reload = await handler!({ type: 'resources_discover', cwd: env.root, reason: 'reload' }, ctx);
+
+    expect(startup.skillPaths).toHaveLength(1);
+    expect(startup.skillPaths![0]).toContain(join('skills', 'release-notes'));
+    expect(JSON.stringify(startup.skillPaths)).not.toContain('changelog');
+    expect(startup.skillPaths).toEqual(reload.skillPaths);
+    // Passive: the exclusion record is read, never rewritten by discovery.
+    expect(readMinimalBridgeState({ agentDir: env.agentDir }).state.installations[0]!.skillExclusions).toEqual(['changelog']);
   });
 
   it('contributes identically regardless of the host trust flag (Global-only) and mutates no state', async () => {

@@ -515,6 +515,7 @@ describe("Bridge CLI adapter seam (#132, #133)", () => {
     expect(combinedStdout).toContain("enable");
     expect(combinedStdout).toContain("remove");
     expect(combinedStdout).toContain("forget");
+    expect(combinedStdout).toContain("skills");
     expect(combinedStdout).toContain("help");
   });
 
@@ -1888,3 +1889,96 @@ describe("Lifecycle 表面：disable／enable／remove／forget (#132, #136)", (
 });
 
 
+
+describe("Skill Exclusion 表面：skills (#156)", () => {
+  let cwd: string;
+  let agentDir: string;
+  let statePath: string;
+
+  beforeEach(() => {
+    delete process.env[CREDENTIAL_HELPERS_ENV];
+    cwd = mkdtempSync(join(tmpdir(), "cli-skills-cwd-"));
+    agentDir = mkdtempSync(join(tmpdir(), "cli-skills-agent-"));
+    statePath = join(agentDir, "codex-marketplace", "state.json");
+    mkdirSync(join(agentDir, "codex-marketplace"), { recursive: true });
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    process.env.PI_AGENT_DIR = agentDir;
+  });
+
+  afterEach(() => {
+    delete process.env[CREDENTIAL_HELPERS_ENV];
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(agentDir, { recursive: true, force: true });
+    delete process.env.PI_CODING_AGENT_DIR;
+    delete process.env.PI_AGENT_DIR;
+  });
+
+  it("lists and adjusts Skill Exclusions, and every state-affecting change reports the CLI reload contract", async () => {
+    const mktRoot = mkdtempSync(join(tmpdir(), "cli-skills-mkt-"));
+    makeSyntheticMarketplace(mktRoot, "skills-mkt", [
+      { name: "skill-plugin", path: "./plugins/skill-plugin", skills: ["keep-me", "drop-me"] },
+    ]);
+
+    try {
+      await runCli(["add", mktRoot], createMockIo().io, { cwd, agentDir });
+      await runCli(["install", "skill-plugin"], createMockIo().io, { cwd, agentDir });
+
+      // 1. Read-only listing: no reload notice at all.
+      const mockList = createMockIo();
+      const codeList = await runCli(["skills", "skill-plugin"], mockList.io, { cwd, agentDir });
+      expect(codeList).toBe(0);
+      expect(mockList.stderr).toHaveLength(0);
+      const listOut = mockList.stdout.join("");
+      expect(listOut).toContain("keep-me");
+      expect(listOut).toContain("drop-me");
+      expect(listOut).not.toContain(RELOAD_NOTICE);
+      expect(listOut).not.toContain("已重新載入生效");
+
+      // 2. Exclude: state-affecting → CLI reload contract, never a claim that Pi loaded it.
+      const mockExclude = createMockIo();
+      const codeExclude = await runCli(["skills", "skill-plugin", "exclude", "drop-me"], mockExclude.io, { cwd, agentDir });
+      expect(codeExclude).toBe(0);
+      expect(mockExclude.exitCodes).toEqual([0]);
+      expect(mockExclude.stderr).toHaveLength(0);
+      const excludeOut = mockExclude.stdout.join("");
+      expect(excludeOut).toContain("已排除 \"skill-plugin\" 的 skill \"drop-me\"");
+      expect(excludeOut).toContain(RELOAD_NOTICE);
+      expect(excludeOut).not.toContain("已重新載入生效");
+
+      let proj = discoverProjectedSkillPaths({ agentDir });
+      expect(proj.skillPaths.some((p) => p.includes("drop-me"))).toBe(false);
+      expect(proj.skillPaths.some((p) => p.includes("keep-me"))).toBe(true);
+
+      // The listing marks the exclusion.
+      const mockListMarked = createMockIo();
+      await runCli(["skills", "skill-plugin"], mockListMarked.io, { cwd, agentDir });
+      expect(mockListMarked.stdout.join("")).toContain("drop-me（已排除）");
+
+      // 3. Include: restores it.
+      const mockInclude = createMockIo();
+      const codeInclude = await runCli(["skills", "skill-plugin", "include", "drop-me"], mockInclude.io, { cwd, agentDir });
+      expect(codeInclude).toBe(0);
+      expect(mockInclude.stderr).toHaveLength(0);
+      const includeOut = mockInclude.stdout.join("");
+      expect(includeOut).toContain("已恢復 \"skill-plugin\" 的 skill \"drop-me\"");
+      expect(includeOut).toContain(RELOAD_NOTICE);
+      expect(includeOut).not.toContain("已重新載入生效");
+
+      proj = discoverProjectedSkillPaths({ agentDir });
+      expect(proj.skillPaths.some((p) => p.includes("drop-me"))).toBe(true);
+
+      // 4. Unknown skill name → exit 1 to stderr with no reload notice and no partial change.
+      const mockUnknown = createMockIo();
+      const codeUnknown = await runCli(["skills", "skill-plugin", "exclude", "ghost-skill"], mockUnknown.io, { cwd, agentDir });
+      expect(codeUnknown).toBe(1);
+      expect(mockUnknown.exitCodes).toEqual([1]);
+      expect(mockUnknown.stdout).toHaveLength(0);
+      const unknownErr = mockUnknown.stderr.join("");
+      expect(unknownErr).toContain("錯誤：plugin \"skill-plugin\" 目前沒有 skill \"ghost-skill\"");
+      expect(unknownErr).not.toContain(RELOAD_NOTICE);
+      expect(readMinimalBridgeState({ agentDir }).state.installations[0].skillExclusions).toEqual([]);
+    } finally {
+      rmSync(mktRoot, { recursive: true, force: true });
+    }
+  });
+});
